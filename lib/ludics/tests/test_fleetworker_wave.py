@@ -180,7 +180,30 @@ class CoordinatorPreflight(WaveDirCase):
             self.assertEqual((rc, err), (0, ""))
             self.assertEqual(out.splitlines(), ["PREFLIGHT OK mac planner (claude fable)",
                                                 "PREFLIGHT OK mac reviewer (claude opus)"])
-            self.assertEqual(len(claude.calls()), 2)
+            calls = claude.calls()
+            for call_argv in calls:
+                self.assertIn("--strict-mcp-config", call_argv)
+                self.assertNotIn("--mcp-config", call_argv)
+            self.assertEqual(
+                calls,
+                [
+                    ["-p", "--model", "fable", "--effort", "high", "--output-format", "json",
+                     "--no-session-persistence", "--strict-mcp-config", "--tools", ""],
+                    ["-p", "--model", "opus", "--output-format", "json",
+                     "--no-session-persistence", "--strict-mcp-config", "--tools", ""],
+                ],
+            )
+
+    def test_invalid_claude_probe_options_refuse_without_starting_cli(self) -> None:
+        with FakeTool("claude") as claude:
+            rc, out, err = self.probe("--mode", "paired", "--model", "claude-custom", "--effort", "-low")
+            self.assertEqual((rc, out), (1, ""))
+            self.assertIn("PREFLIGHT REFUSED mac planner (claude claude-custom):", err)
+            self.assertIn("effort must not start with '-'", err)
+            self.assertEqual(claude.calls(), [])
+            why = preflight.probe_coordinator_turn("claude", "-bad", "", 1)
+            self.assertIn("model must be a non-empty model name", why)
+            self.assertEqual(claude.calls(), [])
 
     def test_expired_claude_login_refuses_with_both_repairs(self) -> None:
         with FakeTool("claude") as claude:

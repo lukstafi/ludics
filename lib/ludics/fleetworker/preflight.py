@@ -36,7 +36,7 @@ import tempfile
 from pathlib import Path
 from typing import cast
 
-from ludics import agy, cli, proc
+from ludics import agy, claude, cli, proc
 from ludics.fleetworker import farside
 from ludics.fleetworker.config import (
     GPU_TOKENS_DEFAULT,
@@ -143,10 +143,10 @@ def probe_coordinator_turn(tool: str, model: str, effort: str, timeout: int) -> 
         answer = Path(directory) / "answer"
         stdin = prompt.encode()
         if tool == "claude":
-            argv = ["-p", "--model", model, "--output-format", "json", "--no-session-persistence",
-                    "--tools", "", "--strict-mcp-config"]
-            if effort:
-                argv += ["--effort", effort]
+            try:
+                argv = claude.readonly_argv(model, claude.BuiltinTools(""), effort=effort, persist=False)
+            except ValueError as exc:
+                return str(exc)
         elif tool == "agy":
             # The real planner and reviewer need tool access. This prompt needs no approvals.
             argv = ["--model", model, "--input-format", "stream-json", "--output-format", "stream-json",
