@@ -660,6 +660,13 @@ still marks the end of the command's duration. On launch base `7cea8c06`, both c
 report a pass and the base-alone fixture reports a successful comparison build. All three receipts
 say `passed` for the timed-out attempt on that base.
 
+Agent notes (wave-20261123-ludics, t1293; refs #1293). A candidate retains one published pair per
+command under `<base>/<build|base|plan>/<attempt>/` after each completed publication. The JSONL
+`log_dir` names the attempt. A replaced path goes away without ever naming the replacement's
+files. Legacy receipts have no attempt identity. The interrupted-copy fixture on launch base
+`522d89ef` reads the second attempt's log through the first attempt's receipt after the second
+status copy fails. The fixture checks that the first pair survives on the branch.
+
 ## Checking
 
 Placement recovery (#1133, #1160): `wave launch` reads a caller-named JSON result file,

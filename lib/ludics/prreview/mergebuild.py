@@ -246,18 +246,27 @@ NUL in it, past the argument limit) is a config error (exit 2); anything else it
 outside its tree, a network call, a process it detaches with ``setsid``) is the command's
 business, as it would be from a developer's shell.
 
-LOG RETENTION (#1188, #1263). After each command attempt, before scratch cleanup, copy its log and status
-to ``merge-builds/logs/<owner>--<repo>/<pr>/<head>/<base>/`` under ship-pr's state directory
-(budget.budget_dir), independent of ISSUE_WAVE_STATE so wave cleanup cannot remove the evidence.
-Retries of the same head and candidate base replace that command's files. Base-alone attempts
-use ``base.log`` and ``base.status``, THE PLAN ``plan.log`` and ``plan.status``.
-Dry runs naming a repository use ``dry-run`` or ``plan-only`` in place of the PR. Config-only dry runs
-and fixtures explicitly disabling state have no durable directory, as with history. Missing files (a command
-never started or did not finish) are retained as empty files. A copy error refuses with exit 3. The
-directory is printed and recorded as ``log_dir`` in the JSONL receipt, including failures and slot
-refusals. A stale-build or refresh refusal reports the build logs already retained by the gate.
-Directories for distinct candidates and legacy head-only artifacts remain until manual removal of
-``merge-builds/logs``. Interrupts before the copy and SIGKILL remain outside retention's readiness boundary.
+LOG RETENTION (#1188, #1263, #1293). Under ship-pr's state directory (budget.budget_dir),
+independent of ISSUE_WAVE_STATE, each candidate has a directory at
+``merge-builds/logs/<owner>--<repo>/<pr>/<head>/<base>/``. Its ``build``, ``base`` and ``plan``
+subdirectories hold the latest published attempt of each command in a unique directory.
+Each attempt holds the corresponding ``<command>.log`` and ``<command>.status``. The latter is
+the command's raw exit status, including for the plan. The plan's verdict text is in ``plan.log``.
+Dry runs naming a repository use ``dry-run`` or ``plan-only`` in place of the PR. Config-only dry
+runs and fixtures explicitly disabling state have no durable directory, as with history.
+
+Before scratch cleanup, copy both files aside (a missing log or status becomes an empty file)
+and publish the directory with one rename. Same-command writers for a candidate serialize;
+after publication the old attempt path is removed by rename before its files are deleted.
+A copy error refuses with exit 3 and leaves the previous pair in place. The attempt directory
+is printed and recorded as ``log_dir`` in the JSONL build receipt, including for failures and
+slot refusals. A missing attempt path means its evidence was replaced or removed. Legacy
+receipts point at the candidate directory and cannot identify a particular attempt. A stale-build
+or refresh refusal reports the attempt paths of the build logs already retained by the gate.
+Directories for distinct candidates and legacy head-only artifacts remain until manual removal.
+An interruption before publication may leave staging files, and one after publication may leave
+the old pair too. A completed retry clears both. Retention can only publish evidence once the
+attempt reaches the copy step. Recovery after host or filesystem failure is outside this boundary.
 
 DIAGNOSTIC SCAN -- the boundary. In addition to the bounded head/tail display, scan the complete
 log in bounded chunks for physical lines whose first SHOWN_BYTES bytes, decoded as UTF-8 with
@@ -322,6 +331,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from types import FrameType
 from typing import Literal, NoReturn, assert_never
+from uuid import uuid4
 
 from ludics import cli, fs, proc
 from ludics.prreview import buildhistory, commentonly
@@ -1508,24 +1518,46 @@ class _Ran:
 def _retain(
     repo: str, pr: str, head: str, base: str, name: str, log: str, status: str, *, plan_only: bool = False,
 ) -> str | None:
-    """Retain command artifacts before scratch cleanup, keyed by both candidate parents."""
+    """Publish the pair at a unique path within the candidate's retention directory."""
+    import fcntl  # HOSTS AND CLONES: retention runs only on POSIX.
+
     root = buildhistory.state_root(repo)
     if root is None:
         return None  # fixtures can explicitly disable state; config-only dry runs have no repo
     # A plan-only read leaves the full run's plan evidence intact even for the same candidate.
     run = pr or ("plan-only" if plan_only else "dry-run")
-    directory = os.path.abspath(os.path.join(root, "logs", repo.replace("/", "--"), run, head, base))
+    candidate = Path(os.path.abspath(os.path.join(root, "logs", repo.replace("/", "--"), run, head, base)))
+    directory = candidate / name
+    attempt = directory / uuid4().hex
+    pending = directory / ".pending"
+    retired = directory / ".retired"
     try:
-        os.makedirs(directory, exist_ok=True)
-        for source, leaf in ((log, f"{name}.log"), (status, f"{name}.status")):
-            destination = os.path.join(directory, leaf)
-            if os.path.exists(source):
-                shutil.copyfile(source, destination)
-            else:
-                Path(destination).write_bytes(b"")
+        directory.mkdir(parents=True, exist_ok=True)
+        with (directory / ".lock").open("ab") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            for leftover in (pending, retired):
+                if leftover.exists():
+                    shutil.rmtree(leftover)
+            pending.mkdir()
+            try:
+                for source, leaf in ((log, f"{name}.log"), (status, f"{name}.status")):
+                    if os.path.exists(source):
+                        shutil.copyfile(source, pending / leaf)
+                    else:
+                        (pending / leaf).write_bytes(b"")
+                pending.rename(attempt)
+            finally:
+                if pending.exists():
+                    shutil.rmtree(pending)
+            for previous in directory.iterdir():
+                if previous != attempt and re.fullmatch(r"[0-9a-f]{32}", previous.name):
+                    previous.rename(retired)
+                    shutil.rmtree(retired)
+            for suffix in ("log", "status"):
+                (candidate / f"{name}.{suffix}").unlink(missing_ok=True)
     except OSError as exc:
-        fail(3, f"NOT merging: could not retain merge-build log/status in {shlex.quote(directory)}: {exc}")
-    return directory
+        fail(3, f"NOT merging: could not retain merge-build log/status in {shlex.quote(str(directory))}: {exc}")
+    return str(attempt)
 
 
 def _run(
