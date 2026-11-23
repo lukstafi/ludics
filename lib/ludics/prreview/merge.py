@@ -26,9 +26,12 @@ review round:
   passed; then the call, bound to the gated head (``--match-head-commit``), and the merged state confirmed
   over REST, with the head it merged at (``confirm``, ludics#823).
 
-A resend gate that refuses can still confirm a concurrent landing over REST without a new write.
-Its refusal stands as given only on REST's ``merged: false``; an unanswered probe is exit 3, landing
-unknown: a forwarded ``--delete-branch`` can fail its cleanup with a gateway's text after the merge landed.
+After a merge write, a gate refusal during the shared pre-merge reads checks REST's ``merged``
+field. This also covers a build that went stale before a gateway resend. A confirmed landing goes
+to the same head check without another write, using the original gated SHA even if an ABSENT
+re-gate read a successor. On ``merged: false`` the gate's refusal stands. An unanswered probe leaves
+the landing unknown (exit 3): another caller could have merged, or a forwarded
+``--delete-branch`` could have failed its cleanup with the gateway's text after landing.
 
 MERGE LEASE (#1269). ``lease fleet`` with ``trigger always`` in the default-branch merge-build
 config makes upgraded callers sharing the same fleet anchor and state directory serialize per
@@ -1280,6 +1283,27 @@ class Merge:
         tip = self.built_base_tip(build)
         return True, tip if tip != build.base_sha else None
 
+    def check_landing_after_refusal(self, refusal: cli.Exit, *, resend: bool) -> None:
+        if refusal.rc not in (1, 3, 4, 5):
+            return
+        # A gate can stop the retry or resend before the live refs report a concurrent merge.
+        merged = self.session.retry(
+            "read", ["api", f"repos/{self.repo}/pulls/{self.num}", "--jq", ".merged"],
+        )
+        if isinstance(merged, GhOk):
+            if merged.stdout == "true":
+                raise _AlreadyMerged from None
+            if merged.stdout == "false":
+                return
+        action = "the resend of a merge request the gateway refused" if resend else "the retry of a refused merge request"
+        answer = f"it answered {merged.stdout!r}" if isinstance(merged, GhOk) else self.session.err_line()
+        fail(
+            3,
+            f"UNKNOWN whether {self.repo}#{self.num} merged: a gate stopped {action},",
+            f"and REST did not say whether it landed ({answer}). The gate's refusal:",
+            f"{refusal.message} -- Read the PR's state before re-running merge.",
+        )
+
     def before_resend(self, build: BuildVerdict | None, lease: MergeLease | None) -> None:
         try:
             _, tip = self.pre_merge_reads(build, lease, resend=True)
@@ -1287,24 +1311,7 @@ class Merge:
                 assert build is not None
                 self.refuse_stale_build(build, tip, "before a merge request could be resent")
         except cli.Exit as refusal:
-            if refusal.rc in (1, 3):
-                # A gate can stop these reads before the live refs report a concurrent merge.
-                merged = self.session.retry(
-                    "read", ["api", f"repos/{self.repo}/pulls/{self.num}", "--jq", ".merged"],
-                )
-                if isinstance(merged, GhOk) and merged.stdout == "true":
-                    raise _AlreadyMerged from None
-                # A resend's gateway text can follow a landing (a forwarded --delete-branch's
-                # cleanup), and the same outage can fail this probe: the refusal stands as it is
-                # only on a REST "false".
-                if not (isinstance(merged, GhOk) and merged.stdout == "false"):
-                    answer = f"it answered {merged.stdout!r}" if isinstance(merged, GhOk) else self.session.err_line()
-                    fail(
-                        3,
-                        f"UNKNOWN whether {self.repo}#{self.num} merged: a gate stopped the resend of a merge request",
-                        f"the gateway refused, and REST did not say whether it landed ({answer}). The gate's refusal:",
-                        f"{refusal.message} -- Read the PR's state before re-running merge.",
-                    )
+            self.check_landing_after_refusal(refusal, resend=True)
             raise
 
     def merge_call(self, build: BuildVerdict | None, ceiling: Ceiling | None, lease: MergeLease | None = None) -> None:
@@ -1316,8 +1323,14 @@ class Merge:
         override_base = build.base_sha if build is not None and opts.override else None
         before_dispatch = lease.require_current if lease is not None else None
         sent_build: BuildVerdict | None = None
+        write_attempted = False
         while True:
-            base_holds, tip = self.pre_merge_reads(build, lease, resend=False)
+            try:
+                base_holds, tip = self.pre_merge_reads(build, lease, resend=False)
+            except cli.Exit as refusal:
+                if write_attempted:
+                    self.check_landing_after_refusal(refusal, resend=False)
+                raise
             if not base_holds:
                 if attempt >= 3:
                     fail(
@@ -1351,6 +1364,7 @@ class Merge:
                 )
             else:
                 result = self.session.retry("write", args, before_retry=before_retry, before_dispatch=before_dispatch)
+            write_attempted = True
             match result:
                 case GhOk(stdout=out):
                     cli.emit(out)
@@ -1433,7 +1447,7 @@ class Merge:
     # merged anchor, whose head.sha must be its merge commit's second parent).
     _STATE_JQ = '"merged=\\(.merged) state=\\(.state)\\t\\(.head.sha // "-")"'
 
-    def confirm(self, *, already_merged: bool = False) -> int:
+    def confirm(self, judged_head: str, *, already_merged: bool = False) -> int:
         """The merged state over REST: ``gh pr merge`` returns 0 having only ENABLED auto-merge when
         the base defers merges, so its status is not the answer.
 
@@ -1442,7 +1456,7 @@ class Merge:
         returns nil when ``pr.State`` is MERGED, so ``--match-head-commit`` is never sent): a first
         call on a PR merged elsewhere, or the retry after a "not mergeable" on a PR merged
         meanwhile (a merged PR's mergeability reads ``true``, #818). So ``merged=true`` alone does
-        not say the gated head landed. The merged head equal to ``gate.check_sha`` is ``merged``,
+        not say the gated head landed. The merged head equal to ``judged_head`` is ``merged``,
         exit 0, whoever merged it -- a race at the judged head is normal in a wave. Another head is
         exit 1, the fact (this gate's head landed) does not hold: it HAS landed, so the message
         says not to re-merge. A merged state whose head did not read (no tab, empty, ``-``) is
@@ -1460,25 +1474,24 @@ class Merge:
         if self.gate.unread:
             warn(self.gate.unread_note())
         if "merged=true" in line:
-            judged = self.gate.check_sha
             if head in ("", "-"):
                 fail(
                     3,
                     f"{repo}#{pr} is merged, but the head it was merged at could not be read, so whether it",
-                    f"is the head the gate judged ({judged[:8]}) is unknown — do NOT re-merge; read",
+                    f"is the head the gate judged ({judged_head[:8]}) is unknown — do NOT re-merge; read",
                     f"repos/{repo}/pulls/{pr} --jq .head.sha first.",
                 )
-            if head != judged:
+            if head != judged_head:
                 fail(
                     1,
-                    f"{repo}#{pr} is MERGED at an UNJUDGED head {head[:8]} (the gate judged {judged[:8]}):",
+                    f"{repo}#{pr} is MERGED at an UNJUDGED head {head[:8]} (the gate judged {judged_head[:8]}):",
                     "it was merged by another call, at a head this merge never read a build signal for —",
                     "not this merge. It has landed, so do NOT re-merge; judge what landed on the base.",
                 )
             return 0
         if already_merged:
             fail(
-                3, f"{repo}#{pr} read as merged before the write but the landing could not be confirmed over REST",
+                3, f"a pre-merge check read {repo}#{pr} as merged but REST could not confirm the landing",
                 f"({line}). Re-read the PR before attempting another merge.",
             )
         if self.opts.require_green:
@@ -1546,6 +1559,8 @@ class Merge:
                 clone_preflight(self.session, self.repo, self.num, os.getcwd())
             self.conflict_preflight()
         self.judge()
+        # An ABSENT re-gate can overwrite check_sha even when it refuses the successor.
+        judged_head = self.gate.check_sha
         ceiling = self.ceiling()
         drift = self.drift()
         # The would-be merge commit's build, where the repository asks for one (mergebuild.py,
@@ -1553,7 +1568,7 @@ class Merge:
         # Under --override it may go over a failure the base alone shares (mergebuild.py's THE
         # BASE ALONE, #860), announced with the gate's override, just before the call.
         build = merge_build(
-            self.session, self.repo, self.num, self.gate.check_sha, drift, self.config.limits.contents_dir_cap,
+            self.session, self.repo, self.num, judged_head, drift, self.config.limits.contents_dir_cap,
             checkout=self.opts.checkout, ceiling=ceiling, override=self.opts.override,
         )
         try:
@@ -1564,8 +1579,8 @@ class Merge:
             else:
                 self.merge_call(build, ceiling)
         except _AlreadyMerged:
-            return self.confirm(already_merged=True)
-        return self.confirm()
+            return self.confirm(judged_head, already_merged=True)
+        return self.confirm(judged_head)
 
 
 def run(session: GhSession, args: list[str]) -> int:

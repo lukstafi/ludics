@@ -42,8 +42,8 @@ NO_CHECKS=""                           # the head carries no build check and no 
                                        # reads that as ABSENT
 MERGE_STATE="merged=true state=MERGED" # what REST says after the merge call
 MERGED_HEAD=""                         # nonempty = the head that read answers (`-` = none); empty = CURRENT_HEAD
-# nonempty = the PR is already merged when a merge call is made -- from the first call, or, with
-# MERGE_NOT_MERGEABLE, from the retry (merged meanwhile): `pr merge` then answers as gh does.
+# nonempty = the PR has landed before the next eligible merge call, or before its post-refusal
+# REST probe. A configured first-call failure still takes precedence in the merge stub.
 ALREADY_MERGED=""
 MERGE_QUEUE=""                         # nonempty = the base has a merge queue
 MERGE_NOT_MERGEABLE=""                 # nonempty = the FIRST pr merge call fails as not mergeable
@@ -263,7 +263,7 @@ runs_answer() {
     esac
   elif [ -n "$HEAD_RUNS" ]; then
     printf '%s\n' "$HEAD_RUNS"
-  elif [ -n "$MOVED_RUN_RC" ] && [ "$(fixture_call_total base-sha)" -ge 1 ]; then
+  elif [ -n "$MOVED_RUN_RC" ] && [ "$(fixture_call_total base-sha)" -ge "$BASE_MOVE_AFTER_READS" ]; then
     printf '%s\n' '{"workflow_runs":[{"id":101,"workflow_id":1,"event":"pull_request","name":"ci","status":"queued","conclusion":null,"created_at":"2026-09-01T00:00:00Z","check_suite_id":1}]}'
   elif [ -n "$NO_CHECKS" ]; then
     printf '%s\n' '{"workflow_runs":[]}'
@@ -300,7 +300,7 @@ fixture_base() {
   fi
 }
 fixture_head() {
-  if [ -n "$HEAD_AFTER_MOVE" ] && [ "$(fixture_call_total base-sha)" -ge 1 ]; then
+  if [ -n "$HEAD_AFTER_MOVE" ] && [ "$(fixture_call_total base-sha)" -ge "$BASE_MOVE_AFTER_READS" ]; then
     printf '%s\n' "$HEAD_AFTER_MOVE"
   else
     printf '%s\n' "$1"
@@ -337,11 +337,12 @@ gh() {
       printf '%s\t%s\n' "$reads" "$PR_BASE"
       ;;
     *'--jq .merged')
-      printf 'CALL merged-after-resend-refusal\n' >>"$CALLS_FILE"
+      printf 'CALL merged-after-refusal\n' >>"$CALLS_FILE"
       if [ -n "$MERGED_PROBE_FAIL" ]; then
         printf 'gh: 503 No server is currently available to service your request\n' >&2
         return 1
-      elif [ "$BUILD_MOVE_ON_CALL" = gateway-merged ] && [ -f "$TEST_ROOT/merge-failed-once" ]; then
+      elif [ -f "$TEST_ROOT/merge-failed-once" ] &&
+           { [ -n "$ALREADY_MERGED" ] || [ "$BUILD_MOVE_ON_CALL" = gateway-merged ]; }; then
         printf '%s\n' true
       else
         printf '%s\n' false
@@ -1707,9 +1708,9 @@ test_head_move_words_under_another_graphql_path_are_ambiguous() {
 }
 
 # ludics-lite#523: an ABSENT verdict can rest on the base, and the merge call binds only the head,
-# so the base is re-read last before each attempt and a moved one is gated again. The recognition
-# itself, on a base that added a workflow, is test-pr-review-checks-absent.sh's; these are the
-# merge loop's own outcomes.
+# so each attempt re-reads the base before the checkpoint and live-ref reads, and a moved base
+# is gated again. The recognition itself, on a base that added a workflow, is
+# test-pr-review-checks-absent.sh's; these are the merge loop's own outcomes.
 test_an_absent_verdict_rereads_its_base_before_the_call() {
   # Green rests on the head's own runs: no base read.
   reset
@@ -2518,6 +2519,72 @@ test_a_thread_opened_between_merge_attempts_refuses_the_retry() {
   assert_eq "$(grep -c -x 'CALL reviewThreads' "$CALLS_FILE")" 2 "one read per attempt"
 }
 
+assert_a_refused_retry_confirms_a_concurrent_merge() {
+  local route=$1 landed_head=$2
+  reset
+  case "$route" in
+    base-modified) MERGE_BASE_MODIFIED=1 ;;
+    not-mergeable) MERGE_NOT_MERGEABLE=1 ;;
+  esac
+  THREADS_JSON_LATER="[$(review_thread 4095865442 false)]"
+  ALREADY_MERGED=1
+  MERGED_HEAD=$landed_head
+  run_merge
+  assert_eq "$(grep -c -x 'CALL reviewThreads' "$CALLS_FILE")" 2 "the retry reaches the thread gate"
+  assert_eq "$(merge_calls)" 1 "only the first merge write was sent"
+  if [ "$landed_head" = "$CURRENT_HEAD" ]; then
+    assert_eq "$MERGE_RC" 0 "the judged head landed concurrently ($route: $MERGE_OUTPUT)"
+  else
+    assert_eq "$MERGE_RC" 1 "an unjudged head landed concurrently ($route: $MERGE_OUTPUT)"
+    assert_contains "$MERGE_STDERR" "MERGED at an UNJUDGED head" "names the head mismatch"
+    assert_contains "$MERGE_STDERR" "do NOT re-merge" "gives the landing instruction"
+  fi
+  assert_contains "$MERGE_STDOUT" "$REPO#7 merged=true state=MERGED" "confirm read the landing"
+  assert_eq "$(grep -c -x 'CALL merged-after-refusal' "$CALLS_FILE")" 1 "the refusal went to REST"
+}
+
+test_a_refused_base_modified_retry_confirms_the_judged_head() {
+  assert_a_refused_retry_confirms_a_concurrent_merge base-modified head-sha
+}
+
+test_a_refused_base_modified_retry_reports_an_unjudged_landing() {
+  assert_a_refused_retry_confirms_a_concurrent_merge base-modified landed-sha
+}
+
+test_a_refused_not_mergeable_retry_confirms_the_judged_head() {
+  assert_a_refused_retry_confirms_a_concurrent_merge not-mergeable head-sha
+}
+
+test_a_refused_not_mergeable_retry_reports_an_unjudged_landing() {
+  assert_a_refused_retry_confirms_a_concurrent_merge not-mergeable landed-sha
+}
+
+test_a_refused_absent_regate_confirms_against_the_head_bound_to_the_write() {
+  local run_rc
+  for run_rc in 4 ''; do
+    reset
+    NO_CHECKS=1
+    MERGE_NOT_MERGEABLE=1
+    ALREADY_MERGED=1
+    BASE_MOVED=moved-base
+    BASE_MOVE_AFTER_READS=2
+    HEAD_AFTER_MOVE=pushed-sha
+    MERGED_HEAD=$HEAD_AFTER_MOVE
+    MOVED_RUN_RC=$run_rc
+    run_merge
+    assert_eq "$(merge_calls)" 1 "only the first merge write was sent"
+    assert_eq "$MERGE_RC" 1 "the head on the moved base was never eligible to merge ($MERGE_OUTPUT)"
+    assert_contains "$MERGE_STDOUT" "$REPO#7 merged=true state=MERGED" "confirm read the landing"
+    assert_contains "$MERGE_STDERR" "MERGED at an UNJUDGED head pushed-s (the gate judged head-sha)" +      "the head bound to the write still decides"
+    assert_contains "$MERGE_STDERR" "do NOT re-merge" "gives the landing instruction"
+    if [ -n "$run_rc" ]; then
+      assert_contains "$MERGE_STDOUT" "@pushed-s: NO VERDICT YET" "the re-gate read a pending head"
+    else
+      assert_contains "$MERGE_STDOUT" "@pushed-s: ABSENT" "the re-gate settled an absence on a superseding head"
+    fi
+  done
+}
+
 test_a_thread_opened_during_gateway_backoff_refuses_the_resend() (
   reset
   retune API_ATTEMPTS=3
@@ -2544,7 +2611,7 @@ test_a_refused_gateway_resend_with_an_unanswered_probe_is_unknown() (
   assert_contains "$MERGE_STDERR" "UNKNOWN whether $REPO#7 merged" "says the landing is unknown"
   assert_contains "$MERGE_STDERR" "1 review thread(s) still UNRESOLVED — 4095865442" "quotes the gate's refusal"
   assert_contains "$MERGE_STDERR" "Read the PR's state before re-running merge." "and to read the PR first"
-  assert_eq "$(grep -c -x 'CALL merged-after-resend-refusal' "$CALLS_FILE")" 3 "the probe was retried"
+  assert_eq "$(grep -c -x 'CALL merged-after-refusal' "$CALLS_FILE")" 3 "the probe was retried"
   assert_eq "$(merge_calls)" 1 "the write was not resent"
 )
 
@@ -4999,6 +5066,11 @@ tests=(
   test_an_open_review_thread_refuses_the_merge
   test_an_unread_thread_connection_refuses_as_transport
   test_a_thread_opened_between_merge_attempts_refuses_the_retry
+  test_a_refused_base_modified_retry_confirms_the_judged_head
+  test_a_refused_base_modified_retry_reports_an_unjudged_landing
+  test_a_refused_not_mergeable_retry_confirms_the_judged_head
+  test_a_refused_not_mergeable_retry_reports_an_unjudged_landing
+  test_a_refused_absent_regate_confirms_against_the_head_bound_to_the_write
   test_a_thread_opened_during_gateway_backoff_refuses_the_resend
   test_a_clear_gateway_resend_repeats_the_attempt_reads_in_order
   test_a_blocking_checkpoint_with_no_confirm_refuses

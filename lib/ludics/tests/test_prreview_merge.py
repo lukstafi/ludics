@@ -17,8 +17,14 @@ import sys
 import unittest
 from collections.abc import Sequence
 from pathlib import Path
+from unittest import mock
 
+from ludics import cli
 from ludics.prreview.checkpoint import Post, headed, heading, hold_of, parse_verdict, post_of
+from ludics.prreview.clock import FuncClock
+from ludics.prreview.core import Config, GhFailed, GhOk, GhSession, GhUnanswered
+from ludics.prreview.gate import load_gate_config
+from ludics.prreview.merge import Merge, Options
 from ludics.tests.fake import Answer, FakeTool, When
 
 LIB = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
@@ -66,6 +72,49 @@ GREEN: list[Route] = [
     # The review checkpoint's posts (checkpoint.py, #1242): none.
     (["issues/7/comments?per_page=100"], 0, "[]\n", ""),
 ]
+
+
+class RetryGates(unittest.TestCase):
+    def setUp(self) -> None:
+        self.session = GhSession(Config(repo="o/r", reviewer="r", round_threshold=None, round_gap=0,
+                                        api_attempts=1, api_backoff=0))
+        self.merge = Merge(self.session, "o/r", "7", load_gate_config({}), FuncClock(), Options("7"))
+
+    def test_a_regate_before_the_first_write_does_not_probe_for_a_landing(self) -> None:
+        refusal = cli.Exit(1, "a thread still needs resolution")
+        with (
+            mock.patch.object(self.merge, "pre_merge_reads", side_effect=[(False, None), refusal]),
+            mock.patch.object(self.session, "retry") as retry,
+            self.assertRaises(cli.Exit) as caught,
+        ):
+            self.merge.merge_call(None, None)
+        self.assertIs(caught.exception, refusal)
+        retry.assert_not_called()
+
+    def test_the_outer_retry_keeps_the_gate_diagnostic_when_rest_cannot_confirm_a_landing(self) -> None:
+        for gate_rc, probe, expected_rc in (
+            (1, GhOk("false"), 1), (4, GhOk("false"), 4), (5, GhOk("false"), 5),
+            (1, GhUnanswered(), 3), (1, GhOk("null"), 3),
+        ):
+            refusal = cli.Exit(gate_rc, "the retry gate refused")
+            with self.subTest(gate_rc=gate_rc, probe=probe):
+                with (
+                    mock.patch.object(self.merge, "pre_merge_reads", side_effect=[(True, None), refusal]),
+                    mock.patch.object(self.session, "retry", side_effect=[GhFailed(), GhOk("true"), probe]) as retry,
+                    mock.patch.object(self.session, "err_line", side_effect=[
+                        "GraphQL: Pull Request has merge conflicts (mergePullRequest)", "HTTP 503",
+                    ]),
+                    self.assertRaises(cli.Exit) as caught,
+                ):
+                    self.merge.merge_call(None, None)
+                self.assertEqual(caught.exception.rc, expected_rc)
+                self.assertIn(refusal.message, caught.exception.message)
+                self.assertEqual(retry.call_count, 3)
+                retry.assert_called_with("read", ["api", "repos/o/r/pulls/7", "--jq", ".merged"])
+                if expected_rc == gate_rc:
+                    self.assertIs(caught.exception, refusal)
+                else:
+                    self.assertIn("Read the PR's state before re-running merge.", caught.exception.message)
 
 
 class Production(unittest.TestCase):
