@@ -4128,6 +4128,22 @@ class Queue(DriveCase):
             self.assertEqual(self.launched(), [["wave", "launch", self.path, "t52"]], "a task prepared at the tip is launched, not prepared again")
         self.assertEqual(len(self.attention()), 2)
 
+    def test_stale_prep_keeps_a_reassignment_reason_absent_from_the_queue(self) -> None:
+        self.queue({"task": "t50", "profile": "sol", "host": "far"},
+                   {"task": "t52", "profile": "sol", "host": "far", "reassignment_reason": "Needs the far host"})
+        self.rows = [row(task, state="pending", reassignment_reason="Needs the far host") for task in ("t50", "t52")]
+        for task in ("t50", "t52"):
+            self.manifest(task, "far", A)
+        with self.world():
+            rc, out = self.once()
+            self.assertEqual(rc, 0, out)
+            self.assertIn("DRIVE ATTENTION t50 launch: the base moved and the pending row records a reassignment reason"
+                          " absent from the queue; the row is kept", out)
+            self.assertEqual(self.launched(), [])
+            self.assertEqual(self.ledger()[-1], (wavedrive.LAUNCH, "launch", "attention"))
+            self.assertEqual(self.once()[0], 0)
+            self.assertEqual(self.launched(), [["wave", "unprep", self.path, "t52"]])
+
     def test_a_stale_prepared_task_whose_unprep_refuses_is_final_and_an_unknown_one_is_the_next_ticks(self) -> None:
         self.queue({"task": "t51", "profile": "sol", "host": "far"})
         self.rows = [row("t51", state="pending")]

@@ -216,6 +216,8 @@ it, one a tick (THE GATE and the halt are read once a tick, for the cues and the
             [--tier] [--reassignment-reason]``
             (a dependent starts from the base its prerequisite merged into), then ``wave launch``
             Prep's split NOTE is passed through on stderr, with no change to the launch decision.
+            A stale pending row with a reassignment reason and no reason in the queue is left to the
+            coordinator before unprep can remove the row. A fenced unprep is already in progress.
 A PAIRED LAUNCH, of an entry whose ``mode`` is not ``none``, is told once its launch answers: one
 non-final attention line, ``launched <mode> at <sha>: start its peer planner on that sha``. The
 driver starts no planner; the coordinator starts it on that sha, since both plans must read one tree.
@@ -1118,7 +1120,7 @@ class Driver:
                 if missing:
                     self.tell_missing(slot, queued, missing)
                     continue  # a missing prerequisite must not hold up another due task
-                self.start(queued, slot, row is not None, record, last)
+                self.start(queued, slot, row, record, last)
             return  # one launch a tick, and a halt, a closed gate or an unreachable anchor is the next tick's
 
     def tell_missing(self, slot: Worker, queued: Queued, missing: tuple[str, ...]) -> None:
@@ -1177,7 +1179,7 @@ class Driver:
         self.gate_refusal = why
         return False
 
-    def start(self, queued: Queued, slot: Worker, prepared: bool, record: Record | None, last: dict[str, Any] | None) -> None:
+    def start(self, queued: Queued, slot: Worker, row: dict[str, str] | None, record: Record | None, last: dict[str, Any] | None) -> None:
         main = self.wave.vars["MAIN"]
         checkout = self.wave.checkout
         fetched = execute(["git", "-C", checkout, "fetch", "-q", "origin", main])[0]
@@ -1186,6 +1188,9 @@ class Driver:
             return  # the remote did not answer: the next tick's
         fenced = self.unprepping(queued.task)
         if fenced or (record is not None and record.base != sha.strip()):
+            if not fenced and row and row.get("reassignment_reason") and not queued.reassignment_reason:
+                return self.attention(slot, LAUNCH, "launch", "the base moved and the pending row records a reassignment reason"
+                                      " absent from the queue; the row is kept, and re-prep and launch are yours")
             # A STALE PREPARED TASK (the header): un-prepared here, prepared again at the tip on a later tick.
             # A fenced manifest, its row there or not, is an un-prepare that stopped: it is finished first.
             moved = (f"{main} moved since the task was prepared at {record.base[:12]} (now {sha.strip()[:12]})" if not fenced and record
@@ -1199,7 +1204,7 @@ class Driver:
                                                               f" refused: {said[:300]}; it is yours")
             self.tell(slot, LAUNCH, f"{moved}: un-prepared, to be prepared again at the tip under its own id: {said[:300]}")
             return self.note(slot, LAUNCH, "launch", "unprepared", said[:300])
-        if not prepared:
+        if row is None:
             # THE REFRESH (the header): the served checkout's prep code, brought to its origin first.
             refreshed = self.call("refresh", self.wave.agent_host)
             fresh = "" if refreshed.rc == 0 else (substitution(refreshed.out).splitlines() or [f"refresh exit {refreshed.rc}"])[-1]

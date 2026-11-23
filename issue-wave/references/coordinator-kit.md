@@ -130,7 +130,11 @@ The optional `split` key enables a prep NOTE when a worker's profile kind differ
 kind. Odd issue numbers use Sol (`codex`), even numbers use Neon (`gemini`), and a post-wave task
 uses its source issue number. For an approved exception, pass `--reassignment-reason <reason>`
 to prep or give the CLI entry in `queue.json` a `reassignment_reason`. A nonblank single line of
-printable text marks the row as `reassignment_reason=<reason>` and suppresses the NOTE.
+printable text marks the row as `reassignment_reason=<reason>` and suppresses the NOTE. The field
+also appears in `status --json`. Include the reason in the CLI queue even if you prep by hand, so
+the driver can reuse it if the base moves. If the queue lacks the reason at that point, the driver
+leaves the pending row and tells you. Take back the stale prep with `wave unprep`, then prep at the
+current base with the reason and launch by hand.
 
 `wave prep <wave.json> <task> --base <sha> --profile sol [--host rog-nv-linux]` prepares such a
 task. For a CLI task it makes nothing on the box and reserves nothing: `fleet-worker.sh launch`
