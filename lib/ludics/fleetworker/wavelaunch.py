@@ -1,6 +1,6 @@
 """``wave launch``: start a prepared CLI worker (the second half of what each wave's ``next.sh`` did).
 
-    wave launch <wave.json> <task>
+    wave launch <wave.json> <task> [--status <file>] [--launch-id <id>]
 
 ``wave prep`` prepares a CLI task and makes nothing on its box (waveprep.py's A CLI TASK): the
 worktree and the standing reservation are ``fleet-worker.sh launch --standing``'s to make, in one
@@ -64,7 +64,18 @@ but a worker already started still gets its local manifest record. The manifest'
 launch that ran and whose record was not written (a crash between steps 4 and 7) is refused by
 step 3, on the worktree it left, or by ``launch`` itself, on the worker's record on its box.
 
-Exit: 0 launched; 1 refused; 2 usage; 3 launched, with a NOTE to reconcile; 4 unknown.
+THE STATUS (ludics#1290). ``--status <file>`` writes one JSON object atomically on every non-usage
+exit (never on usage exit 2): ``{"exit", "wave", "task", "host", "launch_id", "outcome"}``, where
+``launch_id`` is the caller-supplied ``--launch-id <id>`` (validated against ``boardstore.LAUNCH_ID``,
+shared with ``board spawned``; ``""`` when omitted) and ``outcome`` is one of ``workers.LAUNCH_OUTCOMES``.
+Step 4 passes its own fresh ``--status`` file to ``launch`` and propagates ``launch``'s outcome only
+when that file passes ``workers.read_launch_status`` (matching exit, host and worker); any missing,
+malformed or mismatched child status fails closed to ``uncertain``, never inferred from stdout/stderr
+prose. Steps 1-3 write ``pre-start``; steps 5-7 (after worker startup) always write ``started``,
+including on a post-start lease loss (exit 6). A write failure prints a ``WAVE LAUNCH STATUS NOTE``
+on stderr and leaves the exit status unchanged.
+
+Exit: 0 launched; 1 refused; 2 usage; 3 launched, with a NOTE to reconcile; 4 unknown; 6 lease lost (under ``--lease-status``).
 """
 
 import json
@@ -72,18 +83,20 @@ import os
 import re
 import shlex
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, cast
 
 from ludics import cli
-from ludics.fleetworker.boardstore import placement_word
+from ludics.fleetworker.boardstore import LAUNCH_ID, placement_word
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.lease import LEASE_LOST_STATUS
-from ludics.fleetworker.transport import prelude, run, run_on, substitution
+from ludics.fleetworker.transport import err, prelude, run, run_on, substitution
 from ludics.fleetworker.wave import USAGE, Wave, load_wave
 from ludics.fleetworker.wavebrief import write_atomically
 from ludics.fleetworker.waveprep import READY, Rivalry, Stop, check_rivals, task_lock
+from ludics.fleetworker.workers import LAUNCH_OUTCOMES, read_launch_status
 
 # Far side of step 3's read, after the prelude. Arg: the worktree path. Prints `worktree=absent`, or
 # `worktree=<HEAD or unreadable> dirty=<count of git status --porcelain entries, or unreadable>`.
@@ -185,15 +198,68 @@ def read_manifest(path: str, task: str) -> tuple[dict[str, Any], Record, list[st
     return manifest, record, [str(step) for step in cast(list[Any], steps)]
 
 
-def launched(cfg: Config, path: str, task: str) -> int:
+def write_wave_launch_status(path: str, rc: int, wave_name: str, task: str, host: str, launch_id: str, outcome: str) -> None:
+    """THE STATUS (the header): replaced whole; a write failure is a NOTE and never changes the exit."""
+    payload = json.dumps(
+        {"exit": rc, "wave": wave_name, "task": task, "host": host, "launch_id": launch_id, "outcome": outcome},
+        ensure_ascii=False,
+    ) + "\n"
+    try:
+        write_atomically(path, payload)
+    except OSError as exc:
+        err(f"WAVE LAUNCH STATUS NOTE {task}: cannot write {shlex.quote(path)} ({exc.strerror}): {payload.rstrip()}")
+
+
+def read_wave_launch_status(path: str, rc: int, wave_name: str, task: str, host: str, launch_id: str) -> dict[str, Any] | None:
+    """Read ``wave launch --status`` fail-closed: exact schema, matching exit/wave/task/host/launch_id, known outcome."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data: Any = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    st = cast(dict[str, Any], data)
+    if (set(st) != {"exit", "wave", "task", "host", "launch_id", "outcome"}
+            or type(st["exit"]) is not int or st["exit"] != rc
+            or st["wave"] != wave_name or st["task"] != task
+            or st["host"] != host or st["launch_id"] != launch_id
+            or st["outcome"] not in LAUNCH_OUTCOMES):
+        return None
+    return st
+
+
+def launched(cfg: Config, path: str, task: str, *, status_file: str = "", launch_id: str = "") -> int:
     wave = load_wave(path, "launch")
-    with task_lock(wave.directory, task, "WAVE LAUNCH"):
-        return launched_locked(cfg, wave, path, task)
+    manifest_path = os.path.join(wave.directory, "prep", f"{task}.json")
+    if status_file and os.path.realpath(status_file) in {os.path.realpath(path), os.path.realpath(manifest_path)}:
+        die("wave launch: --status names a file of its own, never the wave file or prep manifest")
+    status_host = [""]
+
+    def finish(rc: int, outcome: str, host: str = "") -> int:
+        if status_file:
+            write_wave_launch_status(status_file, rc, wave.wave, task, host or status_host[0], launch_id, outcome)
+        return rc
+
+    try:
+        with task_lock(wave.directory, task, "WAVE LAUNCH"):
+            return launched_locked(cfg, wave, path, task, finish, status_host)
+    except Stop as stop:
+        cli.say(stop.line)
+        return finish(stop.rc, "pre-start")
 
 
-def launched_locked(cfg: Config, wave: Wave, path: str, task: str) -> int:
+def launched_locked(
+    cfg: Config,
+    wave: Wave,
+    path: str,
+    task: str,
+    finish: Callable[[int, str, str], int],
+    status_host: list[str],
+) -> int:
     manifest_path = os.path.join(wave.directory, "prep", f"{task}.json")
     manifest, record, done = read_manifest(manifest_path, task)
+    status_host[0] = record.host
     if record.transport != "cli":
         raise Stop(1, f"WAVE LAUNCH REFUSED {task}: a {record.transport} worker is spawned by its coordinator's runtime;"
                       " wave launch starts CLI workers")
@@ -230,13 +296,16 @@ def launched_locked(cfg: Config, wave: Wave, path: str, task: str) -> int:
     brief = os.path.join(wave.directory, "briefs", f"brief-{task}.md")
     with tempfile.TemporaryDirectory(prefix="ludics-launch-") as result_dir:
         result_path = os.path.join(result_dir, "result.json")
+        launch_status_path = os.path.join(result_dir, "status.json")
         started = run([*command, "launch", record.host, record.worker, "--target-repo", record.repository, "--kind", record.kind,
                        "--brief", brief, "--repo", record.host_checkout, "--branch", record.branch, "--base", record.base,
                        "--base-branch", record.main, "--standing", payload, "--result-file", result_path,
-                       "--", *cli_args(record)], capture=True)
+                       "--status", launch_status_path, "--", *cli_args(record)], capture=True)
         cli.emit(substitution(started.out))
         if started.rc != 0:
-            return started.rc
+            child = read_launch_status(launch_status_path, started.rc, record.host, record.worker)
+            outcome = str(child["outcome"]) if child is not None else "uncertain"
+            return finish(started.rc, outcome, record.host)
         try:
             with open(result_path, encoding="utf-8") as source:
                 result = json.load(source)
@@ -252,7 +321,7 @@ def launched_locked(cfg: Config, wave: Wave, path: str, task: str) -> int:
         except (OSError, ValueError):
             cli.say(f"WAVE LAUNCH UNKNOWN {task}: missing or invalid structured launch result; read status"
                     f" {record.host} {record.worker} and reconcile before retrying")
-            return 4
+            return finish(4, "uncertain", record.host)
     notes: list[str] = []
     reserved: list[Leg] = []
     lost_lease = False
@@ -291,16 +360,36 @@ def launched_locked(cfg: Config, wave: Wave, path: str, task: str) -> int:
     for note in notes:
         cli.say(f"WAVE LAUNCH NOTE {task}: {note}")
     cli.say(f"WAVE LAUNCH {task}: launched {record.host}/{record.worker} worktree {worktree} standing {standing}")
-    if lost_lease:
-        return LEASE_LOST_STATUS
-    return 3 if notes else 0
+    rc = LEASE_LOST_STATUS if lost_lease else (3 if notes else 0)
+    return finish(rc, "started", record.host)
 
 
 def cmd_launch(cfg: Config, args: list[str]) -> int:
-    if len(args) != 2 or args[0].startswith("--") or args[1].startswith("--"):
+    positional: list[str] = []
+    status_file = launch_id = ""
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in ("--status", "--launch-id"):
+            if i + 1 >= len(args) or not args[i + 1]:
+                die(f"wave launch: expected a value for {arg}; usage: {USAGE}")
+            value = args[i + 1]
+            if arg == "--status":
+                if status_file:
+                    die(f"wave launch: --status may be given at most once; usage: {USAGE}")
+                status_file = value
+            else:
+                if launch_id:
+                    die(f"wave launch: --launch-id may be given at most once; usage: {USAGE}")
+                if not LAUNCH_ID.fullmatch(value):
+                    die(f"wave launch: --launch-id must be {LAUNCH_ID.pattern}; usage: {USAGE}")
+                launch_id = value
+            i += 2
+        elif arg.startswith("--"):
+            die(f"wave launch: unknown option {arg}; usage: {USAGE}")
+        else:
+            positional.append(arg)
+            i += 1
+    if len(positional) != 2:
         die(f"wave launch: name the wave file and the task; usage: {USAGE}")
-    try:
-        return launched(cfg, args[0], args[1])
-    except Stop as stop:
-        cli.say(stop.line)
-        return stop.rc
+    return launched(cfg, positional[0], positional[1], status_file=status_file, launch_id=launch_id)

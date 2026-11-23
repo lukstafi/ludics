@@ -7403,8 +7403,109 @@ expect "wave unprep refuses a launched task" 1 "^WAVE UNPREP REFUSED t84: .* rec
 expect "wave unprep of a task with no manifest has nothing to undo" 0 "^WAVE UNPREP t99: nothing recorded to undo" -- "${FWK[@]}" wave unprep "$K/wave.json" t99
 setup_step "could not restore the project's master (setup)" git -C "$K/pusher" push -q -f origin "$pbase:refs/heads/master"
 setup_step "could not restore the project's origin/master (setup)" git -C "$proj" update-ref refs/remotes/origin/master "$pbase"
+# #1290: a launch that loses the coordinator lease at launch's initial gate proves pre-start and
+# releases its host's queue hold so the next tick can launch on that host; a loss after a worker
+# started, or with the start/reservation state uncertain, keeps the hold.
+for t in t90 t91 t92 t93 t94 t95; do printf '# Task @@T@@\n' > "$K/tasks/$t.md"; done
+mkdir -p "$K/bin-lease"
+real_gh=$(command -v gh)
+real_git=$(command -v git)
+cat > "$K/bin-lease/gh" <<LEASE_GH
+#!/usr/bin/env bash
+if [ -n "\${STEAL_ON_PR_LIST:-}" ] && [ -e "\$STEAL_ON_PR_LIST" ] && [ "\$1 \$2" = "pr list" ]; then
+  rm -f "\$STEAL_ON_PR_LIST"
+  FLEET_COORDINATOR=other-session "$FW" claim --take >/dev/null 2>&1 || true
+fi
+if [ -n "\${STEAL_AFTER_START_WORKER:-}" ] && [ -e "\$STEAL_AFTER_START_WORKER" ] && [ "\$1" = api ] &&
+   [ -f "$ISSUE_WAVE_STATE/workers/\${STEAL_WORKER_NAME}/meta" ]; then
+  rm -f "\$STEAL_AFTER_START_WORKER"
+  FLEET_COORDINATOR=other-session "$FW" claim --take >/dev/null 2>&1 || true
+fi
+exec "$real_gh" "\$@"
+LEASE_GH
+cat > "$K/bin-lease/git" <<LEASE_GIT
+#!/usr/bin/env bash
+if [ -n "\${STEAL_ON_REVALIDATION:-}" ] && [ -e "\$STEAL_ON_REVALIDATION" ]; then
+  case " \$* " in
+    *" rev-parse --abbrev-ref HEAD "*)
+      if FLEET_BOXES="testbox other" "$FW" execution list 2>/dev/null | jq -e --arg id "\$STEAL_REQ_ID" '.[] | select(.request_id == \$id and .state == "launching")' >/dev/null 2>&1; then
+        rm -f "\$STEAL_ON_REVALIDATION"
+        FLEET_COORDINATOR=other-session "$FW" claim --take >/dev/null 2>&1 || true
+        exit 1
+      fi
+      ;;
+  esac
+fi
+exec "$real_git" "\$@"
+LEASE_GIT
+chmod +x "$K/bin-lease/gh" "$K/bin-lease/git"
+export SHIM_GH_PR_LIST="$K/prs.json"; echo '[]' > "$SHIM_GH_PR_LIST"
+# 1. Pre-start lease loss at launch's initial gate releases the hold; next tick launches on testbox.
+setup_step "could not prepare t90 (setup)" "${FWK[@]}" wave prep "$K/wave.json" t90 --base master --profile sol
+jq -n '{capacity:{testbox:1}, tasks:[{task:"t90", profile:"sol", host:"testbox"}, {task:"t91", profile:"sol", host:"testbox"}]}' > "$K/queue.json"
+: > "$K/steal-prestart"
+expect "lease lost at launch's initial gate stops the driver and releases its host hold" 1 \
+  "^DRIVE STOPPED wkv: coordinator lease lost (wave launch exit 6)$" -- \
+  env PATH="$K/bin-lease:$K/bin:$PATH" STEAL_ON_PR_LIST="$K/steal-prestart" REVIEW_STDIN="$K/review-stdin" \
+  SHIM_GH_PR_VIEW="$K/pr-view.json" FLEET_BOXES="testbox other" "$FW" wave drive "$K/wave.json" --once
+[ ! -e "$K/steal-prestart" ] && [ ! -e "$cli_proj-worktrees/wk-90" ] &&
+  [ -z "$("${FWK[@]}" execution list | jq -r '.[] | select(.request_id == "wkv-t90-testbox-iterate") | .request_id')" ] &&
+  ok "...the lease was lost before any worktree, reservation or spawn" || ko "pre-start witness did not fire cleanly: $out"
+[ "$(jq -rs '[.[] | select(.task == "t90" and .turn == -1)] | last | "\(.status) \(.holds // "none") \(.launch_id // "none")"' "$K/logs/drive.jsonl")" = "lease-lost none wkv-t90-1" ] &&
+  ok "...and the ledger released the slot hold with launch_id wkv-t90-1" || ko "t90 ledger: $(grep '"t90"' "$K/logs/drive.jsonl")"
+setup_step "could not reclaim coordinator lease after pre-start loss (setup)" "$FW" claim --take
+jq -n '{capacity:{testbox:1}, tasks:[{task:"t91", profile:"sol", host:"testbox"}]}' > "$K/queue.json"
+expect "...so the next tick launches on testbox even while t90 stays pending" 0 \
+  "^DRIVE t91 launch: launch answered: WAVE LAUNCH t91: launched testbox/wk-91 " -- \
+  "${FWD[@]}" wave drive "$K/wave.json" --once
+setup_step "could not drop t91 (setup)" "${FWK[@]}" board set wkv t91 state=dropped
+settle wk-91
+fixture_done wkv-t91-testbox-iterate
+setup_step "could not drop t90 (setup)" "${FWK[@]}" board set wkv t90 state=dropped
+# 2. Post-start lease loss after the worker started keeps the host hold.
+printf -- '- @@LEG@@: @@LEG_ID@@\n' > "$K/leg.md"
+printf '## Legs\n@@LEGLINES@@\n' > "$K/legs.md"
+jq --arg co "$cli_proj" '.legs = {other:{checkout:$co, suffix:"leg", purpose:"standing leg for @@T@@"}}' "$K/wave.json" > "$K/wave-leg.json" && mv "$K/wave-leg.json" "$K/wave.json"
+setup_step "could not prepare t92 with a leg (setup)" "${FWK[@]}" wave prep "$K/wave.json" t92 --base master --profile sol --legs other
+jq -n '{capacity:{testbox:1}, tasks:[{task:"t92", profile:"sol", host:"testbox", legs:["other"]}, {task:"t93", profile:"sol", host:"testbox"}]}' > "$K/queue.json"
+: > "$K/steal-poststart"
+expect "lease lost after a worker started stops the driver without releasing its hold" 1 \
+  "^DRIVE STOPPED wkv: coordinator lease lost (wave launch exit 6)$" -- \
+  env PATH="$K/bin-lease:$K/bin:$PATH" STEAL_AFTER_START_WORKER="$K/steal-poststart" STEAL_WORKER_NAME="wk-92" \
+  REVIEW_STDIN="$K/review-stdin" SHIM_GH_PR_VIEW="$K/pr-view.json" FLEET_BOXES="testbox other" "$FW" wave drive "$K/wave.json" --once
+[ ! -e "$K/steal-poststart" ] && [ -f "$ISSUE_WAVE_STATE/workers/wk-92/meta" ] &&
+  [ "$(jq -rs '[.[] | select(.task == "t92" and .turn == -1)] | last | "\(.status) \(.holds // "none")"' "$K/logs/drive.jsonl")" = "launching testbox" ] &&
+  ok "...the worker started and the ledger keeps holding testbox" || ko "post-start state: $(grep '"t92"' "$K/logs/drive.jsonl")"
+setup_step "could not reclaim coordinator lease after post-start loss (setup)" "$FW" claim --take
+expect "...so the next tick raises attention and refuses to launch t93 on testbox" 0 \
+  "^DRIVE ATTENTION t92 launch: a launch of the task was begun and its end was not recorded" -- \
+  "${FWD[@]}" wave drive "$K/wave.json" --once
+[ -z "$("${FWK[@]}" board show wkv --json | jq -r '.tasks[] | select(.task == "t93") | .task')" ] &&
+  ok "...t93 did not launch while t92 holds testbox" || ko "t93 launched despite post-start hold: $out"
+setup_step "could not drop t92 (setup)" "${FWK[@]}" board set wkv t92 state=dropped
+settle wk-92
+fixture_done wkv-t92-testbox-iterate
+# 3. Uncertain / post-reservation lease loss (standing reservation dispatched, conclusion loses lease) keeps the hold.
+setup_step "could not prepare t94 (setup)" "${FWK[@]}" wave prep "$K/wave.json" t94 --base master --profile sol
+jq -n '{capacity:{testbox:1}, tasks:[{task:"t94", profile:"sol", host:"testbox"}, {task:"t95", profile:"sol", host:"testbox"}]}' > "$K/queue.json"
+: > "$K/steal-reserved"
+expect "lease lost after standing reservation without proven pre-start keeps the hold" 1 \
+  "^DRIVE STOPPED wkv: coordinator lease lost (wave launch exit 6)$" -- \
+  env PATH="$K/bin-lease:$K/bin:$PATH" STEAL_ON_REVALIDATION="$K/steal-reserved" STEAL_REQ_ID="wkv-t94-testbox-iterate" \
+  REVIEW_STDIN="$K/review-stdin" SHIM_GH_PR_VIEW="$K/pr-view.json" FLEET_BOXES="testbox other" "$FW" wave drive "$K/wave.json" --once
+[ ! -e "$K/steal-reserved" ] &&
+  [ "$(jq -rs '[.[] | select(.task == "t94" and .turn == -1)] | last | "\(.status) \(.holds // "none")"' "$K/logs/drive.jsonl")" = "launching testbox" ] &&
+  ok "...the standing reservation was taken and the ledger keeps holding testbox" || ko "post-reservation state: $(grep '"t94"' "$K/logs/drive.jsonl")"
+setup_step "could not reclaim coordinator lease after post-reservation loss (setup)" "$FW" claim --take
+expect "...so the next tick keeps the hold and refuses to launch t95 on testbox" 0 \
+  "^DRIVE ATTENTION t94 launch: a launch of the task was begun and its end was not recorded" -- \
+  "${FWD[@]}" wave drive "$K/wave.json" --once
+[ -z "$("${FWK[@]}" board show wkv --json | jq -r '.tasks[] | select(.task == "t95") | .task')" ] &&
+  ok "...t95 did not launch while t94 holds testbox" || ko "t95 launched despite post-reservation hold: $out"
+setup_step "could not drop t94 (setup)" "${FWK[@]}" board set wkv t94 state=dropped
+fixture_done wkv-t94-testbox-iterate
 rm -f "$K/queue.json"
-unset SHIM_CODEX_SAY
+unset SHIM_CODEX_SAY SHIM_GH_PR_LIST
 }
 
 section "usage" && {

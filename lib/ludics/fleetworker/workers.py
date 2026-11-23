@@ -7,6 +7,20 @@ worktree. Only the remote result stdout is written there; human output is on std
 The file is written only after start succeeds. It is evidence of startup, not readiness;
 on a missing/malformed result reconcile status and reservations before retrying.
 
+``--status <local path>`` (ludics#1290) writes one JSON object atomically as ``launch``'s
+last act on every non-usage exit (never on usage exit 2): ``{"exit", "host", "worker",
+"outcome"}``, where ``outcome`` is one of ``LAUNCH_OUTCOMES``:
+  - ``pre-start``: refused or failed before any standing reservation was created and before
+    any spawn was issued (including an initial or pre-preparation lease gate refusal, and a
+    standing ``execution run`` lease refusal before registry mutation);
+  - ``not-started``: a standing reservation was created and cleanly concluded ``not-launched``;
+  - ``reserved``: a standing reservation was created and could not be concluded (for example,
+    post-reservation lease loss or a failed ``not-launched`` conclusion);
+  - ``started``: worker startup succeeded (and ``--result-file``, if requested, was written);
+  - ``uncertain``: any other outcome whose reservation or startup state is not proven.
+A failure to write ``--status`` prints a ``LAUNCH STATUS NOTE`` on stderr and leaves the exit
+status unchanged. Callers read ``--status`` fail-closed and never infer pre-start from prose.
+
 A CLI worker is a detached tmux session on its box with its record under the box's
 ``$STATE/workers/<name>/`` (fleet-worker.sh's header has the model, the two kinds and their
 states). Every read and every change of a record is the far side's (``ludics.fleetworker.farside``),
@@ -35,10 +49,40 @@ from ludics.fleetworker.identity import die, gen_uuid
 from ludics.fleetworker.lease import LEASE_LOST_STATUS, anchor_gate, lost_status
 from ludics.fleetworker.preflight import knob, run_preflight, siblings_of
 from ludics.fleetworker.transport import err, fleet_name, is_local, prelude, put_file, run_on, substitution
+from ludics.fleetworker.wavebrief import write_atomically
 
 _NAME = re.compile(r"[A-Za-z0-9._-]+")
 _SHA = re.compile(r"[0-9a-f]{40}")
 _DIGITS = re.compile(r"[0-9]+")
+
+LAUNCH_OUTCOMES = ("pre-start", "not-started", "reserved", "started", "uncertain")
+
+
+def write_launch_status(path: str, rc: int, host: str, worker: str, outcome: str) -> None:
+    """Write ``launch --status`` atomically; a write failure is a NOTE and never changes the exit."""
+    payload = json.dumps({"exit": rc, "host": host, "worker": worker, "outcome": outcome}, ensure_ascii=False) + "\n"
+    try:
+        write_atomically(path, payload)
+    except OSError as exc:
+        err(f"LAUNCH STATUS NOTE {host}/{worker}: cannot write {shlex.quote(path)} ({exc.strerror}): {payload.rstrip()}")
+
+
+def read_launch_status(path: str, rc: int, host: str, worker: str) -> dict[str, Any] | None:
+    """Read ``launch --status`` fail-closed: exact schema, matching exit/host/worker, known outcome."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data: Any = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    st = cast(dict[str, Any], data)
+    if (set(st) != {"exit", "host", "worker", "outcome"}
+            or type(st["exit"]) is not int or st["exit"] != rc
+            or st["host"] != host or st["worker"] != worker
+            or st["outcome"] not in LAUNCH_OUTCOMES):
+        return None
+    return st
 
 
 def valid_name(name: str) -> bool:
@@ -113,7 +157,7 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
     box, name = _box_and_name(args, "launch")
     if not valid_name(name):
         die("launch: name must be [A-Za-z0-9._-]+ and not start with a dot")
-    kind = brief = cwd = repo = branch = target = base_branch = reason = standing = result_file = ""
+    kind = brief = cwd = repo = branch = target = base_branch = reason = standing = result_file = status_file = ""
     base = cfg.env.get("FLEET_BASE_REF") or "origin/master"
     force = replace = no_cross = False
     extra: list[str] = []
@@ -137,6 +181,13 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
                 result_file = _value(rest, i)
                 if not result_file:
                     die("launch: --result-file <local path> required")
+                i += 1
+            case "--status":
+                if status_file:
+                    die("launch: --status may be given at most once")
+                status_file = _value(rest, i)
+                if not status_file:
+                    die("launch: --status <local path> required")
                 i += 1
             case "--standing":
                 standing = _value(rest, i)
@@ -186,9 +237,18 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
         die("launch: paths and refs must not contain newlines (the record is line-oriented)")
     if not brief or not os.access(brief, os.R_OK):
         die("launch: --brief <readable file>")
+    if status_file and os.path.realpath(status_file) in {os.path.realpath(p) for p in (result_file, brief, standing) if p}:
+        die("launch: --status names a file of its own, never --result-file, --brief or --standing")
     fetch_timeout = fetch_timeout_s(cfg)
-    request = standing_request(standing, fleet_name(cfg, box), target) if standing else None
+    host = fleet_name(cfg, box)
+    request = standing_request(standing, host, target) if standing else None
     label = f"{box}/{name}"
+
+    def finish(rc: int, outcome: str) -> int:
+        if status_file:
+            write_launch_status(status_file, rc, host, name, outcome)
+        return rc
+
     if not cwd:
         if not repo or not branch:
             die("launch: --cwd <dir>, or --repo <dir> --branch <branch>")
@@ -198,7 +258,7 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
         if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]+", repo):
             done = run_on(cfg, box, prelude(cfg, box) + farside.LAUNCH_EXISTS, [repo])
             if done.unreachable:
-                return _unreachable(f"LAUNCH UNREACHABLE {box}")
+                return finish(_unreachable(f"LAUNCH UNREACHABLE {box}"), "pre-start")
             if done.rc != 0:
                 die(
                     f"launch: --repo takes the path of a checkout on {box}, not a GitHub owner/name like {repo};"
@@ -206,7 +266,7 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
                 )
     rc = anchor_gate(cfg, "LAUNCH", label, force)
     if rc != 0:
-        return rc
+        return finish(rc, "pre-start")
     # Worktree creation names its base already. An explicit CI branch is needed for non-origin refs
     # (tags, SHAs, or another remote); an existing cwd uses the repository's default branch.
     if not cwd and not base_branch:
@@ -221,11 +281,11 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
     mode = {"codex": "1", "gemini": "gemini"}.get(kind, "0")
     done = run_preflight(cfg, box, mode, "1", cross, capture=True, cli_args=extra if mode != "0" else [])
     if done.unreachable:
-        return _unreachable(f"LAUNCH UNREACHABLE {box}")
+        return finish(_unreachable(f"LAUNCH UNREACHABLE {box}"), "pre-start")
     pf = substitution(done.out)
     if done.rc != 0:
         cli.say(f"LAUNCH REFUSED {label}: {pf}")
-        return 1
+        return finish(1, "pre-start")
     # A passing preflight can still carry a note the coordinator must see before briefing a
     # cross-box leg: a sibling that did not answer. Said on stderr, so the LAUNCHED line stays the
     # one thing on stdout.
@@ -239,22 +299,22 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
             capture=True,
         )
         if done.unreachable:
-            return _unreachable(f"LAUNCH UNREACHABLE {box}")
+            return finish(_unreachable(f"LAUNCH UNREACHABLE {box}"), "pre-start")
         if done.rc != 0:
-            return done.rc
+            return finish(done.rc, "pre-start")
         pinned = substitution(done.out)
         if not _SHA.fullmatch(pinned):
             die("launch: could not resolve base commit")
     rc = base_gate(cfg, target, base_branch, force, reason, pinned)
     if rc != 0:
-        return rc
+        return finish(rc, "pre-start")
     if pinned:
         base = pinned
     # The preflight and fetch may take minutes; a halt or adoption during that window must
     # still fence this launch, so the gate is read again right before anything is written.
     rc = anchor_gate(cfg, "LAUNCH", label, force)
     if rc != 0:
-        return rc
+        return finish(rc, "pre-start")
     # A claude worker's session id, and the uuid the brief's input line carries (its replay
     # proves delivery).
     sid, bid = (gen_uuid(), gen_uuid()) if kind == "claude" else ("", "")
@@ -264,7 +324,7 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
     prefix = prelude(cfg, box) + farside.ghprobe(knob(cfg, "FLEET_GH_TIMEOUT", "30"))
     far_args = [
         name, kind, cwd, repo, branch, base, sid, short_hostname(), "1" if replace else "0", when,
-        fetch_timeout, bid, fleet_name(cfg, box), *extra,
+        fetch_timeout, bid, host, *extra,
     ]  # fmt: skip
     script = prefix + farside.LAUNCH
     request_id = ""
@@ -273,10 +333,10 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
                        if result_file else prefix + farside.LAUNCH_PREPARE)
         done = run_on(cfg, box, preparation, far_args, capture=True)
         if done.unreachable:
-            return _unreachable(f"LAUNCH UNREACHABLE {box}")
+            return finish(_unreachable(f"LAUNCH UNREACHABLE {box}"), "uncertain")
         if done.rc != 0:
             cli.emit(done.out)
-            return done.rc
+            return finish(done.rc, "pre-start")
         if result_file:
             try:
                 prepared = json.loads(done.out)["worktree"]
@@ -284,7 +344,7 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
                     raise ValueError("invalid worktree")
             except (ValueError, KeyError, TypeError):
                 cli.say("LAUNCH UNKNOWN: preparation did not return a structured checkout; reconcile before retrying")
-                return 4
+                return finish(4, "uncertain")
         else:
             # Legacy callers retain preparation's human output and path convention.
             lines = substitution(done.out).split("\n")
@@ -300,10 +360,10 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
     # Stage before admission: failure here cannot leave a dispatched reservation behind.
     done = put_file(cfg, box, brief, f"{cfg.state}/incoming/{name}-{when}.md")
     if done.unreachable:
-        return _unreachable(f"LAUNCH UNREACHABLE {box}")
+        return finish(_unreachable(f"LAUNCH UNREACHABLE {box}"), "pre-start")
     if done.rc != 0:
         cli.say(f"LAUNCH REFUSED {label}: cannot stage the brief under the worker state dir on {box} (unwritable, or a file in the way)")
-        return 1
+        return finish(1, "pre-start")
     if request is not None:
         request_id = str(request.get("request_id", ""))
         rc = tiprun.fleet_worker(cfg, ["execution", "run"], request, verb="LAUNCH")
@@ -311,9 +371,11 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
             run_on(cfg, box, prelude(cfg, box) + farside.LAUNCH_DROP_BRIEF, [f"{name}-{when}.md"])
             if rc == 4:
                 cli.say(f"LAUNCH UNKNOWN {label}: reservation {request_id} outcome unknown; reconcile it; worktree kept")
-            else:
-                cli.say(f"LAUNCH REFUSED {label}: standing reservation failed; worktree kept")
-            return rc
+                return finish(4, "uncertain")
+            cli.say(f"LAUNCH REFUSED {label}: standing reservation failed; worktree kept")
+            # execution run exits 1 (refused) or LEASE_LOST_STATUS (lease_mutation before registry_command):
+            # no reservation was created and no spawn was issued; any other nonzero exit is not proven.
+            return finish(rc, "pre-start" if rc in (1, LEASE_LOST_STATUS) else "uncertain")
         # A halt/adoption while reserving still fences startup. No start was attempted here,
         # so conclude not-launched; a failed conclusion must be reported as unknown.
         rc = anchor_gate(cfg, "LAUNCH", label, force)
@@ -321,9 +383,10 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
             run_on(cfg, box, prelude(cfg, box) + farside.LAUNCH_DROP_BRIEF, [f"{name}-{when}.md"])
             if rc == LEASE_LOST_STATUS:
                 cli.say(f"LAUNCH REFUSED {label}: reconcile reservation {request_id}; worker startup was not attempted")
-                return rc
-            return tiprun.not_started(cfg, request_id, f"{label}: post-reservation launch gate refused (exit {rc})",
-                                      "none: worker startup was not attempted", verb="LAUNCH")
+                return finish(rc, "reserved")
+            nrc = tiprun.not_started(cfg, request_id, f"{label}: post-reservation launch gate refused (exit {rc})",
+                                     "none: worker startup was not attempted", verb="LAUNCH")
+            return finish(nrc, "not-started" if nrc == 1 else "reserved")
     done = run_on(cfg, box, farside.structured_launch(script) if result_file else script, far_args, capture=bool(result_file))
     if result_file and done.rc == 0:
         try:
@@ -331,26 +394,27 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
                 output.write(done.out)
         except OSError:
             cli.say("LAUNCH UNKNOWN: cannot write structured result; inspect status before retrying")
-            return 4
+            return finish(4, "uncertain")
     if request is not None and done.rc == farside.LAUNCH_NOT_STARTED:
         # The one proven pre-start outcome (farside's closed list): the far side's refusal above
         # says why, and the reservation is concluded not-launched.
-        return tiprun.not_started(cfg, request_id, f"{label}: far-side startup refused before starting anything",
-                                  "none: worker startup refused before run.sh", verb="LAUNCH")
+        nrc = tiprun.not_started(cfg, request_id, f"{label}: far-side startup refused before starting anything",
+                                 "none: worker startup refused before run.sh", verb="LAUNCH")
+        return finish(nrc, "not-started" if nrc == 1 else "reserved")
     if request is not None and done.rc != 0:
         # Anything else may follow run.sh starting (tm_worker's trc=2), or is not proven (a signal,
         # a shell error, a dropped connection). Do not conclude it automatically:
         # preserve that evidence and name the reservation to repair.
         cli.say(f"LAUNCH UNKNOWN {label}: reservation {request_id} remains dispatched; inspect status and execution list; "
                 "conclude not-launched only if no worker started, otherwise reconcile what ran")
-        return 4
+        return finish(4, "uncertain")
     if done.unreachable:
-        return _unreachable(f"LAUNCH UNREACHABLE {box}")
+        return finish(_unreachable(f"LAUNCH UNREACHABLE {box}"), "uncertain")
     if done.rc == 0 and replace:
         # The row's relaunch, when this launch replaced a record (tally.py: THE RELAUNCH DECISION),
         # on stderr, never this launch's exit.
         tally.after_replace(cfg, box, name, when)
-    return done.rc
+    return finish(done.rc, "started" if done.rc == 0 else "uncertain")
 
 
 # --- attach, status, log -------------------------------------------------------------------------

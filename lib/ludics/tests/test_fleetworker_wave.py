@@ -643,6 +643,7 @@ class MixedWave(WaveDirCase):
         self.write("tasks/t43.md", "# Task @@T@@: @@ISSUE@@\n")
         self.launch = Done(0, "preflight ok\nLAUNCHED far/w1-42 kind=codex session= model=gpt-6.1-sol cwd=/home/u/repo-worktrees/w1-42 stream=/s\n")
         self.result: dict[str, Any] | None = dict(worker="w1-42", host="far", session="sid", worktree="/home/u/repo-worktrees/w1-42")
+        self.launch_status: dict[str, Any] | None = None
         self.far_calls: list[list[str]] = []
         self.far_state = Done(0, "worktree=absent\n")
 
@@ -651,6 +652,9 @@ class MixedWave(WaveDirCase):
         if argv[1] == "launch" and self.result is not None and "--result-file" in argv:
             with open(argv[argv.index("--result-file") + 1], "w") as output:
                 json.dump(self.result, output)
+        if argv[1] == "launch" and self.launch_status is not None and "--status" in argv:
+            with open(argv[argv.index("--status") + 1], "w") as output:
+                json.dump(self.launch_status, output)
         return self.launch if argv[1] == "launch" else Done(self.shim_rc.get(" ".join(argv[1:3]), 0), "")
 
     def far_run(self, _cfg: Any, box: str, script: str, args: list[str], **_: Any) -> Done:
@@ -674,8 +678,8 @@ class MixedWave(WaveDirCase):
     def prep(self, *args: str) -> tuple[int, str, str]:
         return captured(waveprep.cmd_prep, self.cfg, [self.path, *args])
 
-    def start(self, task: str = "t42") -> tuple[int, str, str]:
-        return captured(wavelaunch.cmd_launch, self.cfg, [self.path, task])
+    def start(self, task: str = "t42", *extra: str) -> tuple[int, str, str]:
+        return captured(wavelaunch.cmd_launch, self.cfg, [self.path, task, *extra])
 
     def manifest(self, task: str = "t42") -> dict[str, Any]:
         with open(os.path.join(self.wavedir, "prep", f"{task}.json")) as f:
@@ -891,6 +895,7 @@ class MixedWave(WaveDirCase):
                                       f"{self.wavedir}/briefs/brief-t42.md", "--repo", "/home/u/repo", "--branch", "codex/w1-42",
                                       "--base", self.base, "--base-branch", "main", "--standing", f"{self.wavedir}/reserve/t42.json",
                                       "--result-file", launch[launch.index("--result-file") + 1],
+                                      "--status", launch[launch.index("--status") + 1],
                                       "--", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=medium"])
             self.assertEqual(leg, ["execution", "run", f"{self.wavedir}/reserve/t42-gpu.json"])
             self.assertEqual(board, ["board", "set", "wv", "t42", "worktree=/home/u/repo-worktrees/w1-42", "state=launched",
@@ -1028,10 +1033,63 @@ class MixedWave(WaveDirCase):
                     assert self.result is not None
                     self.result["worker"] = f"w1-{task[1:]}"
                     self.shim_rc = {step: 6}
-                    rc, out, _ = self.start(task)
+                    status_file = os.path.join(self.wavedir, f"{task}-status.json")
+                    rc, out, _ = self.start(task, "--status", status_file, "--launch-id", f"wv-{task}-1")
                     self.assertEqual(rc, 6, out)
                     self.assertEqual(self.shim_calls[-1][:2], step.split())
                     self.assertEqual(self.manifest(task)["done"][-1], f"launched far/w1-{task[1:]}")
+                    st = wavelaunch.read_wave_launch_status(status_file, 6, "wv", task, "far", f"wv-{task}-1")
+                    self.assertIsNotNone(st)
+                    assert st is not None
+                    self.assertEqual(st["outcome"], "started")
+
+    def test_wave_launch_status_propagates_proven_pre_start_and_fails_closed_otherwise(self) -> None:
+        """ludics#1290: wave launch reports pre-start only when launch proves it, bound to --launch-id."""
+        with self.world():
+            self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far")[0], 0)
+            status_file = os.path.join(self.wavedir, "launch-status.json")
+            self.launch = Done(6, "LAUNCH REFUSED far/w1-42: coordinator lease held by other\n")
+            self.launch_status = {"exit": 6, "host": "far", "worker": "w1-42", "outcome": "pre-start"}
+            rc, _, _ = self.start("t42", "--status", status_file, "--launch-id", "wv-t42-1")
+            self.assertEqual(rc, 6)
+            st = wavelaunch.read_wave_launch_status(status_file, 6, "wv", "t42", "far", "wv-t42-1")
+            self.assertIsNotNone(st)
+            assert st is not None
+            self.assertEqual(st["outcome"], "pre-start")
+            # Post-reservation, missing, or mismatched child status never claims pre-start.
+            for child_status, want in (
+                ({"exit": 6, "host": "far", "worker": "w1-42", "outcome": "reserved"}, "reserved"),
+                ({"exit": 6, "host": "far", "worker": "w1-42", "outcome": "uncertain"}, "uncertain"),
+                (None, "uncertain"),
+                ({"exit": 1, "host": "far", "worker": "w1-42", "outcome": "pre-start"}, "uncertain"),
+                ({"exit": 6, "host": "other", "worker": "w1-42", "outcome": "pre-start"}, "uncertain"),
+                ({"exit": 6, "host": "far", "worker": "w1-99", "outcome": "pre-start"}, "uncertain"),
+            ):
+                with self.subTest(child_status=child_status):
+                    self.launch_status = child_status
+                    rc, _, _ = self.start("t42", "--status", status_file, "--launch-id", "wv-t42-2")
+                    self.assertEqual(rc, 6)
+                    st = wavelaunch.read_wave_launch_status(status_file, 6, "wv", "t42", "far", "wv-t42-2")
+                    self.assertIsNotNone(st)
+                    assert st is not None
+                    self.assertEqual(st["outcome"], want)
+            # Invalid --launch-id or colliding --status refuses with exit 2 and writes no status.
+            untouched = os.path.join(self.wavedir, "untouched.json")
+            for bad, why in (
+                (["--launch-id", "bad id", "--status", untouched], "--launch-id must be"),
+                (["--status", self.path], "names a file of its own"),
+                (["--status", os.path.join(self.wavedir, "prep", "t42.json")], "names a file of its own"),
+                (["--status", untouched, "--status", untouched], "at most once"),
+                (["--launch-id", "wv-t42-1", "--launch-id", "wv-t42-2"], "at most once"),
+            ):
+                rc, _, err = self.start("t42", *bad)
+                self.assertEqual(rc, 2, bad)
+                self.assertIn(why, err)
+            self.assertFalse(os.path.exists(untouched))
+            # Unwritable --status emits a NOTE and keeps exit 6.
+            rc, _, err = self.start("t42", "--status", self.wavedir, "--launch-id", "wv-t42-3")
+            self.assertEqual(rc, 6)
+            self.assertIn("WAVE LAUNCH STATUS NOTE t42:", err)
 
     def test_launch_row_reads_the_worker_placement_from_the_structured_result(self) -> None:
         with self.world():
@@ -1133,6 +1191,7 @@ class MixedWave(WaveDirCase):
             self.assertEqual(launch[launch.index("--repo"):], ["--repo", "/home/u/repo", "--branch", "codex/w1-42", "--base", self.base,
                                                               "--base-branch", "main", "--standing", f"{self.wavedir}/reserve/t42.json",
                                                               "--result-file", launch[launch.index("--result-file") + 1],
+                                                              "--status", launch[launch.index("--status") + 1],
                                       "--", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=medium"])
             self.assertEqual(leg, ["execution", "run", f"{self.wavedir}/reserve/t42-gpu.json"])
             self.assertIn("farside=far:/home/u/repo-worktrees/w1-42 gpu-box:/home/u/repo-worktrees/w1-42-gpu", board)
@@ -2954,6 +3013,8 @@ class DriveCase(WaveDirCase):
         # execution assign's --status file (assign.py, THE STATUS): these fields over one derived from its
         # rc and stdout; None writes no file.
         self.assign_status: dict[str, Any] | None = {}
+        # wave launch's --status file (wavelaunch.py, THE STATUS): written when set (None writes no file).
+        self.launch_status: dict[str, Any] | None = None
 
     def execute(self, argv: list[str], timeout: float | None = None) -> tuple[int, str, str]:
         tool, args = os.path.basename(argv[0]), list(argv[1:])
@@ -2989,6 +3050,12 @@ class DriveCase(WaveDirCase):
             unstick = "landed" if printed and rc in (0, 1, 5) else "failed" if printed else "nothing-assigned"
             with open(args[args.index("--status") + 1], "w", encoding="utf-8") as f:
                 json.dump({"exit": rc, "unstick": unstick, "tally": [], "lease_lost": ""} | self.assign_status, f)
+        if key == "wave launch" and "--status" in args and self.launch_status is not None:
+            task = args[3]
+            lid = args[args.index("--launch-id") + 1] if "--launch-id" in args else ""
+            base = {"exit": rc, "wave": "wv", "task": task, "host": "far", "launch_id": lid, "outcome": "started"}
+            with open(args[args.index("--status") + 1], "w", encoding="utf-8") as f:
+                json.dump(base | self.launch_status, f)
         return rc, self.out.get(key, ""), self.out.get(key + " stderr", "")
 
     def status_line(self, state: str = "", results: int | str | None = None) -> str:
@@ -3540,14 +3607,20 @@ class Drive(DriveCase):
                 self.assertNotIn("unstick", [c[0] for c in self.calls])
             self.resumes, self.rc["bg-run.sh spawn"] = 4, 1
             self.assertIn("the review could not be started (bg-run.sh spawn exit 1)", self.once()[1])
-            # A failed review can quote the former lease diagnostic in its log.
-            self.resumes, self.rc = 5, {}
+
+    def test_failed_review_quoting_lease_words_does_not_stop_the_driver(self) -> None:
+        """ludics#1259 / #1297: a failed review log quoting former lease-loss words is attention, not LeaseLost."""
+        self.message = f"REVIEW_REQUEST 7 {A}\n"
+        with self.world():
             self.out["bg-run.sh wait"] = "rc=0\n"
             self.once()
+            os.makedirs(self.runs, exist_ok=True)
             with open(os.path.join(self.runs, "log"), "w") as f:
                 f.write("WAVE REVIEW REFUSED fleet: coordinator lease held by session-other\n")
             self.out["bg-run.sh wait"] = "rc=1\n"
-            self.assertIn("the review did not end with a verdict", self.once()[1])
+            rc, out = self.once()
+            self.assertEqual(rc, 0, out)
+            self.assertIn("the review did not end with a verdict", out)
 
     def test_review_lease_loss_uses_the_completed_command_status(self) -> None:
         self.message = f"REVIEW_REQUEST 7 {A}\n"
@@ -3918,7 +3991,7 @@ class Queue(DriveCase):
             self.assertEqual(rc, 0, out)
             self.assertEqual(self.launched(), [
                 ["wave", "prep", self.path, "t50", "--base", B, "--profile", "sol", "--host", "far", "--legs", "gpu-box", "--mode", "paired"],
-                ["wave", "launch", self.path, "t50"]])
+                ["wave", "launch", self.path, "t50", "--status", self.launched()[1][5], "--launch-id", "wv-t50-1"]])
             self.assertEqual(self.calls[0], ["halted"])
             self.assertIn("DRIVE t50 launch: launch answered: WAVE LAUNCH t50: launched far/w1-50", out)
             self.assertIn(f"DRIVE ATTENTION t50 launch: launched paired at {B}: start its peer planner on that sha"
@@ -3928,7 +4001,8 @@ class Queue(DriveCase):
             self.assertNotIn("peer planner", out, "an unpaired launch names no planner")
             self.assertEqual(self.launched(), [["wave", "prep", self.path, "t51", "--base", B, "--profile", "sol", "--issue", "777",
                                                 "--tier", "D1/D2", "--reassignment-reason", "Needs the agent host"],
-                                               ["wave", "launch", self.path, "t51"]], "one launch a tick, in file order; the agent host takes no --host")
+                                               ["wave", "launch", self.path, "t51", "--status", self.launched()[1][5], "--launch-id", "wv-t51-1"]],
+                             "one launch a tick, in file order; the agent host takes no --host")
             self.rows = [row("t50"), row("t51", agent_host="mac")]
             self.state = "RUNNING"
             self.assertEqual((self.once()[1], self.launched()), ("", []), "a task with a row is not started again")
@@ -4229,11 +4303,13 @@ class Queue(DriveCase):
             os.remove(os.path.join(self.wavedir, "prep", "t51.json"))
             self.once()
             self.assertEqual(self.launched(), [["wave", "prep", self.path, "t51", "--base", B, "--profile", "sol", "--host", "far"],
-                                               ["wave", "launch", self.path, "t51"]], "...prepared again at the tip under its own id")
+                                               ["wave", "launch", self.path, "t51", "--status", self.launched()[1][5], "--launch-id", "wv-t51-1"]],
+                             "...prepared again at the tip under its own id")
             self.assertIn(["refresh", "mac"], self.calls, "the agent host's served checkout is refreshed before the prep")
             self.rows.append(row("t51", state="merged #9"))
             self.once()
-            self.assertEqual(self.launched(), [["wave", "launch", self.path, "t52"]], "a task prepared at the tip is launched, not prepared again")
+            self.assertEqual(self.launched(), [["wave", "launch", self.path, "t52", "--status", self.launched()[0][5], "--launch-id", "wv-t52-1"]],
+                             "a task prepared at the tip is launched, not prepared again")
         self.assertEqual(len(self.attention()), 2)
 
     def test_stale_prep_keeps_a_reassignment_reason_absent_from_the_queue(self) -> None:
@@ -4371,8 +4447,12 @@ class Queue(DriveCase):
                 out = self.once()[1]
                 self.assertIn(f"DRIVE ATTENTION {task} launch: {why}", out)
             self.assertEqual((self.once()[1], self.launched()), ("", []))
+
+    def test_failed_prep_quoting_lease_words_does_not_stop_the_driver(self) -> None:
+        """ludics#1259 / #1297: a failed prep stderr quoting former lease-loss words is attention, not LeaseLost."""
+        self.queue({"task": "t50", "profile": "sol", "host": "far"})
+        with self.world():
             self.rc, self.out = {"wave prep": 1}, {"wave prep stderr": "WAVE PREP REFUSED fleet: coordinator lease held by session-other\n"}
-            os.remove(os.path.join(self.wavedir, "logs", "drive.jsonl"))
             rc, out = self.once()
             self.assertEqual(rc, 0, out)
             self.assertIn("the queued task was not prepared", out)
@@ -4390,6 +4470,74 @@ class Queue(DriveCase):
                     self.assertEqual(rc, 1, out)
                     self.assertIn(f"({step} exit 6)", out)
                     self.assertEqual(self.calls[-1][:len(step.split())], step.split())
+
+    def test_pre_start_launch_lease_loss_releases_the_host_hold(self) -> None:
+        """ludics#1290: only a proven pre-start exit-6 status releases the launching slot hold."""
+        self.queue({"task": "t50", "profile": "sol", "host": "far"}, {"task": "t51", "profile": "sol", "host": "far"},
+                   capacity={"far": 1})
+        self.rows = [row("t50", state="pending")]
+        self.manifest("t50", "far", B)
+        with self.world():
+            self.rc = {"wave launch": 6}
+            self.launch_status = {"outcome": "pre-start"}
+            rc, out = self.once()
+            self.assertEqual(rc, 1, out)
+            self.assertIn("DRIVE t50 launch: launch lease-lost:", out)
+            self.assertIn("DRIVE STOPPED wv: coordinator lease lost (wave launch exit 6)", out)
+            with open(os.path.join(self.wavedir, "logs", "drive.jsonl")) as f:
+                entries = [json.loads(line) for line in f if line.strip()]
+            self.assertEqual([(e["status"], e.get("holds"), e.get("launch_id")) for e in entries],
+                             [("launching", "far", "wv-t50-1"), ("lease-lost", None, "wv-t50-1")])
+            # Next tick with t50 still pending and off the queue: t51 takes far's 1 slot because the hold is released.
+            self.queue({"task": "t51", "profile": "sol", "host": "far"}, capacity={"far": 1})
+            self.rc, self.launch_status = {}, None
+            rc, out = self.once()
+            self.assertEqual(rc, 0, out)
+            self.assertEqual([c[:4] for c in self.launched()], [["wave", "prep", self.path, "t51"], ["wave", "launch", self.path, "t51"]])
+            # And t50 itself can launch on a later tick once far has capacity, with a new launch_id.
+            self.rows = [row("t50", state="pending"), row("t51", state="merged #9")]
+            self.queue({"task": "t50", "profile": "sol", "host": "far"}, capacity={"far": 1})
+            rc, out = self.once()
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(self.launched()[0][self.launched()[0].index("--launch-id") + 1], "wv-t50-2")
+
+    def test_post_start_reserved_and_uncertain_launch_lease_loss_keep_the_host_hold(self) -> None:
+        """ludics#1290: post-start, post-reservation, missing, or mismatched exit-6 answers keep the slot hold."""
+        bad_statuses: list[tuple[str, dict[str, Any] | None]] = [
+            ("post-start", {"outcome": "started"}),
+            ("post-reservation", {"outcome": "reserved"}),
+            ("uncertain", {"outcome": "uncertain"}),
+            ("missing-status", None),
+            ("wrong-exit", {"exit": 1, "outcome": "pre-start"}),
+            ("wrong-wave", {"wave": "other", "outcome": "pre-start"}),
+            ("wrong-task", {"task": "t99", "outcome": "pre-start"}),
+            ("wrong-host", {"host": "mac", "outcome": "pre-start"}),
+            ("wrong-launch-id", {"launch_id": "wv-t50-99", "outcome": "pre-start"}),
+            ("extra-key", {"outcome": "pre-start", "extra": 1}),
+        ]
+        for name, status in bad_statuses:
+            with self.subTest(case=name):
+                ledger_file = os.path.join(self.wavedir, "logs", "drive.jsonl")
+                if os.path.exists(ledger_file):
+                    os.remove(ledger_file)
+                self.queue({"task": "t50", "profile": "sol", "host": "far"}, {"task": "t51", "profile": "sol", "host": "far"},
+                           capacity={"far": 1})
+                self.rows = [row("t50", state="pending")]
+                self.manifest("t50", "far", B)
+                with self.world():
+                    self.rc = {"wave launch": 6}
+                    # Even when stdout quotes pre-start lease refusal prose, the driver never infers pre-start.
+                    self.out["wave launch"] = "LAUNCH REFUSED far/w1-50: coordinator lease held by session-other\n"
+                    self.launch_status = status
+                    rc, out = self.once()
+                    self.assertEqual(rc, 1, out)
+                    self.assertEqual(self.ledger(), [(-1, "launch", "launching")])
+                    # Next tick: t50 becomes attention holding far's 1 slot, so t51 cannot launch.
+                    self.rc, self.launch_status = {}, None
+                    rc, out = self.once()
+                    self.assertEqual(rc, 0, out)
+                    self.assertIn("DRIVE ATTENTION t50 launch: a launch of the task was begun and its end was not recorded", out)
+                    self.assertEqual(self.launched(), [], f"{name}: t51 must not launch while t50 holds far")
 
     def test_a_launch_that_may_have_started_a_worker_holds_its_hosts_slot_until_its_row_says(self) -> None:
         self.queue({"task": "t50", "profile": "sol", "host": "far"}, {"task": "t51", "profile": "sol", "host": "far"},

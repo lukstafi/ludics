@@ -277,9 +277,16 @@ A SLOT HELD: such an end may have started a worker whose row still says ``pendin
 the row not set, exit 4 with the reservation dispatched), so it holds a slot on the task's host
 until the row leaves ``pending`` (the coordinator set it ``launched``, where the row itself then
 counts, or closed it). Only ``WAVE LAUNCH REFUSED``, the verb's own reads refusing before it
-starts anything, holds none. The launch is written to the ledger (``launching``) before it is
-made: a driver that stops inside one leaves that line, and the next driver makes it attention,
-final, holding the slot, since it cannot know how the launch ended. An anchor, a remote or GitHub that does not answer is the next tick's.
+starts anything, holds none. The launch is written to the ledger (``launching``, carrying a fresh
+``launch_id`` matching ``boardstore.LAUNCH_ID``) before it is made: a driver that stops inside one
+leaves that line, and the next driver makes it attention, final, holding the slot, since it cannot
+know how the launch ended. The driver passes ``--status <file> --launch-id <id>`` to ``wave launch``
+(wavelaunch.py, THE STATUS; ludics#1290). On a lost lease (exit 6), the driver reads only that status
+file fail-closed (matching exit, wave, task, host and ``launch_id``), never stdout/stderr prose:
+only when ``wave launch`` explicitly states ``outcome == "pre-start"`` does the driver record a
+non-final ``lease-lost`` line without ``holds`` (releasing the slot hold so the next tick can launch
+on that host) before stopping; a post-start loss (``started``), a post-reservation loss
+(``reserved``), or a missing/malformed/mismatched status keeps the ``launching`` hold as before. An anchor, a remote or GitHub that does not answer is the next tick's.
 
 WHAT IT DOES NOT DO. It scopes nothing and orders nothing (the queue is the coordinator's), reads
 no hand-back's proposals (the editorial pass is the
@@ -300,6 +307,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
@@ -307,6 +315,7 @@ from typing import Any, cast
 
 from ludics import bgrun, cli
 from ludics.fleetworker.assign import ACTION_REQUIRED_LINE
+from ludics.fleetworker.boardstore import LAUNCH_ID
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.lease import LEASE_LOST_STATUS
@@ -316,7 +325,7 @@ from ludics.fleetworker.tally import said, suffix
 from ludics.fleetworker.transport import Done, substitution
 from ludics.fleetworker.wave import USAGE, WORD, Wave, load_wave, shim, utc_now
 from ludics.fleetworker.wavebrief import write_atomically
-from ludics.fleetworker.wavelaunch import Record, read_manifest
+from ludics.fleetworker.wavelaunch import Record, read_manifest, read_wave_launch_status
 from ludics.fleetworker.waveprep import REASSIGNMENT_REASON_PROBLEM, TASK, TIERS, Stop, valid_reassignment_reason
 from ludics.fleetworker.waveunprep import FENCE
 
@@ -408,6 +417,14 @@ class Queued:
     native: bool = False  # A NATIVE ENTRY (the header): cued, never prepared or launched
     tier: str = ""  # wave prep's --tier (waveprep.py's THE TIER); "" when the entry names none
     reassignment_reason: str = ""
+
+
+def launch_attempt_id(wave_name: str, task: str, attempt: int) -> str:
+    """One launch-attempt identity in ``boardstore.LAUNCH_ID``'s recipe: ``<wave>-<task-slug>-<n>``."""
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", task).strip("-") or "task"
+    candidate = f"{wave_name}-{slug}-{attempt}"
+    assert LAUNCH_ID.fullmatch(candidate), candidate
+    return candidate
 
 
 def label(turn: int) -> str:
@@ -1198,6 +1215,22 @@ class Driver:
         self.gate_refusal = why
         return False
 
+    def next_launch_id(self, task: str) -> str:
+        """Next 1-based launch-attempt id for ``task``, past both recorded ``launching`` lines and ids."""
+        prefix = launch_attempt_id(self.wave.wave, task, 1).rsplit("-", 1)[0] + "-"
+        pattern = re.compile(re.escape(prefix) + r"([1-9][0-9]*)")
+        seen = 0
+        highest = 0
+        for e in self.ledger:
+            if e.get("task") != task or e.get("turn") != LAUNCH:
+                continue
+            if e.get("status") == "launching":
+                seen += 1
+            lid = e.get("launch_id")
+            if isinstance(lid, str) and (m := pattern.fullmatch(lid)):
+                highest = max(highest, int(m.group(1)))
+        return launch_attempt_id(self.wave.wave, task, max(seen, highest) + 1)
+
     def start(self, queued: Queued, slot: Worker, row: dict[str, str] | None, record: Record | None, last: dict[str, Any] | None) -> None:
         main = self.wave.vars["MAIN"]
         checkout = self.wave.checkout
@@ -1242,10 +1275,22 @@ class Driver:
                 return self.attention(slot, LAUNCH, "launch", f"the queued task was not prepared: {said[:300]}; launch it by hand"
                                       + (f" (the refresh of {self.wave.agent_host}'s skills checkout before it: {fresh[:300]})" if fresh else ""))
         host = record.host if record is not None else queued.host
+        launch_id = self.next_launch_id(queued.task)
         # A SLOT HELD (the header): the launch is on record before it is made, so a driver that stops
         # inside it leaves a line the next one reads.
-        self.note(slot, LAUNCH, "launch", "launching", f"wave launch on {host}", holds=host)
-        done = self.call("wave", "launch", self.wave.path, queued.task, gated=True)
+        self.note(slot, LAUNCH, "launch", "launching", f"wave launch on {host}", holds=host, launch_id=launch_id)
+        with tempfile.TemporaryDirectory(prefix="ludics-drive-launch-") as status_dir:
+            status_file = os.path.join(status_dir, "status.json")
+            try:
+                done = self.call("wave", "launch", self.wave.path, queued.task,
+                                 "--status", status_file, "--launch-id", launch_id, gated=True)
+            except LeaseLost:
+                status = read_wave_launch_status(status_file, LEASE_LOST_STATUS, self.wave.wave, queued.task, host, launch_id)
+                if status is not None and status["outcome"] == "pre-start":
+                    self.note(slot, LAUNCH, "launch", "lease-lost",
+                              f"wave launch on {host} lost the lease before starting anything; slot hold released",
+                              launch_id=launch_id)
+                raise
         said = (substitution(done.out).splitlines() or [f"wave launch exit {done.rc}"])[-1]
         if done.rc == 0:
             if queued.mode and queued.mode != "none":
@@ -1253,18 +1298,18 @@ class Driver:
                 base = record.base if record is not None else sha.strip()
                 self.tell(slot, LAUNCH, f"launched {queued.mode} at {base}: start its peer planner on that sha"
                                        " (paired-planning.md, Coordinator, step 1)")
-            return self.note(slot, LAUNCH, "launch", "answered", said)
+            return self.note(slot, LAUNCH, "launch", "answered", said, launch_id=launch_id)
         gate = PRESTART.search(said) or PRESTART.search(self.err)
         if done.rc == 1 and gate:
             said = gate.group(0).strip()
             tries = int(last.get("tries", 0)) + 1 if last is not None and last.get("status") == "retry" else 1
             if tries == 1:
                 self.tell(slot, LAUNCH, f"the queued launch was refused and is tried again every {RETRY} s: {said[:300]}")
-            return self.note(slot, LAUNCH, "launch", "retry", said[:300], tries=tries, next=now() + RETRY)
+            return self.note(slot, LAUNCH, "launch", "retry", said[:300], tries=tries, next=now() + RETRY, launch_id=launch_id)
         # A SLOT HELD (the header): only wave launch's own refusal is known to have started nothing.
         started_nothing = done.rc == 1 and said.startswith("WAVE LAUNCH REFUSED ")
         self.attention(slot, LAUNCH, "launch", f"wave launch exit {done.rc}: {said[:300]}; the task is yours from here",
-                       **({} if started_nothing else {"holds": host}))
+                       launch_id=launch_id, **({} if started_nothing else {"holds": host}))
 
     # --- the loop -----------------------------------------------------------------------------------
 
