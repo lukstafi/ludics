@@ -26,11 +26,12 @@ composition the near side does around it:
   VERDICT      the verdict of a finished worker, for ATTACH and CLOSE
   ATTACH, STATUS, LOG, LOG_LAST_RESULT, UNSTICK (after ghprobe), CLOSE, LS
 
-FRESHNESS removes a cache only from an ignored directory record in Git's NUL-delimited status.
-The directory must be named __pycache__, have no indexed paths and contain only regular *.pyc
-files. Symlinks and subdirectories disqualify it. All other status records use the existing
-divergence rule, including the exception for stray .claude/ settings. Cleanup runs under the
-checkout lock and unlinks only the entries it inspected, followed by a non-recursive rmdir.
+FRESHNESS removes a cache only from an ignored directory record in Git's NUL-delimited status,
+with the configured checkout at the worktree root. The directory must be named __pycache__,
+contain only regular *.pyc files and have no tracked paths in HEAD or the index. Symlinks
+and subdirectories disqualify it. All other status records use the existing divergence rule,
+including the exception for stray .claude/ settings. Cleanup runs under the checkout lock and
+unlinks only the entries it inspected, followed by a non-recursive rmdir.
 """
 
 import re
@@ -493,18 +494,21 @@ FRESHNESS = r"""checkout_lock() {
   trap 'release_lock "$plock"' EXIT
 }
 remove_ignored_bytecode_cache() (
-  local path="$1" indexed root parent file
+  local path="${1%/}" tracked root parent file
   local -a files
-  indexed=$(git -C "$repo" --literal-pathspecs ls-files -z -- "${path%/}" | wc -c) || return 1
-  [ "$indexed" -eq 0 ] || return 1
   CDPATH= cd -P -- "$repo" || return 1
-  root=${PWD%/}
-  parent=${path%__pycache__/}
+  root=$(git rev-parse --show-toplevel) && [ "$PWD" = "$root" ] || return 1
+  # A staged deletion can leave an ignored working copy of a file still tracked in HEAD.
+  tracked=$({ git --literal-pathspecs ls-files -z -- "$path" &&
+    git --literal-pathspecs ls-tree -rz --name-only HEAD -- "$path"; } | wc -c) || return 1
+  [ "$tracked" -eq 0 ] || return 1
+  root=${root%/}
+  parent=${path%__pycache__}
   # Bind deletion to the physical parent and reject symlinked directories along the path.
   CDPATH= cd -P -- "./$parent" && [ "${PWD%/}/" = "$root/$parent" ] || return 1
   [ ! -L __pycache__ ] || return 1
   (
-    CDPATH= cd -P -- __pycache__ && [ "$PWD" = "$root/${path%/}" ] || return 1
+    CDPATH= cd -P -- __pycache__ && [ "$PWD" = "$root/$path" ] || return 1
     unset GLOBIGNORE
     set +f
     shopt -u failglob nocasematch

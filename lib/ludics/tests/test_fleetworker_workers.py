@@ -315,16 +315,25 @@ class FreshnessCache(unittest.TestCase):
         self.addCleanup(tree.cleanup)
         self.repo = Path(tree.name)
         subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
+        self.commit()
         self.cache = self.repo / "[pkg]" / "__pycache__"
         self.cache.mkdir(parents=True)
         self.bytecode = self.cache / "cached.pyc"
         self.bytecode.touch()
 
-    def remove(self) -> subprocess.CompletedProcess[str]:
-        relative = f"{self.cache.relative_to(self.repo)}/"
+    def commit(self) -> None:
+        subprocess.run(
+            ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.com",
+             "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "Fixture"],
+            cwd=self.repo, check=True,
+        )
+
+    def remove(self, configured_repo: Path | None = None) -> subprocess.CompletedProcess[str]:
+        root = configured_repo if configured_repo is not None else self.repo
+        relative = f"{self.cache.relative_to(root)}/"
         return subprocess.run(
-            ["/bin/bash", "-uc", f'{farside.FRESHNESS}\nrepo="$1"; remove_ignored_bytecode_cache "$2"',
-             "cache-test", str(self.repo), relative],
+            ["/bin/bash", "-uo", "pipefail", "-c", f'{farside.FRESHNESS}\nrepo="$1"; remove_ignored_bytecode_cache "$2"',
+             "cache-test", str(root), relative],
             capture_output=True, text=True, check=False,
         )
 
@@ -337,6 +346,19 @@ class FreshnessCache(unittest.TestCase):
     def test_an_indexed_file_at_the_literal_path_disqualifies_the_cache(self) -> None:
         subprocess.run(["git", "--literal-pathspecs", "add", "-f", "--", str(self.bytecode)], cwd=self.repo, check=True)
         self.assertEqual(self.remove().returncode, 1)
+        self.assertTrue(self.bytecode.is_file())
+
+    def test_a_staged_deletion_preserves_the_local_copy(self) -> None:
+        subprocess.run(["git", "--literal-pathspecs", "add", "-f", "--", str(self.bytecode)], cwd=self.repo, check=True)
+        self.commit()
+        subprocess.run(["git", "--literal-pathspecs", "rm", "-q", "--cached", "--", str(self.bytecode)],
+                       cwd=self.repo, check=True)
+        self.bytecode.write_text("local copy")
+        self.assertEqual(self.remove().returncode, 1)
+        self.assertEqual(self.bytecode.read_text(), "local copy")
+
+    def test_a_subdirectory_cannot_rebase_a_status_path(self) -> None:
+        self.assertEqual(self.remove(self.cache.parent).returncode, 1)
         self.assertTrue(self.bytecode.is_file())
 
     def test_a_nested_directory_even_with_a_pyc_name_disqualifies_the_cache(self) -> None:
