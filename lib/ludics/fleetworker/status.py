@@ -30,7 +30,8 @@ THE DOCUMENT, version 1 (this header is the one statement of it). One JSON objec
                 and whitespace with ``none`` dropped; every other key above is the row's value as
                 written, or null when the row has none. The comparison fields are included only
                 when present on the row, as stored strings (including a recorded "0"):
-                ``tier``, ``source``, ``reassignment_reason``, ``launched_at``, ``interventions``, ``routine_answers``, ``relaunches``,
+                ``tier``, ``source``, ``reassignment_reason``, ``planner``, ``planner_effort``, ``launched_at``,
+                ``interventions``, ``routine_answers``, ``relaunches``,
                 ``counted_from``, ``interventions_from``, ``routine_answers_from``, ``relaunches_from``.
                 The latter four are the board's partial-count markers. The board's tally writes
                 counts as decimal strings.
@@ -71,7 +72,7 @@ from typing import Any, cast
 from ludics import cli
 from ludics.fleetworker import lease
 from ludics.fleetworker.board import store_command
-from ludics.fleetworker.boardstore import COUNTERS, STAMP
+from ludics.fleetworker.boardstore import COUNTERS, PLANNER_KEYS, STAMP
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.execution import listing, records_of
 from ludics.fleetworker.identity import die
@@ -85,7 +86,8 @@ HOURS = re.compile(r"[0-9]+(\.[0-9]+)?")
 # derived ones.
 ROW_KEYS = ("issue", "repository", "pr", "merge", "branch", "worker", "agent", "agent_host")
 TAIL_KEYS = ("worktree", "kind", "model", "transport")
-COMPARISON_KEYS = ("tier", "source", "reassignment_reason", "launched_at", *COUNTERS, "counted_from", *(f"{key}_from" for key in COUNTERS))
+COMPARISON_KEYS = ("tier", "source", "reassignment_reason", *PLANNER_KEYS, "launched_at", *COUNTERS,
+                   "counted_from", *(f"{key}_from" for key in COUNTERS))
 # Keep these exclusions aligned with the shipped registry.lease_free compact listing.
 SECRET_KEYS = frozenset({"history", "lease_token"})
 

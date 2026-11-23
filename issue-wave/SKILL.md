@@ -702,7 +702,8 @@ merged tasks (naming any arm still below ten), reads the task fields through `st
 alongside `reviews/*.json` and GitHub PRs, sets reassigned rows apart, and prints missing or
 partial data without guessing.
 `tier` comes from prep's `--tier` or the queue entry, `model` from the profile or native launch,
-and `launched_at` from the board's first launch stamp. Give every task its tier at prep.
+`planner` and `planner_effort` from the paired planner's invocation, and `launched_at` from
+the board's first launch stamp. Give every task its tier at prep.
 The board row also has `review` and `confirm` for checkpoint verdicts. Use `pr` to find the review
 rounds and `merge` to identify the merged revision. Compare
 `interventions` (turns that needed judgment, such as an escalation's answer, a nudge, or

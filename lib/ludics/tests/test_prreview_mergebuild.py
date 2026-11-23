@@ -1515,6 +1515,156 @@ class Plan(Repo):
         self.assertNotIn("plan", out)
 
 
+class Refresh(Repo):
+    """``refresh_build`` falls back from ``recheck`` to full ``command`` where only the full
+    command is fail-closed (#1314): after a plan with no verdict, and after an ``--override`` over
+    a shared failure on the same head."""
+
+    def advance_base(self, name: str) -> str:
+        git(self.work, "checkout", "-q", "--detach", self.tip)
+        with open(os.path.join(self.work, name), "w", encoding="utf-8") as handle:
+            handle.write(name + "\n")
+        git(self.work, "add", name)
+        git(self.work, "commit", "-q", "-m", f"advance {name}")
+        git(self.work, "push", "-q", self.remote, "HEAD:refs/heads/main")
+        self.tip = git(self.work, "rev-parse", "HEAD")
+        return self.tip
+
+    def refresh(
+        self, verdict: mergebuild.BuildVerdict, new_base: str, *,
+        prior_override_base: str | None = None, require_disjoint: bool = False,
+    ) -> tuple[int, str, mergebuild.BuildVerdict | None]:
+        refs = self.refs()
+        os.chdir(self.clone)
+        out = io.StringIO()
+        rc = 0
+        refreshed: mergebuild.BuildVerdict | None = None
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            try:
+                refreshed = mergebuild.refresh_build(
+                    "owner/repo", "7", verdict, new_base,
+                    checkout=None, ceiling=None, prior_override_base=prior_override_base,
+                    require_disjoint=require_disjoint,
+                )
+            except cli.Exit as exc:
+                rc = exc.rc
+                out.write(exc.message + "\n")
+        self.assert_untouched(refs)
+        return rc, out.getvalue(), refreshed
+
+    def test_refresh_runs_recheck_when_plan_gives_a_verdict_and_no_prior_override(self) -> None:
+        head, base1 = self.sides("keep", "seam() { :; }")
+        base2 = self.advance_base("sibling1.md")
+        base3 = self.advance_base("sibling2.md")
+        seen = os.path.join(self.dir, "seen")
+        full = f"echo full >> {shlex.quote(seen)} && sh ./api.sh"
+        cheap = f"echo recheck >> {shlex.quote(seen)} && sh ./api.sh"
+        for plan_line in ("ship-pr-merge-plan: nothing-owed", "ship-pr-merge-plan: admitted runtest", None):
+            with self.subTest(plan_line=plan_line):
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(seen)
+                plan = None if plan_line is None else f"printf '%s\\n' {shlex.quote(plan_line)}"
+                config = BuildConfig(full, ("*.sh",), 60, plan=plan, recheck=cheap)
+                initial = mergebuild.BuildVerdict(head, "main", base1, config)
+                rc, out, refreshed = self.refresh(initial, base2)
+                self.assertEqual(rc, 0, out)
+                assert refreshed is not None
+                self.assertEqual(refreshed.config, config, "original BuildConfig is preserved across refreshes")
+                self.assertEqual(Path(seen).read_text().splitlines(), ["recheck"])
+                self.assertNotIn("running full command instead of recheck", out)
+                # Even with prior_override_base set (e.g. CLI --override for a CI red), a clean merge build
+                # with no shared_failure still uses recheck.
+                rc2, out2, refreshed2 = self.refresh(refreshed, base3, prior_override_base=base1, require_disjoint=True)
+                self.assertEqual(rc2, 0, out2)
+                assert refreshed2 is not None
+                self.assertEqual(refreshed2.config, config)
+                self.assertEqual(Path(seen).read_text().splitlines(), ["recheck", "recheck"])
+
+    def test_refresh_falls_back_to_full_command_on_every_plan_no_verdict_shape(self) -> None:
+        head, base1 = self.sides("keep", "seam() { :; }")
+        base2 = self.advance_base("sibling1.md")
+        seen = os.path.join(self.dir, "seen")
+        full = f"echo full >> {shlex.quote(seen)} && sh ./api.sh"
+        cheap = f"echo recheck >> {shlex.quote(seen)} && sh ./api.sh"
+        for label, plan, plan_timeout in (
+            ("nonzero-exit", "exit 2", 60),
+            ("timeout", "sleep 30", 1),
+            ("no-line", "echo no verdict line", 60),
+            ("multiple-lines", "echo 'ship-pr-merge-plan: nothing-owed'; echo 'ship-pr-merge-plan: admitted x'", 60),
+            ("malformed-line", "echo 'ship-pr-merge-plan: unknown-shape'", 60),
+        ):
+            with self.subTest(label=label):
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(seen)
+                config = BuildConfig(full, ("*.sh",), 60, plan=plan, plan_timeout=plan_timeout, recheck=cheap)
+                initial = mergebuild.BuildVerdict(head, "main", base1, config)
+                rc, out, refreshed = self.refresh(initial, base2)
+                self.assertEqual(rc, 0, out)
+                assert refreshed is not None
+                self.assertEqual(Path(seen).read_text().splitlines(), ["full"])
+                self.assertIn("the plan gave NO VERDICT", out)
+                self.assertIn("the plan gave no verdict; running full command instead of recheck", out)
+                self.assertEqual(refreshed.config, config)
+
+    def test_refresh_falls_back_to_full_command_after_overridden_shared_failure(self) -> None:
+        head, base1 = self.sides("keep", "seam() { :; }")
+        base2 = self.advance_base("sibling1.md")
+        base3 = self.advance_base("sibling2.md")
+        seen = os.path.join(self.dir, "seen")
+        full = f"echo full >> {shlex.quote(seen)} && sh ./api.sh"
+        cheap = f"echo recheck >> {shlex.quote(seen)} && sh ./api.sh"
+        shared = f"a merge-build failure main at {base1[:8]} alone shares ({full}: exit 1)"
+        config = BuildConfig(full, ("*.sh",), 60, plan="echo 'ship-pr-merge-plan: nothing-owed'", recheck=cheap)
+        initial = mergebuild.BuildVerdict(head, "main", base1, config, shared_failure=shared)
+
+        # First refresh runs full command even though the plan emitted nothing-owed.
+        rc, out, refreshed = self.refresh(initial, base2, prior_override_base=base1)
+        self.assertEqual(rc, 0, out)
+        assert refreshed is not None
+        self.assertIsNone(refreshed.shared_failure)
+        self.assertEqual(Path(seen).read_text().splitlines(), ["full"])
+        self.assertIn("previous build was accepted with --override over a shared failure; running full command instead of recheck", out)
+
+        # Once the full command passes cleanly (clearing shared_failure), a second disjoint refresh uses recheck.
+        rc2, out2, refreshed2 = self.refresh(refreshed, base3, prior_override_base=base1, require_disjoint=True)
+        self.assertEqual(rc2, 0, out2)
+        assert refreshed2 is not None
+        self.assertEqual(Path(seen).read_text().splitlines(), ["full", "recheck"])
+
+        # An unadmitted plan still refuses before taking a slot even after a prior shared failure.
+        unadmitted_cfg = BuildConfig(full, ("*.sh",), 60, plan="echo 'ship-pr-merge-plan: unadmitted train'", recheck=cheap)
+        with mock.patch.object(mergebuild, "_slot_runner", side_effect=AssertionError("a slot was probed")):
+            rc3, out3, refreshed3 = self.refresh(
+                mergebuild.BuildVerdict(head, "main", base1, unadmitted_cfg, shared_failure=shared),
+                base2, prior_override_base=base1,
+            )
+        self.assertEqual(rc3, 1, out3)
+        self.assertIsNone(refreshed3)
+        self.assertIn("owes train, and no", out3)
+
+    def test_second_refresh_after_recheck_recovers_full_command_on_plan_no_verdict(self) -> None:
+        head, base1 = self.sides("keep", "seam() { :; }")
+        base2 = self.advance_base("sibling1.md")
+        base3 = self.advance_base("sibling2.md")
+        seen = os.path.join(self.dir, "seen")
+        full = f"echo full >> {shlex.quote(seen)} && sh ./api.sh"
+        cheap = f"echo recheck >> {shlex.quote(seen)} && sh ./api.sh"
+        plan = (
+            f'if [ "$SHIP_PR_MERGE_BASE_SHA" = {shlex.quote(base3)} ]; then exit 2; fi; '
+            'echo "ship-pr-merge-plan: nothing-owed"'
+        )
+        config = BuildConfig(full, ("*.sh",), 60, plan=plan, recheck=cheap)
+        initial = mergebuild.BuildVerdict(head, "main", base1, config)
+
+        rc1, out1, after1 = self.refresh(initial, base2)
+        self.assertEqual(rc1, 0, out1)
+        assert after1 is not None
+        rc2, out2, after2 = self.refresh(after1, base3, require_disjoint=True)
+        self.assertEqual(rc2, 0, out2)
+        assert after2 is not None
+        self.assertEqual(Path(seen).read_text().splitlines(), ["recheck", "full"])
+
+
 class CommentsOnly(Repo):
     """COMMENTS ONLY (#861): a build input one side changed in comments alone does not count for
     that side, where a ``comments`` glob names it."""

@@ -199,11 +199,13 @@ class Document(Anchor):
     def test_the_comparison_fields_read_as_stored(self) -> None:
         fields = {
             "tier": "D2", "source": "o/r#17", "model": "sol", "reassignment_reason": "Needs a local checkout", "launched_at": "2026-11-17T09:48:55Z",
+            "planner": "fable", "planner_effort": "high",
             "interventions": "2", "routine_answers": "5", "relaunches": "1",
             "counted_from": "2026-11-17T10:00:00Z", "interventions_from": "2026-11-17T10:01:00Z",
             "routine_answers_from": "2026-11-17T10:02:00Z", "relaunches_from": "2026-11-17T10:03:00Z",
         }
-        self.row("w", "t1", **fields)
+        self.row("w", "t1", planning="paired", plan_dir="/plans/w-1")
+        self.row("w", "t1", plan_dir="/plans/w-1", **fields)
         self.row("w", "t2", state="pending")
         doc = self.document()
         self.assertEqual(doc["version"], 1)

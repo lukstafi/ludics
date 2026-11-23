@@ -4087,7 +4087,7 @@ moving_build_fixture() { # <kind> [overlap]
   BUILD_NEXT=$(git -C "$BUILD_WORK" rev-parse HEAD)
   build_git "$BUILD_WORK" push -q "$BUILD_LIVE_REMOTE" HEAD:refs/heads/future
   export BUILD_PROBE="$TEST_ROOT/build-probe.sh" BUILD_PROBE_LOG="$TEST_ROOT/build-parents"
-  export BUILD_PROBE_REMOTE="$BUILD_LIVE_REMOTE" BUILD_PROBE_MOVES="" BUILD_PROBE_RED="" BUILD_PROBE_COMPILER=""
+  export BUILD_PROBE_REMOTE="$BUILD_LIVE_REMOTE" BUILD_PROBE_MOVES="" BUILD_PROBE_RED="" BUILD_PROBE_FULL_RED="" BUILD_PROBE_COMPILER=""
   : >"$BUILD_PROBE_LOG"
   # The ref move is evidence only if the command itself saw the candidate Git constructed.
   cat >"$BUILD_PROBE" <<'EOF'
@@ -4110,6 +4110,14 @@ END_MOVES
 if [ "$base" = "$BUILD_PROBE_RED" ]; then
   printf '%s\n' 'known baseline red' >&2
   exit 1
+fi
+if [ "$1" = full ]; then
+  case " $BUILD_PROBE_FULL_RED " in
+  *" $base "*)
+    printf '%s\n' 'known full-tier red' >&2
+    exit 1
+    ;;
+  esac
 fi
 if [ -n "$BUILD_PROBE_COMPILER" ]; then
   cc -fsyntax-only api.c
@@ -4180,23 +4188,133 @@ test_two_green_heads_cannot_land_a_union_that_fails_to_compile() {
   assert_clone_untouched
 }
 
-test_a_refresh_runs_the_recheck_and_drops_the_old_shared_failure() {
+test_a_refresh_with_a_plan_verdict_and_no_override_runs_recheck() {
+  reset
+  moving_build_fixture compatible
+  export BUILD_PROBE_NEXT="$BUILD_LATER" BUILD_PROBE_THIRD="$BUILD_LAST"
+  MERGE_BUILD_CONFIG+=$'\nrecheck sh "$BUILD_PROBE" cheap'
+  MERGE_BUILD_CONFIG+=$'\nplan if [ "$SHIP_PR_MERGE_BASE_SHA" = "$BUILD_PROBE_THIRD" ]; then printf "%s\\n" "ship-pr-merge-plan: admitted runtest"; else printf "%s\\n" "ship-pr-merge-plan: nothing-owed"; fi'
+  BUILD_PROBE_MOVES=$(printf '%s %s\n' "$BUILD_TIP" "$BUILD_LATER" "$BUILD_LATER" "$BUILD_LAST") \
+    FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "running recheck after a plan verdict" "trigger always: every merge of this repository is built"
+    return 0
+  fi
+  assert_eq "$MERGE_RC" 0 "a plan with a verdict and no override runs recheck ($MERGE_OUTPUT)"
+  assert_eq "$(cat "$BUILD_PROBE_LOG")" \
+    "$(printf 'full %s %s\ncheap %s %s\ncheap %s %s\n' "$BUILD_TIP" "$BUILD_HEAD" "$BUILD_LATER" "$BUILD_HEAD" "$BUILD_LAST" "$BUILD_HEAD")" \
+    "initial build ran full and both refreshed candidates with plan verdicts ran recheck"
+  assert_not_contains "$MERGE_STDOUT" "running full command instead of recheck" "no fallback when the plan gives a verdict"
+  assert_eq "$(merge_calls)" 1 "the refreshed candidate reaches the call"
+  assert_clone_untouched
+}
+
+test_a_refresh_after_override_falls_back_to_full_command() {
+  # Part 1: a shared failure on a full-only tier still fails on the new base; recheck would miss it.
+  reset
+  moving_build_fixture compatible
+  MERGE_BUILD_CONFIG+=$'\nrecheck sh "$BUILD_PROBE" cheap'
+  MERGE_BUILD_CONFIG+=$'\nplan printf "%s\\n" "ship-pr-merge-plan: nothing-owed"'
+  BUILD_PROBE_FULL_RED="$BUILD_TIP $BUILD_LATER" BUILD_PROBE_MOVES="$BUILD_TIP $BUILD_LATER" \
+    FLEET_LOCAL_BOX=not-a-fleet-box run_merge --override 'known format failure under repair'
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "falling back to full command after an override" "trigger always: every merge of this repository is built"
+    return 0
+  fi
+  assert_eq "$MERGE_RC" 1 "a refresh after an overridden shared failure must re-run full command and refuse ($MERGE_OUTPUT)"
+  assert_eq "$(cat "$BUILD_PROBE_LOG")" \
+    "$(printf 'full %s %s\nfull %s %s\nfull %s %s\nfull %s %s\n' "$BUILD_TIP" "$BUILD_HEAD" "$BUILD_TIP" "$BUILD_HEAD" "$BUILD_LATER" "$BUILD_HEAD" "$BUILD_LATER" "$BUILD_HEAD")" \
+    "both the initial build and the refresh ran the full command against candidate and base"
+  assert_contains "$MERGE_STDOUT" "running full command instead of recheck" "explains the fallback from recheck"
+  assert_contains "$MERGE_STDERR" "--override covers only the initial build on base $BUILD_TIP" "the old override cannot waive the refreshed failure"
+  assert_no_merge_call
+
+  # Part 2: when the new base fixed the overridden failure, full command passes and supersedes the old override.
   reset
   moving_build_fixture compatible
   MERGE_BUILD_CONFIG+=$'\nrecheck sh "$BUILD_PROBE" cheap'
   BUILD_PROBE_RED="$BUILD_TIP" BUILD_PROBE_MOVES="$BUILD_TIP $BUILD_LATER" FLEET_LOCAL_BOX=not-a-fleet-box \
     run_merge --override 'known shared failure under repair'
+  assert_eq "$MERGE_RC" 0 "when the new base fixes the red, the full refresh passes ($MERGE_OUTPUT)"
+  assert_eq "$(cat "$BUILD_PROBE_LOG")" \
+    "$(printf 'full %s %s\nfull %s %s\nfull %s %s\n' "$BUILD_TIP" "$BUILD_HEAD" "$BUILD_TIP" "$BUILD_HEAD" "$BUILD_LATER" "$BUILD_HEAD")" \
+    "the refresh re-checked with the full command rather than recheck"
+  assert_not_contains "$MERGE_OUTPUT" "OVERRIDE: merging $REPO#7 over a merge-build failure" \
+    "the passing full refresh supersedes the old override"
+  assert_eq "$(merge_calls)" 1 "the refreshed candidate reaches the call"
+}
+
+test_a_refresh_after_plan_no_verdict_falls_back_to_full_command() {
+  local mode plan_body expected_note
+  for mode in error timeout no-line; do
+    reset
+    moving_build_fixture compatible
+    export BUILD_PROBE_NEXT="$BUILD_LATER"
+    MERGE_BUILD_CONFIG+=$'\nrecheck sh "$BUILD_PROBE" cheap'
+    case "$mode" in
+    error)
+      plan_body='if [ "$SHIP_PR_MERGE_BASE_SHA" = "$BUILD_PROBE_NEXT" ]; then printf "%s\n" "plan crashed" >&2; exit 2; fi; printf "%s\n" "ship-pr-merge-plan: nothing-owed"'
+      expected_note='it exited 2'
+      ;;
+    timeout)
+      MERGE_BUILD_CONFIG+=$'\nplan-timeout 1'
+      plan_body='if [ "$SHIP_PR_MERGE_BASE_SHA" = "$BUILD_PROBE_NEXT" ]; then sleep 5; fi; printf "%s\n" "ship-pr-merge-plan: nothing-owed"'
+      expected_note='the plan-timeout'
+      ;;
+    no-line)
+      plan_body='if [ "$SHIP_PR_MERGE_BASE_SHA" = "$BUILD_PROBE_NEXT" ]; then printf "%s\n" "plan printed no verdict"; else printf "%s\n" "ship-pr-merge-plan: nothing-owed"; fi'
+      expected_note='it printed no `ship-pr-merge-plan:` line'
+      ;;
+    esac
+    MERGE_BUILD_CONFIG+=$'\nplan '"$plan_body"
+    BUILD_PROBE_MOVES="$BUILD_TIP $BUILD_LATER" FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+    if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+      assert_posix_only_refusal "falling back after plan $mode" "trigger always: every merge of this repository is built"
+      return 0
+    fi
+    assert_eq "$MERGE_RC" 0 "plan $mode on refresh falls back to full command and merges ($MERGE_OUTPUT)"
+    assert_eq "$(cat "$BUILD_PROBE_LOG")" \
+      "$(printf 'full %s %s\nfull %s %s\n' "$BUILD_TIP" "$BUILD_HEAD" "$BUILD_LATER" "$BUILD_HEAD")" \
+      "plan $mode ran full command instead of recheck"
+    assert_contains "$MERGE_STDOUT" "the plan gave NO VERDICT" "plan $mode reports no verdict"
+    assert_contains "$MERGE_STDOUT" "$expected_note" "plan $mode names why there was no verdict"
+    assert_contains "$MERGE_STDOUT" "running full command instead of recheck" "plan $mode explains the fallback"
+    assert_eq "$(merge_calls)" 1 "plan $mode merges after full command passes"
+  done
+
+  # Fail-closed control: when plan prints no verdict and full command rejects an owed run that recheck skips, merge refuses.
+  reset
+  moving_build_fixture compatible
+  export BUILD_PROBE_NEXT="$BUILD_LATER"
+  MERGE_BUILD_CONFIG+=$'\nrecheck sh "$BUILD_PROBE" cheap'
+  MERGE_BUILD_CONFIG+=$'\nplan if [ "$SHIP_PR_MERGE_BASE_SHA" = "$BUILD_PROBE_NEXT" ]; then printf "%s\\n" "plan printed no verdict"; else printf "%s\\n" "ship-pr-merge-plan: nothing-owed"; fi'
+  BUILD_PROBE_FULL_RED="$BUILD_LATER" BUILD_PROBE_MOVES="$BUILD_TIP $BUILD_LATER" \
+    FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  assert_eq "$MERGE_RC" 1 "full command refusal after plan no-verdict blocks the merge ($MERGE_OUTPUT)"
+  assert_eq "$(cat "$BUILD_PROBE_LOG")" \
+    "$(printf 'full %s %s\nfull %s %s\nfull %s %s\n' "$BUILD_TIP" "$BUILD_HEAD" "$BUILD_LATER" "$BUILD_HEAD" "$BUILD_LATER" "$BUILD_HEAD")" \
+    "the fallback ran full command against the refreshed candidate and base"
+  assert_no_merge_call
+}
+
+test_a_second_refresh_after_recheck_still_falls_back_to_full_command() {
+  reset
+  moving_build_fixture compatible
+  export BUILD_PROBE_THIRD="$BUILD_LAST"
+  MERGE_BUILD_CONFIG+=$'\nrecheck sh "$BUILD_PROBE" cheap'
+  MERGE_BUILD_CONFIG+=$'\nplan if [ "$SHIP_PR_MERGE_BASE_SHA" = "$BUILD_PROBE_THIRD" ]; then exit 2; fi; printf "%s\\n" "ship-pr-merge-plan: nothing-owed"'
+  BUILD_PROBE_MOVES=$(printf '%s %s\n' "$BUILD_TIP" "$BUILD_LATER" "$BUILD_LATER" "$BUILD_LAST") \
+    FLEET_LOCAL_BOX=not-a-fleet-box run_merge
   if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
-    assert_posix_only_refusal "replacing the old shared failure" "trigger always: every merge of this repository is built"
+    assert_posix_only_refusal "second refresh fallback" "trigger always: every merge of this repository is built"
     return 0
   fi
-  assert_eq "$MERGE_RC" 0 "the cheap command reads a green new candidate ($MERGE_OUTPUT)"
+  assert_eq "$MERGE_RC" 0 "the second refresh falls back to full command ($MERGE_OUTPUT)"
   assert_eq "$(cat "$BUILD_PROBE_LOG")" \
-    "$(printf 'full %s %s\nfull %s %s\ncheap %s %s\n' "$BUILD_TIP" "$BUILD_HEAD" "$BUILD_TIP" "$BUILD_HEAD" "$BUILD_LATER" "$BUILD_HEAD")" \
-    "the old failure was compared with its base and the new base got the cheap command"
-  assert_not_contains "$MERGE_OUTPUT" "OVERRIDE: merging $REPO#7 over a merge-build failure" \
-    "the latest verdict supersedes the old override"
-  assert_eq "$(merge_calls)" 1 "the refreshed candidate reaches the call"
+    "$(printf 'full %s %s\ncheap %s %s\nfull %s %s\n' "$BUILD_TIP" "$BUILD_HEAD" "$BUILD_LATER" "$BUILD_HEAD" "$BUILD_LAST" "$BUILD_HEAD")" \
+    "first refresh used recheck and second refresh recovered the original full command"
+  assert_eq "$(merge_calls)" 1 "only the final candidate reaches the merge call"
+  assert_clone_untouched
 }
 
 test_a_refresh_cannot_waive_a_new_shared_base_failure() {
@@ -5156,7 +5274,10 @@ tests=(
   test_a_merge_commit_that_builds_merges
   test_a_build_whose_base_moves_refreshes_with_the_full_command
   test_two_green_heads_cannot_land_a_union_that_fails_to_compile
-  test_a_refresh_runs_the_recheck_and_drops_the_old_shared_failure
+  test_a_refresh_with_a_plan_verdict_and_no_override_runs_recheck
+  test_a_refresh_after_override_falls_back_to_full_command
+  test_a_refresh_after_plan_no_verdict_falls_back_to_full_command
+  test_a_second_refresh_after_recheck_still_falls_back_to_full_command
   test_a_refresh_cannot_waive_a_new_shared_base_failure
   test_a_second_refresh_refers_to_the_original_override_base
   test_a_refresh_runs_the_new_candidates_plan_before_the_build

@@ -1378,7 +1378,9 @@ never on the base tip's CI, so roll-forward stands, and a repository without the
 before. Just before each merge attempt with a completed build, `merge` reads both live refs
 together (#1241). If the base tip moved, it builds the new candidate with the same gated head and
 re-runs the pre-call checks. It re-runs any configured plan and uses the same `timeout` for the optional
-`recheck <shell command>` or, if absent, for `command` again. If the refreshed tree and its base
+`recheck <shell command>` or, if absent, for `command` again. It falls back to the full `command`
+instead of `recheck` when a configured plan gives no verdict or when the previous build verdict on
+the head was accepted with `--override` over a shared failure (#1314). If the refreshed tree and its base
 share a red, run `merge` again with an override reason that cites the new base SHA and failure.
 `merge` can refresh twice. The second refresh requires a fast-forward delta that touches no PR
 path. It still needs a green verdict on the new union. Overlap, an unreadable comparison, a third

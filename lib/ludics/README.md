@@ -681,6 +681,15 @@ status copy fails. The fixture checks that the first pair survives on the branch
 The retirement fixture checks that a published pair has a receipt even if removing the retired
 copy fails, and that the next successful retry clears the leftover.
 
+Agent notes (wave-20261123-ludics, t1314; refs #1314). `refresh_build` keeps the original
+`BuildConfig` on every `BuildVerdict` and selects `recheck` inside `_build_in_scratch` only when
+the prior verdict has no overridden shared failure (`verdict.shared_failure is None`) and any
+configured `plan` emits a valid verdict (`nothing-owed` or `admitted`). On plan no-verdict (error,
+timeout, missing/multiple/malformed verdict line, or unstarted/wrapper failure) or after an
+`--override` over a shared merge-build failure, the refresh falls back to the full `command`.
+On launch base `27d1d7e4`, all three new fallback fixtures in `test-pr-review-merge.sh` and the
+`Refresh` unit cases in `test_prreview_mergebuild.py` fail.
+
 ## Checking
 
 Placement recovery (#1133, #1160): `wave launch` reads a caller-named JSON result file,
@@ -784,6 +793,14 @@ positional argv is a contract, its JSON payload on file descriptor 3 rather than
 and patches `os.replace` between records. The wave board's store,
 `lib/ludics/fleetworker/boardstore.py` (`fleet-worker.sh board`, ludics-lite#619), is the other
 shipped module, under the same rules: self-contained, its argv a contract (its header).
+
+Agent notes (wave-20261123-ludics, t1273). Peer planning writes the model and effort from its
+launch metadata through the coordinator's board lease at dispatch. The write checks the paired
+row's recorded plan directory under the same lock. An allocation leaves the fields absent until
+its run starts, and the run verdict determines plan availability. The initial regressions fail
+on base `bdfb4623`. The plan-directory and lease-diagnostic regressions fail before the review
+fixes at `c310658f`. See the task's `runs/negative-base-final.log` and
+`runs/review-negative-final.log` on mac-studio.
 
 Every other far side of `fleet-worker.sh` -- the bash a worker verb runs on its box, local child or
 `ssh <box> bash -s` -- is still bash, the shell's heredocs byte for byte, in
