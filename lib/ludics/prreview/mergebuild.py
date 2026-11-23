@@ -41,8 +41,15 @@ admits only the candidate it built. Before each merge attempt, one GraphQL respo
 PR's target name to its live ref and checks the head against its live ref and the gated SHA.
 If the base tip moved, rebuild with the same gated head, the
 new tip and the original default-branch config. The refresh reruns the plan and runs ``recheck``
-if named, else ``command``, using the same timeout and failure comparison. It does not repeat
-the trigger or the comments-only decision. A red on a refreshed base requires a fresh override
+if named, else ``command``, using the same timeout and failure comparison — except when only the
+full ``command`` is fail-closed (#1314): when a configured ``plan`` emits no verdict (errors,
+times out, prints no valid ``ship-pr-merge-plan:`` line, or any other NO VERDICT reason under THE
+PLAN) or when the previous build verdict on this head was accepted via ``--override`` over a
+shared failure (``verdict.shared_failure`` is set), the refresh falls back to the full ``command``
+so ``recheck`` cannot bypass owed-run admission or drop an overridden failure record without
+re-checking skipped tiers. Each ``BuildVerdict`` preserves the original ``BuildConfig`` so a
+second refresh can still fall back to the full ``command`` after a first refresh ran ``recheck``.
+It does not repeat the trigger or the comments-only decision. A red on a refreshed base requires a fresh override
 reason, so a reason supplied for the previous base cannot admit it. Repeat the pre-call checks
 after that build. One more refresh is allowed for a fast-forward delta whose paths are disjoint
 from the PR's paths at the previous merge base. Git's NUL-delimited name-only diffs count both
@@ -1007,6 +1014,16 @@ def config_touched(drift: Drift) -> bool:
 
 
 @dataclass(frozen=True)
+class PlanVerdict:
+    """THE PLAN's verdict: ``word`` as its verdict line said it, ``what`` the owed targets the line
+    named ("" when it named none), ``line`` the line itself."""
+
+    word: Literal["nothing-owed", "admitted", "unadmitted"]
+    what: str
+    line: str
+
+
+@dataclass(frozen=True)
 class BuildVerdict:
     head_sha: str
     base_ref: str
@@ -1081,15 +1098,14 @@ def refresh_build(
     checkout: str | None, ceiling: Ceiling | None, prior_override_base: str | None, require_disjoint: bool = False,
 ) -> BuildVerdict:
     """Rebuild an admitted candidate on the newly observed base (BASE FRESHNESS)."""
-    config = verdict.config
-    if config.recheck is not None:
-        config = replace(config, command=config.recheck)
     refreshed = _build(
-        repo, pr, verdict.head_sha, verdict.base_ref, base_sha, config,
+        repo, pr, verdict.head_sha, verdict.base_ref, base_sha, verdict.config,
         "refreshing the merge-build verdict after base movement",
         checkout=checkout, ceiling=ceiling, prior_override_base=prior_override_base,
         disjoint_from=verdict.base_sha if require_disjoint else None,
         previous_logs=verdict.log_paths,
+        refresh=True,
+        prior_shared_failure=verdict.shared_failure is not None,
     )
     # A refresh cannot take either of _build's no-verdict paths: comments-only skip or plan-only.
     assert refreshed is not None
@@ -1147,6 +1163,8 @@ def _build(
     candidates: Candidates | None = None, plan_only: bool = False, prior_override_base: str | None = None,
     disjoint_from: str | None = None,
     previous_logs: tuple[str, ...] = (),
+    refresh: bool = False,
+    prior_shared_failure: bool = False,
 ) -> BuildVerdict | None:
     """The build under the INTERRUPTS boundary (module docstring). ``dry``: THE DRY RUN's, in the
     clone ``checkout`` names as it is, with nothing fetched. Returns None when COMMENTS ONLY
@@ -1164,14 +1182,14 @@ def _build(
     with _INTERRUPTS.installed():
         return _build_in_scratch(
             subject, repo, gated, base_ref, tip, config, why, checkout or os.getcwd(), ceiling, override, candidates,
-            plan_only=plan_only, previous_logs=previous_logs,
+            plan_only=plan_only, previous_logs=previous_logs, refresh=refresh, prior_shared_failure=prior_shared_failure,
         )
 
 
 def _build_in_scratch(
     subject: _Subject, repo: str, gated: str, base_ref: str, tip: str, config: BuildConfig, why: str,
     where: str, ceiling: Ceiling | None, override: str, candidates: Candidates | None, *, plan_only: bool,
-    previous_logs: tuple[str, ...],
+    previous_logs: tuple[str, ...], refresh: bool = False, prior_shared_failure: bool = False,
 ) -> BuildVerdict | None:
     stop, pr = subject.stop, subject.pr
     # pr-review's own temporary family, keyed by the owning pid, so a SIGKILLed merge's leftover
@@ -1261,28 +1279,44 @@ def _build_in_scratch(
             f"merge build {subject.label}: merge commit {merge_sha}, parents {base_ref} at {tip}"
             f" and the gated head {gated}"
         )
+        plan_result: PlanVerdict | None = None
         if config.plan is not None:
             # THE PLAN: before the slot probe, so a refusal takes no slot.
-            _plan(subject, config, quiet, tree, scratch, merge_sha, tip, gated, objects, plan_only=plan_only)
+            plan_result = _plan(subject, config, quiet, tree, scratch, merge_sha, tip, gated, objects, plan_only=plan_only)
         if plan_only:
             return None
+        run_config = config
+        if refresh and config.recheck is not None:
+            fallback_reasons: list[str] = []
+            if prior_shared_failure:
+                fallback_reasons.append("previous build was accepted with --override over a shared failure")
+            if config.plan is not None and plan_result is None:
+                fallback_reasons.append("the plan gave no verdict")
+            if fallback_reasons:
+                cli.say(
+                    f"merge build {subject.label}: {' and '.join(fallback_reasons)};"
+                    " running full command instead of recheck"
+                )
+            else:
+                run_config = replace(config, command=config.recheck)
         runner = _slot_runner()
         ran = _run(
-            subject, config, runner, ceiling, tree, scratch, "build", tip, gated,
+            subject, run_config, runner, ceiling, tree, scratch, "build", tip, gated,
             f"{why}; building {gated[:8]} merged with {base_ref} at {tip[:8]} ({merge_sha[:8]})",
         )
         if ran.log_dir is not None:
             log_paths = tuple(dict.fromkeys((*log_paths, os.path.join(ran.log_dir, "build.log"))))
+        # Preserve the original BuildConfig so a later refresh can still fall back to full command.
         verdict = BuildVerdict(gated, base_ref, tip, config, log_paths=log_paths)
         if ran.status == "0":
-            cli.say(f"merge build {subject.label}: PASSED in {ran.took}s ({config.command})")
+            cli.say(f"merge build {subject.label}: PASSED in {ran.took}s ({run_config.command})")
             return verdict
         if not ran.status:
-            _no_verdict(subject.label, stop, config, ran, "the build of its merge commit")
+            _no_verdict(subject.label, stop, run_config, ran, "the build of its merge commit")
         cli.say(f"merge build {subject.label}: FAILED (exit {ran.status}) after {ran.took}s; its output:")
         for line in _shown(ran.log):
             cli.say(f"  | {line}")
-        shared = _against_base(subject, config, runner, ceiling, scratch, tree, objects, quiet, base_ref, tip, gated, ran, override)
+        shared = _against_base(subject, run_config, runner, ceiling, scratch, tree, objects, quiet, base_ref, tip, gated, ran, override)
         return replace(verdict, shared_failure=shared)
     except cli.Exit as exc:
         if previous_logs:
@@ -1632,11 +1666,12 @@ def _run(
 
 
 def _plan(subject: _Subject, config: BuildConfig, quiet: list[str], tree: str, scratch: str, merge_sha: str, tip: str,
-          gated: str, objects: str, *, plan_only: bool) -> None:
+          gated: str, objects: str, *, plan_only: bool) -> PlanVerdict | None:
     """THE PLAN (module docstring): run ``config.plan`` in a checkout of its own of the merge
-    commit, bare, before the slot probe; return to build (the build's ``tree`` untouched), or end
-    the command with the refusal when the plan's verdict is ``unadmitted``. The plan-only read
-    ends with exit 3 on the same no-verdict reasons that send a merge on to the build."""
+    commit, bare, before the slot probe; return the ``PlanVerdict`` (or None on no verdict, with
+    the build's ``tree`` untouched), or end the command with the refusal when the plan's verdict is
+    ``unadmitted``. The plan-only read ends with exit 3 on the same no-verdict reasons that send a
+    merge on to the build."""
     assert config.plan is not None
     label = subject.label
     log = os.path.join(scratch, "plan.log")
@@ -1682,7 +1717,8 @@ def _plan(subject: _Subject, config: BuildConfig, quiet: list[str], tree: str, s
             cli.say(f"  | {line}")
         if plan_only:
             fail(3, result)
-    elif verdict.word == "unadmitted":
+        return None
+    if verdict.word == "unadmitted":
         cli.say(f"merge build {label}: the plan says no record admits what it owes, after {took}s; its output:")
         for line in _shown(log):
             cli.say(f"  | {line}")
@@ -1693,7 +1729,7 @@ def _plan(subject: _Subject, config: BuildConfig, quiet: list[str], tree: str, s
             f"record admits it ({verdict.line}). Nothing was built and no slot was taken. Record (or waive)",
             f"what it owes as the repository's plan says, {after_record}",
         )
-    elif plan_only:
+    if plan_only:
         cli.say(f"merge build {label}: plan verdict ({verdict.line}). The build decides admission.")
     elif verdict.word == "admitted":
         cli.say(
@@ -1702,6 +1738,7 @@ def _plan(subject: _Subject, config: BuildConfig, quiet: list[str], tree: str, s
         )
     else:
         cli.say(f"merge build {label}: the plan owes nothing ({took}s); building, and the build decides")
+    return verdict
 
 
 def _plan_checkout(quiet: list[str], checkout: str, scratch: str, tree: str, objects: str, merge_sha: str) -> str:
@@ -1722,16 +1759,6 @@ def _plan_checkout(quiet: list[str], checkout: str, scratch: str, tree: str, obj
     if out.rc != 0:
         return f"its checkout could not be made: {_first_line(out)}"
     return ""
-
-
-@dataclass(frozen=True)
-class PlanVerdict:
-    """THE PLAN's verdict: ``word`` as its verdict line said it, ``what`` the owed targets the line
-    named ("" when it named none), ``line`` the line itself."""
-
-    word: Literal["nothing-owed", "admitted", "unadmitted"]
-    what: str
-    line: str
 
 
 def plan_verdict(log: str) -> PlanVerdict | str:

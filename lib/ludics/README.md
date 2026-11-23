@@ -677,6 +677,15 @@ status copy fails. The fixture checks that the first pair survives on the branch
 The retirement fixture checks that a published pair has a receipt even if removing the retired
 copy fails, and that the next successful retry clears the leftover.
 
+Agent notes (wave-20261123-ludics, t1314; refs #1314). `refresh_build` keeps the original
+`BuildConfig` on every `BuildVerdict` and selects `recheck` inside `_build_in_scratch` only when
+the prior verdict has no overridden shared failure (`verdict.shared_failure is None`) and any
+configured `plan` emits a valid verdict (`nothing-owed` or `admitted`). On plan no-verdict (error,
+timeout, missing/multiple/malformed verdict line, or unstarted/wrapper failure) or after an
+`--override` over a shared merge-build failure, the refresh falls back to the full `command`.
+On launch base `27d1d7e4`, all three new fallback fixtures in `test-pr-review-merge.sh` and the
+`Refresh` unit cases in `test_prreview_mergebuild.py` fail.
+
 ## Checking
 
 Placement recovery (#1133, #1160): `wave launch` reads a caller-named JSON result file,
