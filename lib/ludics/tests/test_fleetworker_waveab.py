@@ -541,6 +541,110 @@ class MissingPartialAndErrors(BaseWaveAb):
             "subagent/claude claude-opus-5-5": 1,
         })
 
+    def test_local_review_invariants_unidentified_zero_merge_host_balance_and_verdicts(self) -> None:
+        wpath = self.make_wave("w-inv")
+        # D1+D1/D2: 10 merged Sol + 10 merged unnamed-model arm -> NOT ready (unidentified arm excluded)
+        for i in range(10):
+            self.add_row("w-inv", f"ts{i}", state="merged", tier="D1", transport="cli", kind="codex", model="sol",
+                         agent_host="mac-studio", repository="o/repo", pr=str(10 + i))
+            self.add_row("w-inv", f"tu{i}", state="merged", tier="D1", transport="cli", kind="codex",
+                         agent_host="mac-studio", repository="o/repo", pr=str(30 + i))
+        # D2: 10 merged Sol + 1 active (0 merged) Neon -> NOT ready, Neon appears in below_ten with 0
+        for i in range(10):
+            self.add_row("w-inv", f"td{i}", state="merged", tier="D2", transport="cli", kind="codex", model="sol",
+                         agent_host="mac-studio", repository="o/repo", pr=str(50 + i))
+        self.add_row("w-inv", "td_neon", state="implementing", tier="D2", transport="cli", kind="gemini", model="neon",
+                     agent_host="mac-studio", repository="o/repo")
+        # D2/D3+D3: unreadable at-open excluded from findings; blocking(0 blocking, 1 sugg) confirm is cleared
+        self.add_row("w-inv", "t300", state="merged", tier="D3", transport="cli", kind="codex", model="sol",
+                     agent_host="mac-studio", repository="o/repo", pr="300")
+        self.write_review("w-inv", f"300-at-open-{'a'*12}.json", task="t300", pr="300", kind="at-open",
+                          word="unreadable", blocking=0, suggestions=0)
+        self.write_review("w-inv", f"300-confirm-{'b'*12}.json", task="t300", pr="300", kind="confirm",
+                          word="blocking", blocking=0, suggestions=1)
+
+        rc, out, _ = self.run_ab(wpath, "--no-github", "--json")
+        self.assertEqual(rc, 0)
+        doc = json.loads(out)
+        readings = {r["group"]: r for r in doc["readings"]}
+        self.assertFalse(readings["D1+D1/D2"]["ready"])
+        self.assertEqual(readings["D1+D1/D2"]["at_ten"], {"cli/codex sol": 10})
+        self.assertEqual(readings["D1+D1/D2"]["unidentified"], {"cli/codex -": 10})
+        self.assertFalse(readings["D2"]["ready"])
+        self.assertEqual(readings["D2"]["below_ten"], {"cli/gemini neon": 0})
+        cells = {(c["group"], c["arm"]["label"]): c for c in doc["cells"]}
+        d3 = cells[("D2/D3+D3", "cli/codex sol")]
+        self.assertEqual(d3["at_open"]["unreadable"], 1)
+        self.assertEqual(d3["findings"], {"blocking": 0, "suggestions": 0, "reviewed": 0, "total": 1})
+        self.assertEqual(d3["confirm"], {"rounds": 1, "not_cleared": 0, "tasks_with_confirm": 1})
+
+        # Exact host balance cutoff (4/1 vs 3/2 -> 0.8 - 0.6 == 0.20 exactly -> balanced) and missing host -> unknown
+        self.assertEqual(waveab.host_balance([{"a": 4, "b": 1}, {"a": 3, "b": 2}]), "balanced")
+        self.assertEqual(waveab.host_balance([{"a": 5, "b": 1}, {"a": 3, "b": 3}]), "IMBALANCED")
+        self.assertEqual(waveab.host_balance([{"-": 5}, {"-": 5}]), "unknown")
+        self.assertEqual(waveab.host_balance([{"mac-studio": 5}, {"-": 5}]), "unknown")
+
+    def test_graphql_subdivides_alias_failure_matches_reviewer_prefix_and_checks_merge_sha(self) -> None:
+        wpath = self.make_wave("w-sub")
+        self.add_row("w-sub", "t1", state="merged", tier="D1", transport="cli", kind="codex", model="sol",
+                     agent_host="mac-studio", repository="o/repo", pr="1", merge=f"{1:040x}",
+                     launched_at="2026-11-22T10:00:00Z")
+        self.add_row("w-sub", "t2", state="merged", tier="D1", transport="cli", kind="codex", model="sol",
+                     agent_host="mac-studio", repository="o/repo", pr="2", merge="f" * 40,
+                     launched_at="2026-11-22T10:00:00Z")
+        self.add_row("w-sub", "t3", state="merged", tier="D1", transport="cli", kind="codex", model="sol",
+                     agent_host="mac-studio", repository="o/repo", pr="3",
+                     launched_at="2026-11-22T10:00:00Z")
+        # Fake gh fails any batch containing PR #3 (simulating GraphQL partial-error exit 1), succeeds for #1 and #2.
+        sub_script = """\
+import json, os, re, sys
+argv = sys.argv[1:]
+query = ""
+for i, arg in enumerate(argv):
+    if arg == "-f" and i + 1 < len(argv) and argv[i + 1].startswith("query="):
+        query = argv[i + 1][len("query="):]
+alias_re = re.compile(r'(p\\d+):\\s*repository\\(owner:\\s*"([^"]+)",\\s*name:\\s*"([^"]+)"\\)\\s*\\{\\s*pullRequest\\(number:\\s*(\\d+)\\)')
+matches = list(alias_re.finditer(query))
+if any(int(m.group(4)) == 3 for m in matches):
+    sys.stderr.write("gh: Could not resolve to a PullRequest with the number of 3.\\n")
+    sys.exit(1)
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "prs.json"), encoding="utf-8") as f:
+    prs = json.load(f)
+data = {m.group(1): {"pullRequest": prs.get(f"{m.group(2)}/{m.group(3)}#{m.group(4)}")} for m in matches}
+sys.stdout.write(json.dumps({"data": data}))
+"""
+        prs = {
+            ("o/repo", 1): _pr_node(1, reviews=[{
+                "author": {"login": "chatgpt-codex-connector"}, "state": "COMMENTED",
+                "submittedAt": "2026-11-22T11:00:00Z", "commit": {"oid": "a" * 40}, "body": "fix this",
+                "comments": {"pageInfo": {"hasNextPage": False}, "nodes": []},
+            }]),
+            ("o/repo", 2): _pr_node(2),
+        }
+        with FakeTool("gh") as gh:
+            with open(os.path.join(gh.dir, "prs.json"), "w", encoding="utf-8") as f:
+                json.dump({f"{repo}#{num}": node for (repo, num), node in prs.items()}, f)
+            tool_path = os.path.join(gh.dir, "gh")
+            with open(tool_path, "w", encoding="utf-8") as f:
+                f.write(f"#!{sys.executable}\n{sub_script}")
+            os.chmod(tool_path, 0o755)
+            cfg = load_config(SCRIPT, {**self.env, "PATH": os.environ["PATH"], "REVIEWER": "chatgpt-codex"}, host="testbox")
+            rc, out, _ = self.run_ab(wpath, "--json", cfg=cfg)
+
+        self.assertEqual(rc, 3)
+        doc = json.loads(out)
+        by_task = {t["task"]: t for t in doc["tasks"]}
+        # t1 survived subdivision and matched REVIEWER=chatgpt-codex prefix
+        self.assertEqual(by_task["t1"]["github_status"], "read")
+        self.assertEqual(by_task["t1"]["review_rounds"], 1)
+        # t2 had board merge fff... vs GitHub 000...2 -> metrics withheld
+        self.assertEqual(by_task["t2"]["github_status"], "mismatch")
+        self.assertIsNone(by_task["t2"]["review_rounds"])
+        self.assertIsNone(by_task["t2"]["launch_to_merge_hours"])
+        self.assertTrue(any("disagrees with GitHub" in n for n in doc["notes"]))
+        # t3 isolated as the single failing PR in errors
+        self.assertEqual([e["pr"] for e in doc["errors"]], ["o/repo#3"])
+
 
 if __name__ == "__main__":
     unittest.main()

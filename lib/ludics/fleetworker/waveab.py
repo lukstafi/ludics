@@ -24,14 +24,17 @@ THE JOIN, AND WHAT IT READS (fail-closed allowlist):
                 ``comment``) count as rounds. Joined by ``task`` when it matches a board row of that
                 wave (noting any ``pr`` mismatch), else by ``pr``; unmatched records are noted.
   GitHub PRs    unless ``--no-github`` is passed, for each merged sample PR (valid ``repository``
-                and decimal ``pr``), batched GraphQL (``BATCH_SIZE`` PRs per query) through
+                and decimal ``pr``), batched GraphQL (``BATCH_SIZE`` PRs per query, subdivided on
+                alias-level failures so one bad PR does not drop valid siblings) through
                 ``ludics.prreview.core.GhSession.retry("read", ...)`` reading ``state``,
                 ``createdAt``, ``mergedAt``, ``mergeCommit.oid``, ``reviews(first: 100)`` and
                 ``comments(first: 100)``. Automated review rounds follow ``prreview/state.py``'s
-                ``review_rounds`` rules (respecting ``SHIP_PR_REVIEWER`` and ``SHIP_PR_ROUND_GAP``,
-                dropping non-substantive empty-bodied envelopes and connector fixed replies, and
-                falling back to ``prreview.state.review_rounds`` for any PR whose GraphQL connection
-                reports ``hasNextPage``).
+                ``review_rounds`` rules (respecting ``REVIEWER`` prefix matching and
+                ``SHIP_PR_ROUND_GAP``, dropping non-substantive empty-bodied envelopes and
+                connector fixed replies, and falling back to ``prreview.state.review_rounds`` for
+                any PR whose GraphQL connection reports ``hasNextPage``). When both board ``merge``
+                and GitHub ``mergeCommit.oid`` are present and disagree, PR metrics are withheld
+                with a note.
 
 WHAT IT DELIBERATELY DOES NOT READ:
   ``queue.json``, ``prep/*.json``, ``tasks/*.md``, ``handbacks/*.md``, ``sequencing_plan.md``, board
@@ -41,19 +44,24 @@ WHAT IT DELIBERATELY DOES NOT READ:
 
 GROUPING, THRESHOLD, AND HONESTY RULES:
   - Arms are keyed on the row's stored ``(transport, kind, model)`` tuple (missing parts ``"-"``);
-    no model or profile names are hard-coded and no spelling is normalised.
+    no model or profile names are hard-coded and no spelling is normalised. An incomplete arm (any
+    missing component) stays visible in the table but cannot establish readiness.
   - ``GROUPS`` partitions ``waveprep.TIERS`` into ``D1+D1/D2``, ``D2``, and ``D2/D3+D3``. Rows with
     no tier or a value outside ``TIERS`` land in ``untiered`` and never count toward a threshold.
   - Rows carrying a nonblank ``reassignment_reason`` (#1275) are set apart from the comparison
     sample and threshold counts and listed in their own section.
   - The comparison sample is non-reassigned rows with ``phase == "merged"`` (``takeover.phase_of``).
-    A tier group reaches its reading when at least two arms each have ``>= READY`` (10) merged rows.
-  - Host balance within a tier group compares merged arms: flagged ``IMBALANCED`` when two arms
-    differ in their host sets or by more than ``IMBALANCE_SHARE`` (20 percentage points) on any host.
+    A tier group reaches its reading when at least two complete arms each have ``>= READY`` (10)
+    merged rows.
+  - Host balance within a tier group compares merged arms using exact fractions: ``unknown`` when
+    any compared arm lacks ``agent_host`` on one or more rows, else ``IMBALANCED`` when two arms
+    differ in their host sets or by strictly more than ``IMBALANCE_SHARE`` (1/5, 20 percentage
+    points) on any host, else ``balanced``.
   - Missing values are never guessed or zero-filled. Tally counters on rows with ``counted_from`` or
     ``<counter>_from`` are partial lower bounds: excluded from whole-count aggregates and counted
-    explicitly alongside missing and invalid counts. Unparseable timestamps and negative durations
-    are noted and excluded.
+    explicitly alongside missing and invalid counts. Unreadable checkpoint verdicts are excluded
+    from finding-count totals and coverage. Unparseable timestamps and negative durations are noted
+    and excluded.
 
 Exit: 0 printed, every source read; 1 a named wave has no board or its board was refused (nothing on
 stdout); 2 usage; 3 printed with unread/malformed review or GitHub sources named in ``errors``;
@@ -67,6 +75,7 @@ import re
 import statistics
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from fractions import Fraction
 from typing import Any, assert_never, cast
 
 from ludics import cli
@@ -87,7 +96,7 @@ from ludics.prreview.state import INIT_FAILURE_ENV_RE, INIT_FAILURE_GIT_RE, revi
 
 VERSION = 1
 READY = 10
-IMBALANCE_SHARE = 0.20
+IMBALANCE_SHARE = Fraction(1, 5)
 BATCH_SIZE = 20
 
 GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -117,11 +126,16 @@ class Arm:
     model: str
 
     @property
+    def complete(self) -> bool:
+        return "-" not in (self.transport, self.kind, self.model)
+
+    @property
     def label(self) -> str:
         return f"{self.transport}/{self.kind} {self.model}"
 
-    def as_dict(self) -> dict[str, str]:
-        return {"transport": self.transport, "kind": self.kind, "model": self.model, "label": self.label}
+    def as_dict(self) -> dict[str, Any]:
+        return {"transport": self.transport, "kind": self.kind, "model": self.model,
+                "label": self.label, "complete": self.complete}
 
 
 @dataclass(frozen=True)
@@ -135,6 +149,7 @@ class ReviewRecord:
     word: str
     blocking: int
     suggestions: int
+    blocks: bool
 
 
 @dataclass(frozen=True)
@@ -369,7 +384,7 @@ def read_reviews(wave: Wave, errors: list[dict[str, str]]) -> list[ReviewRecord]
         task_raw: Any = raw.get("task")
         task = task_raw if isinstance(task_raw, str) else ""
         records.append(ReviewRecord(wave.wave, name, task, file_pr, file_kind, at, verdict.word,
-                                    verdict.blocking, verdict.suggestions))
+                                    verdict.blocking, verdict.suggestions, verdict.blocks))
     return records
 
 
@@ -383,16 +398,19 @@ def _same_head(a: str | None, b: str | None) -> bool:
     return a.startswith(b) or b.startswith(a)
 
 
-def _login_matches(author: Any, reviewer_norm: str) -> bool:
+def _login_matches(author: Any, reviewer: str) -> bool:
     if not isinstance(author, dict):
         return False
     login = cast(dict[str, Any], author).get("login")
     if not isinstance(login, str):
         return False
-    return login.removesuffix("[bot]").lower() == reviewer_norm
+    if login.startswith(reviewer):
+        return True
+    # GraphQL omits the REST "[bot]" suffix on GitHub App logins.
+    return reviewer.endswith("[bot]") and login == reviewer.removesuffix("[bot]")
 
 
-def _graphql_review_rounds(pr_obj: dict[str, Any], reviewer_norm: str, round_gap: int) -> int | None:
+def _graphql_review_rounds(pr_obj: dict[str, Any], reviewer: str, round_gap: int) -> int | None:
     """Compute automated review rounds from a GraphQL pullRequest node, matching
     ``prreview.state.review_rounds``. Returns None when any connection needs pagination
     (caller falls back to ``prreview.state.review_rounds``) or when timestamps do not parse."""
@@ -419,7 +437,7 @@ def _graphql_review_rounds(pr_obj: dict[str, Any], reviewer_norm: str, round_gap
             if not isinstance(item, dict):
                 continue
             r = cast(dict[str, Any], item)
-            if not _login_matches(r.get("author"), reviewer_norm):
+            if not _login_matches(r.get("author"), reviewer):
                 continue
             submitted = r.get("submittedAt")
             state = r.get("state")
@@ -460,7 +478,7 @@ def _graphql_review_rounds(pr_obj: dict[str, Any], reviewer_norm: str, round_gap
             if not isinstance(item, dict):
                 continue
             c = cast(dict[str, Any], item)
-            if not _login_matches(c.get("author"), reviewer_norm):
+            if not _login_matches(c.get("author"), reviewer):
                 continue
             created = c.get("createdAt")
             if not isinstance(created, str):
@@ -505,6 +523,72 @@ def _batch_query(chunk: list[tuple[str, int]]) -> str:
     return "query { " + " ".join(parts) + " }"
 
 
+def _fetch_chunk(
+    session: prcore.GhSession,
+    pr_cfg: prcore.Config,
+    chunk: list[tuple[str, int]],
+    out: dict[tuple[str, int], GithubFacts],
+    errors: list[dict[str, str]],
+) -> None:
+    query = _batch_query(chunk)
+    result = session.retry("read", ["api", "graphql", "-f", f"query={query}"])
+    match result:
+        case prcore.GhOk(stdout=stdout):
+            try:
+                decoded: Any = json.loads(stdout)
+            except ValueError as exc:
+                for repo, num in chunk:
+                    errors.append({"source": "github", "pr": f"{repo}#{num}", "why": f"GraphQL response was not JSON ({exc})"})
+                return
+            if not isinstance(decoded, dict):
+                for repo, num in chunk:
+                    errors.append({"source": "github", "pr": f"{repo}#{num}", "why": "GraphQL response was not a JSON object"})
+                return
+            top = cast(dict[str, Any], decoded)
+            data_raw: Any = top.get("data")
+            data = cast(dict[str, Any], data_raw) if isinstance(data_raw, dict) else {}
+            for idx, (repo, num) in enumerate(chunk):
+                repo_node: Any = data.get(f"p{idx}")
+                pr_raw: Any = cast(dict[str, Any], repo_node).get("pullRequest") if isinstance(repo_node, dict) else None
+                if not isinstance(pr_raw, dict):
+                    errors.append({"source": "github", "pr": f"{repo}#{num}", "why": "pullRequest absent in GraphQL response"})
+                    continue
+                pr_obj = cast(dict[str, Any], pr_raw)
+                mc: Any = pr_obj.get("mergeCommit")
+                merge_oid = text_or_none(cast(dict[str, Any], mc).get("oid")) if isinstance(mc, dict) else None
+                rounds = _graphql_review_rounds(pr_obj, pr_cfg.reviewer, pr_cfg.round_gap)
+                if rounds is None:
+                    fallback = pr_review_rounds(outside_watch(session, repo), str(num), pr_cfg.round_gap)
+                    if fallback.count is None:
+                        errors.append({"source": "github", "pr": f"{repo}#{num}",
+                                       "why": f"review rounds unread ({fallback.detail})"})
+                    rounds = fallback.count
+                out[(repo, num)] = GithubFacts(
+                    state=text_or_none(pr_obj.get("state")),
+                    created_at=text_or_none(pr_obj.get("createdAt")),
+                    merged_at=text_or_none(pr_obj.get("mergedAt")),
+                    merge_commit=merge_oid,
+                    review_rounds=rounds,
+                )
+        case prcore.GhFailed():
+            # One bad alias (stale PR or inaccessible repo) makes `gh api graphql` exit nonzero
+            # even when sibling aliases succeeded: subdivide so valid PRs still read.
+            if len(chunk) > 1:
+                mid = len(chunk) // 2
+                _fetch_chunk(session, pr_cfg, chunk[:mid], out, errors)
+                _fetch_chunk(session, pr_cfg, chunk[mid:], out, errors)
+                return
+            why = session.err_line() or "GitHub GraphQL call failed"
+            for repo, num in chunk:
+                errors.append({"source": "github", "pr": f"{repo}#{num}", "why": why})
+        case prcore.GhUnanswered():
+            why = session.err_line() or "GitHub GraphQL call did not answer"
+            for repo, num in chunk:
+                errors.append({"source": "github", "pr": f"{repo}#{num}", "why": why})
+        case _:
+            assert_never(result)
+
+
 def read_github_prs(
     cfg: Config, targets: list[tuple[str, int]], errors: list[dict[str, str]]
 ) -> dict[tuple[str, int], GithubFacts]:
@@ -512,57 +596,10 @@ def read_github_prs(
         return {}
     pr_cfg = prcore.load_config(cfg.env)
     session = prcore.GhSession(pr_cfg)
-    reviewer_norm = pr_cfg.reviewer.removesuffix("[bot]").lower()
     out: dict[tuple[str, int], GithubFacts] = {}
 
     for start in range(0, len(targets), BATCH_SIZE):
-        chunk = targets[start : start + BATCH_SIZE]
-        query = _batch_query(chunk)
-        result = session.retry("read", ["api", "graphql", "-f", f"query={query}"])
-        match result:
-            case prcore.GhOk(stdout=stdout):
-                try:
-                    decoded: Any = json.loads(stdout)
-                except ValueError as exc:
-                    for repo, num in chunk:
-                        errors.append({"source": "github", "pr": f"{repo}#{num}", "why": f"GraphQL response was not JSON ({exc})"})
-                    continue
-                if not isinstance(decoded, dict):
-                    for repo, num in chunk:
-                        errors.append({"source": "github", "pr": f"{repo}#{num}", "why": "GraphQL response was not a JSON object"})
-                    continue
-                top = cast(dict[str, Any], decoded)
-                data_raw: Any = top.get("data")
-                data = cast(dict[str, Any], data_raw) if isinstance(data_raw, dict) else {}
-                for idx, (repo, num) in enumerate(chunk):
-                    repo_node: Any = data.get(f"p{idx}")
-                    pr_raw: Any = cast(dict[str, Any], repo_node).get("pullRequest") if isinstance(repo_node, dict) else None
-                    if not isinstance(pr_raw, dict):
-                        errors.append({"source": "github", "pr": f"{repo}#{num}", "why": "pullRequest absent in GraphQL response"})
-                        continue
-                    pr_obj = cast(dict[str, Any], pr_raw)
-                    mc: Any = pr_obj.get("mergeCommit")
-                    merge_oid = text_or_none(cast(dict[str, Any], mc).get("oid")) if isinstance(mc, dict) else None
-                    rounds = _graphql_review_rounds(pr_obj, reviewer_norm, pr_cfg.round_gap)
-                    if rounds is None:
-                        fallback = pr_review_rounds(outside_watch(session, repo), str(num), pr_cfg.round_gap)
-                        if fallback.count is None:
-                            errors.append({"source": "github", "pr": f"{repo}#{num}",
-                                           "why": f"review rounds unread ({fallback.detail})"})
-                        rounds = fallback.count
-                    out[(repo, num)] = GithubFacts(
-                        state=text_or_none(pr_obj.get("state")),
-                        created_at=text_or_none(pr_obj.get("createdAt")),
-                        merged_at=text_or_none(pr_obj.get("mergedAt")),
-                        merge_commit=merge_oid,
-                        review_rounds=rounds,
-                    )
-            case prcore.GhFailed() | prcore.GhUnanswered():
-                why = session.err_line() or "GitHub GraphQL call failed"
-                for repo, num in chunk:
-                    errors.append({"source": "github", "pr": f"{repo}#{num}", "why": why})
-            case _:
-                assert_never(result)
+        _fetch_chunk(session, pr_cfg, targets[start : start + BATCH_SIZE], out, errors)
     return out
 
 
@@ -642,6 +679,15 @@ def join_wave(
                 facts = github.get((repo, int(pr)))
                 if facts is None:
                     gh_status = "unread"
+                elif merge is not None and facts.merge_commit is not None and not (
+                    len(merge) >= 7 and _same_head(merge.lower(), facts.merge_commit.lower())
+                ):
+                    gh_status = "mismatch"
+                    gh_state = facts.state
+                    notes.append(
+                        f"{wave.wave}/{tname}: board merge {merge} disagrees with GitHub {repo}#{pr}"
+                        f" mergeCommit {facts.merge_commit}; PR metrics withheld"
+                    )
                 else:
                     gh_status = "read"
                     gh_state = facts.state
@@ -691,7 +737,7 @@ def join_wave(
             at_open_suggestions=first_ao.suggestions if first_ao else None,
             at_open_rounds=len(at_opens),
             confirm_rounds=len(confirms),
-            confirm_not_cleared=sum(1 for c in confirms if c.word in ("blocking", "unreadable")),
+            confirm_not_cleared=sum(1 for c in confirms if c.blocks),
             github_status=gh_status,
             github_state=gh_state,
             review_rounds=rev_rounds,
@@ -711,11 +757,13 @@ def host_balance(arm_hosts: list[dict[str, int]]) -> str:
     nonempty = [h for h in arm_hosts if sum(h.values()) > 0]
     if len(nonempty) < 2:
         return "single-arm"
+    if any("-" in h for h in nonempty):
+        return "unknown"
     host_sets = [set(h.keys()) for h in nonempty]
     if any(s != host_sets[0] for s in host_sets[1:]):
         return "IMBALANCED"
     all_hosts = sorted(host_sets[0])
-    shares = [{host: h[host] / sum(h.values()) for host in all_hosts} for h in nonempty]
+    shares = [{host: Fraction(h[host], sum(h.values())) for host in all_hosts} for h in nonempty]
     for host in all_hosts:
         vals = [s[host] for s in shares]
         if max(vals) - min(vals) > IMBALANCE_SHARE:
@@ -835,7 +883,7 @@ def build_document(
                 "unreadable": sum(1 for t in sample if t.at_open_word == "unreadable"),
                 "missing": sum(1 for t in sample if t.at_open_word is None),
             }
-            ao_reviewed = [t for t in sample if t.at_open_word is not None]
+            ao_reviewed = [t for t in sample if t.at_open_word in ("clean", "suggestions", "blocking")]
             findings_blocking = sum(t.at_open_blocking or 0 for t in ao_reviewed)
             findings_suggestions = sum(t.at_open_suggestions or 0 for t in ao_reviewed)
 
@@ -873,14 +921,17 @@ def build_document(
             })
 
         if gname != UNTIERED:
-            at_ten = {k: v for k, v in group_merged_by_arm.items() if v >= READY}
-            below_ten = {k: v for k, v in group_merged_by_arm.items() if 0 < v < READY}
+            complete_by_label = {arm.label: arm.complete for arm in arms_in_group}
+            at_ten = {k: v for k, v in group_merged_by_arm.items() if complete_by_label[k] and v >= READY}
+            below_ten = {k: v for k, v in group_merged_by_arm.items() if complete_by_label[k] and v < READY}
+            unidentified = {k: v for k, v in group_merged_by_arm.items() if not complete_by_label[k]}
             readings.append({
                 "group": gname,
                 "ready": len(at_ten) >= 2,
                 "threshold": READY,
                 "at_ten": at_ten,
                 "below_ten": below_ten,
+                "unidentified": unidentified,
             })
 
     untiered_rows = [t for t in non_reassigned_all if t.group == UNTIERED]
@@ -998,11 +1049,14 @@ def render_markdown(doc: dict[str, Any]) -> list[str]:
     for r in cast(list[dict[str, Any]], doc["readings"]):
         at_ten = cast(dict[str, int], r["at_ten"])
         below_ten = cast(dict[str, int], r["below_ten"])
+        unidentified = cast(dict[str, int], r.get("unidentified") or {})
         parts: list[str] = []
         if at_ten:
             parts.append("at ten: " + ", ".join(f"{k} {v}" for k, v in at_ten.items()))
         if below_ten:
             parts.append("below ten: " + ", ".join(f"{k} {v} of {r['threshold']}" for k, v in below_ten.items()))
+        if unidentified:
+            parts.append("unidentified (excluded): " + ", ".join(f"{k} {v}" for k, v in unidentified.items()))
         detail = "; ".join(parts) if parts else "no merged tasks"
         status_word = "at ten" if r["ready"] else "below ten (a description)"
         lines.append(f"READING {r['group']}: {status_word} — {detail}")
