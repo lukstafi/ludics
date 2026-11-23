@@ -146,8 +146,8 @@ build starts -- the gate's own deadline, a recovery's extension included -- but 
 bounds that wait only: the free-slot wait (30 min) and the build's timeout stay their own, so it is
 no deadline for the whole command. The slot names each measurement it waits for (its request id,
 coordinator, worker and issue) the moment it finds it: the wrapper's two streams are this
-process's stderr, not captured, so those lines reach the caller as said, not after the wait. Nothing
-is parsed from them; the verdict is the status file's, as below.
+process's stderr, not captured, so those lines reach the caller as said, not after the wait.
+The build's deadline and status file decide the verdict, as below.
 
 THE CONFIG NOTE (ludics-lite#730). The config is the DEFAULT BRANCH's copy, so a PR that adds or
 changes it is never judged by its own copy (#738 added the file and printed no merge-build line at
@@ -207,6 +207,13 @@ could not be read. So a plan never admits a merge -- the build keeps owning admi
 the plan said -- and refuses one only by its own ``unadmitted``. The plan runs only where a build
 runs: no build, no plan; THE BASE ALONE does not run it again. A config without a ``plan`` line
 runs none and prints nothing of one.
+
+THE BUILD DEADLINE (#1291). A deadline from the supervisor or the slot takes precedence over
+any status written by the build. The outer exit 124 means a deadline. An in-time command's exit
+124 is recorded in its status file and the inner wrapper returns 1 to reserve that outer code.
+A started build past the deadline has no verdict (exit 4 for the merge build) and its receipt
+says ``overran``. An attempt whose command never started records ``unstarted``. The retained status
+file preserves the command's raw status for diagnosis.
 
 HOSTS AND CLONES -- the boundary. The merge build runs on POSIX hosts (the fleet's macOS and Linux
 boxes); under Windows a merge that needs one is refused (exit 2), so nothing below has a Windows
@@ -351,10 +358,13 @@ _LINE = re.compile(r"([a-z]+(?:-[a-z]+)*)(?:[ \t]+(.*))?")
 _SHA = re.compile(r"[0-9a-f]{40}([0-9a-f]{24})?")
 # Run by `sh -c`: a marker that the command is starting (its mtime is where the build's own time
 # starts, a slot's and a window's waits left behind), the command, its output to the log, and its
-# status to a file -- the status file is what tells the command's own failure from the slot
-# wrapper's refusal or deadline. A word after the status path names the PR in the slot's holder
-# record (`build_of`); the script does not read it.
-_WRAPPER = ': >"$3.started"; printf "merge build: %s command started\\n" "${3##*/}" >&2; sh -c "$1" >"$2" 2>&1 </dev/null; rc=$?; printf "%s\\n" "$rc" >"$3"; exit "$rc"'
+# status to a file. Only a deadline may surface as outer exit 124 (THE BUILD DEADLINE).
+# A word after the status path names the PR in the slot's holder record (`build_of`).
+_WRAPPER = (
+    ': >"$3.started"; printf "merge build: %s command started\\n" "${3##*/}" >&2; '
+    'sh -c "$1" >"$2" 2>&1 </dev/null; rc=$?; printf "%s\\n" "$rc" >"$3"; '
+    'if [ "$rc" -eq 124 ]; then exit 1; fi; exit "$rc"'
+)
 _WRAPPER_NAME = "merge-build"
 # THE PLAN's run: the command, its output to the log, its status to a file (no status file: it
 # never ended on its own -- its bound, or the wrapper's own failure).
@@ -1480,8 +1490,8 @@ def _commit_out(
 
 @dataclass(frozen=True)
 class _Ran:
-    """One run of the command: ``status`` is the status file's text ("" when the command never
-    ended on its own: the wrapper's refusal, the deadline), ``done`` the wrapper's own result,
+    """One run of the command: ``status`` is the command's verdict from the status file ("" on
+    a wrapper refusal or deadline), ``done`` the wrapper's own result,
     ``took`` the seconds the command ran (with no sign of its start, the whole wait for the
     wrapper), ``log_dir`` the durable copy's directory when kept, and ``started`` whether it did start;
     ``earlier`` the build history as this run found it."""
@@ -1556,6 +1566,7 @@ def _run(
         where_fix = "the file on the default branch" if subject.pr else "the config"
         fail(2, f"{subject.stop}: {CONFIG_FILE}'s command cannot be run ({exc}); fix {where_fix}.")
     took = int(time.monotonic() - started)
+    timed_out = done.rc == 124
     rc_text = _status_text(status)
     ran_for = _ran_for(status, rc_text != "")
     earlier = buildhistory.read(subject.repo, config.command)
@@ -1565,15 +1576,16 @@ def _run(
     outcome: buildhistory.Recorded
     if ran_for is None:
         outcome = "unstarted"
+    elif timed_out:
+        outcome = "overran"
     elif rc_text == "0":
         outcome = "passed"
-    elif not rc_text and done.rc == 124:
-        outcome = "overran"
     else:
         outcome = "failed"
     buildhistory.record(subject.repo, config.command, outcome, took if ran_for is None else ran_for,
                         config.timeout, log_dir=log_dir)
-    return _Ran(rc_text, done, took if ran_for is None else ran_for, log, log_dir, ran_for is not None, tuple(earlier))
+    return _Ran("" if timed_out else rc_text, done, took if ran_for is None else ran_for,
+                log, log_dir, ran_for is not None, tuple(earlier))
 
 
 def _plan(subject: _Subject, config: BuildConfig, quiet: list[str], tree: str, scratch: str, merge_sha: str, tip: str,
@@ -1742,7 +1754,8 @@ def _say_progress(label: str, took: int, bound: int, log: str) -> None:
 
 
 def _no_verdict(label: str, stop: str, config: BuildConfig, ran: _Ran, what: str) -> NoReturn:
-    """A run with no status of its own: what the wrapper said, then exit 4 (past the bound) or 3."""
+    """A run with no verdict: show what the wrapper said, then exit 4 for a deadline
+    (THE BUILD DEADLINE) or 3 for another wrapper failure."""
     done = ran.done
     for line in (done.stdout + done.stderr).splitlines():
         cli.say(f"  | {line}")

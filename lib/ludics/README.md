@@ -643,6 +643,14 @@ before reading the status for its verdict. The fixture forces that deadline afte
 writes status 0 or 9. Status 9 is misreported as the plan's exit on launch base `e841b7cd`.
 A plan that exits 124 within the bound reports its own status. Both cases go on to the build.
 
+Agent notes (wave-20261123-ludics, t1291; refs #1291). Merge builds reserve outer exit 124 for
+the supervisor or slot deadline. The inner wrapper keeps an in-time exit 124 in the status
+file and returns 1. A deadline on a started command yields exit 4 and an `overran` JSONL
+receipt even if the retained status contains 0. When the status is present, its timestamp
+still marks the end of the command's duration. On launch base `7cea8c06`, both candidate fixtures
+report a pass and the base-alone fixture reports a successful comparison build. All three receipts
+say `passed` for the timed-out attempt on that base.
+
 ## Checking
 
 Placement recovery (#1133, #1160): `wave launch` reads a caller-named JSON result file,
