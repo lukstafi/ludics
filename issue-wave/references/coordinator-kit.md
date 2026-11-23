@@ -120,10 +120,17 @@ runs another kind of worker names each kind as a profile, and each other box a C
 as a host:
 
 ```json
+"split": "issue-number",
 "profiles": {"sol": {"transport": "cli", "kind": "codex", "model": "gpt-6.2-sol", "effort": "high"},
              "neon": {"transport": "cli", "kind": "gemini", "model": "gemini-4-neon-high"}},
 "hosts": {"rog-nv-linux": {"checkout": "/home/lukstafi/ocannl-staging", "scratch": "/home/lukstafi/wave-scratch"}}
 ```
+
+The optional `split` key enables a prep NOTE when a worker's profile kind differs from the arm's
+kind. Odd issue numbers use Sol (`codex`), even numbers use Neon (`gemini`), and a post-wave task
+uses its source issue number. For an approved exception, pass `--reassignment-reason <reason>`
+to prep or give the CLI entry in `queue.json` a `reassignment_reason`. A nonblank single line of
+printable text marks the row as `reassignment_reason=<reason>` and suppresses the NOTE.
 
 `wave prep <wave.json> <task> --base <sha> --profile sol [--host rog-nv-linux]` prepares such a
 task. For a CLI task it makes nothing on the box and reserves nothing: `fleet-worker.sh launch`

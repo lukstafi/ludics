@@ -107,6 +107,8 @@ class WaveFile(unittest.TestCase):
                              ({**good, "legs": {"gpu-box": {**good["legs"]["gpu-box"], "suffix": "base"}}}, "the reserved name base"),
                              ({**good, "loops": {"cc": {**good["loops"]["cc"], "poll": True}}}, "poll"),
                              ({**good, "vars": {"CHECKOUT": "x"}}, "gives itself"),
+                             ({**good, "split": "by-tier"}, '.split must be "issue-number"'),
+                             ({**good, "split": None}, ".split must be one non-empty line"),
                              ({**good, "project_part": "/abs/brief.md"}, "relative to the checkout"),
                              ({**good, "project_part": "docs/../../brief.md"}, "no .. component")]
         for broken, word in cases:
@@ -611,6 +613,53 @@ class MixedWave(WaveDirCase):
             with self.assertRaises(ValueError) as caught:
                 wave.parse_wave("/tmp/x/wave.json", {**good, **more})
             self.assertIn(word, str(caught.exception))
+
+    def issue_number_split(self) -> None:
+        data = wave_data(self.dir, split="issue-number", **MIXED)
+        data["profiles"] = {**MIXED["profiles"], "neon": {"transport": "cli", "kind": "gemini"}}
+        self.write("wave.json", json.dumps(data))
+
+    def test_issue_number_split_notes_an_odd_issue_in_the_neon_arm(self) -> None:
+        self.issue_number_split()
+        with self.world():
+            rc, out, err = self.prep("t43", "--base", "main", "--profile", "neon", "--tier", "D2")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("WAVE PREP t43: ready:", out)
+        self.assertIn("WAVE PREP NOTE t43: 'o/up#43' assigns the Sol arm (codex profile). Prep used profile neon (gemini).", err)
+        self.assertEqual(self.manifest("t43")["launch"]["kind"], "gemini")
+        self.assertFalse(any(f.startswith("reassignment_reason=") for f in self.shim_calls[-1]))
+
+    def test_issue_number_split_notes_an_even_issue_in_the_sol_arm(self) -> None:
+        self.issue_number_split()
+        with self.world():
+            rc, out, err = self.prep("t42", "--base", "main", "--profile", "sol")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("WAVE PREP NOTE t42: 'o/up#42' assigns the Neon arm (gemini profile). Prep used profile sol (codex).", err)
+
+    def test_issue_number_split_uses_the_source_issue_and_accepts_a_matching_alias(self) -> None:
+        self.issue_number_split()
+        with self.world():
+            rc, out, err = self.prep("p8", "--base", "main", "--source", "43", "--profile", "neon")
+            self.assertEqual(rc, 0, out + err)
+            self.assertIn("WAVE PREP NOTE p8: 'o/up#43' assigns the Sol arm (codex profile).", err)
+            rc, out, err = self.prep("t43", "--base", "main", "--profile", "sol")
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("WAVE PREP NOTE", err)
+
+    def test_issue_number_split_records_a_reassignment_without_a_note(self) -> None:
+        self.issue_number_split()
+        reason = "Needs a host with a supported tool"
+        with self.world():
+            rc, out, err = self.prep("t43", "--base", "main", "--profile", "neon", "--reassignment-reason", reason)
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("WAVE PREP NOTE", err)
+        self.assertIn(f"reassignment_reason={reason}", self.shim_calls[-1])
+
+    def test_wave_without_a_split_has_no_issue_number_note(self) -> None:
+        with self.world():
+            rc, out, err = self.prep("t42", "--base", "main", "--profile", "sol")
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("WAVE PREP NOTE", err)
 
     def test_a_cli_task_on_another_box_is_prepared_and_nothing_is_made_or_reserved(self) -> None:
         with self.world():
@@ -3754,7 +3803,8 @@ class Queue(DriveCase):
 
     def test_the_first_due_task_is_prepared_at_the_fetched_tip_and_launched(self) -> None:
         self.queue({"task": "t50", "profile": "sol", "host": "far", "legs": ["gpu-box"], "mode": "paired"},
-                   {"task": "t51", "profile": "sol", "host": "mac", "issue": "777", "tier": "D1/D2"})
+                   {"task": "t51", "profile": "sol", "host": "mac", "issue": "777", "tier": "D1/D2",
+                    "reassignment_reason": "Needs the agent host"})
         with self.world():
             rc, out = self.once()
             self.assertEqual(rc, 0, out)
@@ -3769,7 +3819,7 @@ class Queue(DriveCase):
             out = self.once()[1]
             self.assertNotIn("peer planner", out, "an unpaired launch names no planner")
             self.assertEqual(self.launched(), [["wave", "prep", self.path, "t51", "--base", B, "--profile", "sol", "--issue", "777",
-                                                "--tier", "D1/D2"],
+                                                "--tier", "D1/D2", "--reassignment-reason", "Needs the agent host"],
                                                ["wave", "launch", self.path, "t51"]], "one launch a tick, in file order; the agent host takes no --host")
             self.rows = [row("t50"), row("t51", agent_host="mac")]
             self.state = "RUNNING"
@@ -4281,6 +4331,9 @@ class Queue(DriveCase):
                                          ([{**good, "tier": "D4"}], None, "tier is one of D1, D1/D2, D2, D2/D3, D3, not 'D4'"),
                                          ([{**good, "tier": ""}], None, "tier is one of"),
                                          ([{**good, "tier": 2}], None, "its values are text"),
+                                         ([{**good, "reassignment_reason": " "}], None, "reassignment_reason needs a nonblank single line"),
+                                         ([{**good, "reassignment_reason": "line\nline"}], None, "reassignment_reason needs a nonblank single line"),
+                                         ([{**good, "reassignment_reason": True}], None, "its values are text"),
                                          ([{"task": "t53", "profile": "opus", "tier": "d2"}], None, "tier is one of"),
                                          ([{"task": "t50", "legs": ["gpu-box"]}], None, "is a native entry, which takes task"),
                                          ([{**good, "profile": "astra"}], None, "profile 'astra' is no profile of the wave file"),

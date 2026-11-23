@@ -298,6 +298,7 @@
 #   fleet-worker.sh wave prep <wave.json> <task> --base <rev> [--issue <N> | --source <N>]
 #                          [--mode none|paired|paired+critique] [--legs <box,...>] [--allow-rival <pr>]...
 #                          [--profile <name>] [--host <box>] [--tier D1|D1/D2|D2|D2/D3|D3]
+#                          [--reassignment-reason <reason>]
 #                          # a worker's launch prep: worktree, standing reservations, brief,
 #                          # assign base and pending board row, every read before any write; refuses
 #                          # a rival PR or an existing worktree/branch; spawns nothing. --profile

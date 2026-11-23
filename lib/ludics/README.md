@@ -876,6 +876,11 @@ non-final pending notice and its in-memory reset conditions; its remote-tip samp
 only. `wave.py`'s THE NO-CHANGE LINE defines the five-row change summary and remaining count.
 The Queue/Heartbeat unit cases pin both boundaries; they fail with the respective fixes undone.
 
+Agent notes (wave-20261123-ludics, t1275): wave prep's opt-in issue-number split compares the
+resolved worker kind with the issue or source issue's parity. In board JSON, field presence at
+`tasks[].fields.reassignment_reason` marks a reassignment and its string value carries the reason.
+The driver forwards the CLI queue field to prep and shows prep's NOTE in its stderr stream.
+
 ### Safety state reads (#1092)
 
 At the six read sites below, only ENOENT beneath searchable directories means absent

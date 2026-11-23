@@ -400,7 +400,11 @@ choice*). Even issues go to the Neon arm, a Gemini worker (Antigravity's
 arm, and post-wave batching groups tasks by area within each arm. Never pick the arm for fit: that
 judgment is the selection bias the test exists to remove. A task its arm cannot serve (no box whose
 codex or agy serves the model, a capability the transport lacks) is reported, and it changes arm
-only on the user's word, marked in the wave summary as a reassignment. Planning mode follows the
+only on the user's word, marked in the wave summary as a reassignment. Set `"split": "issue-number"`
+in the wave file to get a NOTE from `wave prep` when a worker's profile is off its arm. For an
+approved reassignment, give the CLI queue entry a `reassignment_reason` or pass
+`wave prep --reassignment-reason <reason>` by hand. The reason marks the board row and suppresses
+the NOTE. Planning mode follows the
 tier, not the arm (*Planning mode, per issue*), so a Sol-arm D3 gets `paired+critique` like a Neon
 one. The wave file names a Claude Opus reviewer, so every PR of the wave gets the review
 checkpoint, a third family's reading for both arms, and the
