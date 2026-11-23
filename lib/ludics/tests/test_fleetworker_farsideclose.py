@@ -438,6 +438,41 @@ class Far(Fixture):
         self.assertEqual((verdict, why), ("KEPT", "ignored data that --regenerable does not name: _build/"))
         self.assertTrue(wt.exists())
 
+    def test_project_fleet_regenerable_reads_fresh_remote_policy_and_ignores_replacements(self) -> None:
+        # Local origin/main still lists _build, while remote main has revoked _build: must KEEP.
+        self.write_project_regen("_build\n")
+        wt = self.worktree("revoked")
+        # Push a revocation from a second clone so self.co's local refs/remotes/origin/main stays stale.
+        other = self.tmp / "other"
+        self.git(self.tmp, "clone", "-q", str(self.remote), str(other))
+        (other / ".github" / "fleet-regenerable").write_text("# revoked\n")
+        self.git(other, "commit", "-q", "-am", "revoke")
+        self.git(other, "push", "-q", "origin", "main")
+        before = self.git(self.co, "for-each-ref")
+        verdict, why = self.close(wt)
+        self.assertEqual((verdict, why), ("KEPT", "ignored data that --regenerable does not name: _build/"))
+        self.assertTrue((wt / "_build").exists())
+        self.assertEqual(self.git(self.co, "for-each-ref"), before)
+        # Local refs/replace/* spoofing .github/fleet-regenerable blob is ignored.
+        remote_head = self.git(other, "rev-parse", "HEAD").strip()
+        real_blob = self.git(other, "rev-parse", f"{remote_head}:.github/fleet-regenerable").strip()
+        self.git(self.co, "fetch", "-q", "origin", "main")
+        fake_file = self.tmp / "fake-regen"
+        fake_file.write_text("_build\n")
+        fake_blob = self.git(self.co, "hash-object", "-w", str(fake_file)).strip()
+        self.git(self.co, "replace", real_blob, fake_blob)
+        verdict, why = self.close(wt)
+        self.assertEqual((verdict, why), ("KEPT", "ignored data that --regenerable does not name: _build/"))
+        self.assertTrue((wt / "_build").exists())
+        # Unreachable remote does not fall back to stale local tracking ref.
+        self.git(self.co, "replace", "-d", real_blob)
+        self.git(self.co, "update-ref", "refs/remotes/origin/main", "HEAD")
+        wt2 = self.worktree("offline")
+        self.git(self.co, "remote", "set-url", "origin", str(self.tmp / "missing.git"))
+        verdict, why = self.close(wt2)
+        self.assertEqual((verdict, why), ("KEPT", "ignored data that --regenerable does not name: _build/"))
+        self.assertTrue((wt2 / "_build").exists())
+
     def test_project_fleet_regenerable_malformed_cr_nul_or_non_regular_fails_closed(self) -> None:
         bad_contents = [
             ("escape", "../escape\n"),

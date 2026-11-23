@@ -34,9 +34,12 @@ WHAT IT DOES, in this order, each read before any write:
    ``farside-close <wave> --task <task>`` runs after ``board set``, applying every gate of
    ``farside-close`` (clean tree, no outstanding reservation, no not-done row naming the path,
    only ignored directories allowed by the project's ``.github/fleet-regenerable`` on
-   ``origin/<main>``, HEAD proved). Any worktree kept, trimmed, unreachable, or refused is
-   reported as a ``NOTE`` on the close line and never fails the close (exit stays 0; close-out's
-   ``farside-close`` or a re-run retries it). ``--no-pr`` and unmerged closes remove nothing.
+   ``origin/<main>``, HEAD proved). For a CLI row (``transport=cli``), ``status <agent_host>
+   <worker>`` is checked first and must report ``EXITED(<n>)``: a live ``IDLE`` Claude worker or
+   running/orphaned CLI worker keeps its worktrees until closed. Any worktree kept, trimmed,
+   unreachable, or refused is reported as a ``NOTE`` on the close line and never fails the close
+   (exit stays 0; close-out's ``farside-close`` or a re-run retries it). ``--no-pr`` and unmerged
+   closes remove nothing.
 
 THE VERDICT. ``conclude --standing-handback`` takes no default because its verdict is the hand-back's
 word. Here ``pass`` is what this verb establishes: a standing record is concluded as the worker's
@@ -83,6 +86,8 @@ import json
 import os
 import re
 import shlex
+import subprocess
+import sys
 import tempfile
 from typing import Any, cast
 
@@ -331,11 +336,48 @@ def no_pr_payloads(cfg: Config, wave: str, task: str, records: list[dict[str, An
     return matched
 
 
-def close_worktrees(cfg: Config, wave: str, task: str) -> str:
+EXITED = re.compile(r"EXITED\([0-9]+\)")
+
+
+def stepped_both(cfg: Config, args: list[str]) -> tuple[int, str, str]:
+    """This fleet-worker.sh with ``args``, capturing stdout and stderr while forwarding stderr."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    argv = cfg.shim_command(*args)
+    try:
+        done = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    except OSError as exc:
+        msg = f"{argv[0]}: {exc.strerror}"
+        sys.stderr.write(msg + "\n")
+        sys.stderr.flush()
+        return 127, "", msg
+    err_text = done.stderr.decode("utf-8", "surrogateescape")
+    if err_text:
+        sys.stderr.write(err_text)
+        sys.stderr.flush()
+    return done.returncode, substitution(done.stdout.decode("utf-8", "surrogateescape")), substitution(err_text)
+
+
+def close_worktrees(cfg: Config, wave: str, task: str, fields: dict[str, str]) -> str:
     """Remove a merged task's ``farside`` worktrees through ``farside-close --task`` (#1310).
+    For a ``transport=cli`` row, confirms ``status <agent_host> <worker>`` is ``EXITED(<n>)``
+    before removing anything so a live ``IDLE``/``RUNNING`` CLI worker never loses its cwd.
     Returns the suffix for ``BOARD CLOSE``: ``; worktrees: <counts>`` when every word cleared,
     or ``; NOTE ...`` when any worktree stayed or the call refused. Never fails the close."""
-    rc, out = stepped(cfg, ["farside-close", wave, "--task", task])
+    cmd = shlex.join(["farside-close", wave, "--task", task])
+    if fields.get("transport") == "cli":
+        host, worker = fields.get("agent_host", ""), fields.get("worker", "")
+        if not host or not worker:
+            return f"; NOTE CLI worker identity missing (agent_host/worker); confirm it exited, then run {cmd}"
+        src, sout, serr = stepped_both(cfg, ["status", host, worker])
+        slines = [line for line in sout.splitlines() if line.strip()]
+        first = slines[0].split(None, 1)[0] if slines else ""
+        if src != 0 or not EXITED.fullmatch(first):
+            elines = [line for line in serr.splitlines() if line.strip()]
+            why = first if src == 0 and first else (slines[-1] if slines else (elines[-1] if elines else f"status exit {src}"))
+            return (f"; NOTE CLI worker {shlex.quote(worker)} on {shlex.quote(host)} is not exited ({why});"
+                    f" close it first, then run {cmd}")
+    rc, out, err_out = stepped_both(cfg, ["farside-close", wave, "--task", task])
     lines = [line for line in out.splitlines() if line.strip()]
     prefix = f"FARSIDE CLOSE {wave}: "
     counts = lines[-1].removeprefix(prefix) if lines and lines[-1].startswith(prefix) else ""
@@ -347,11 +389,11 @@ def close_worktrees(cfg: Config, wave: str, task: str) -> str:
         and not line.startswith("FARSIDE CLOSE ")
         and line.split(None, 2)[1:2] not in (["REMOVED"], ["GONE"], ["WOULD-REMOVE"])
     ]
-    cmd = shlex.join(["farside-close", wave, "--task", task])
     if stayed:
         head = f" ({counts})" if counts else f" (exit {rc})"
         return f"; NOTE {cmd}{head}: {'; '.join(stayed)}"
-    last = lines[-1] if lines else ""
+    err_lines = [line for line in err_out.splitlines() if line.strip()]
+    last = lines[-1] if lines else (err_lines[-1] if err_lines else "")
     return f"; NOTE {cmd} (exit {rc}" + (f": {last})" if last else ")")
 
 
@@ -430,7 +472,7 @@ def cmd_close(cfg: Config, args: list[str]) -> int:
         if no_pr:
             note += f"; NOTE {len(far)} far-side worktree(s): {shlex.join(['farside-close', wave, '--task', task])}"
         else:
-            note += close_worktrees(cfg, wave, task)
+            note += close_worktrees(cfg, wave, task, fields)
     summary = outcome if no_pr else f"merged {repo}#{pr} at {sha[:12]}"
     cli.say(f"BOARD CLOSE {wave}: {json.dumps(task, ensure_ascii=False)} {summary}; {tail}{note}")
     return 0

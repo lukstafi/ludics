@@ -325,22 +325,39 @@ class WorktreeClose(unittest.TestCase):
     """#1310: merged ``board close`` removes ``farside`` worktrees through ``farside-close --task``;
     any refusal becomes a NOTE and never fails the close; ``--no-pr`` and unmerged closes remove nothing."""
 
-    def run_merged(self, farside: str, farside_result: tuple[int, str] = (0, "FARSIDE REMOVED box:/wt (t): ok\nFARSIDE CLOSE w: 1 removed")) -> tuple[int, str, list[list[str]]]:
+    def run_merged(
+        self,
+        farside: str,
+        farside_result: tuple[int, str, str] = (0, "FARSIDE REMOVED box:/wt (t): ok\nFARSIDE CLOSE w: 1 removed", ""),
+        *,
+        extra_fields: dict[str, str] | None = None,
+        status_result: tuple[int, str, str] = (0, "EXITED(0) box/w1 codex", ""),
+    ) -> tuple[int, str, list[list[str]]]:
         doc: dict[str, Any] = {"tasks": [{"task": "t", "fields": {
-            "repository": "o/r", "pr": "7", "standing": "none", **({"farside": farside} if farside else {})}}], "log": []}
+            "repository": "o/r", "pr": "7", "standing": "none",
+            **({"farside": farside} if farside else {}),
+            **(extra_fields or {}),
+        }}], "log": []}
         calls: list[list[str]] = []
 
         def fake_stepped(_cfg: Any, args: list[str]) -> tuple[int, str]:
             calls.append(args)
+            return 0, "ok"
+
+        def fake_both(_cfg: Any, args: list[str]) -> tuple[int, str, str]:
+            calls.append(args)
+            if args[:1] == ["status"]:
+                return status_result
             if args[:1] == ["farside-close"]:
                 return farside_result
-            return 0, "ok"
+            return 0, "ok", ""
 
         out = io.StringIO()
         with (mock.patch.object(closeout, "board_document", return_value=doc),
               mock.patch.object(closeout, "merged_sha", return_value=OID),
               mock.patch.object(closeout, "listing", return_value=Done(0, "[]")),
               mock.patch.object(closeout, "stepped", side_effect=fake_stepped),
+              mock.patch.object(closeout, "stepped_both", side_effect=fake_both),
               contextlib.redirect_stdout(out)):
             rc = closeout.cmd_close(CFG, ["w", "t"])
         return rc, out.getvalue(), calls
@@ -354,21 +371,48 @@ class WorktreeClose(unittest.TestCase):
 
     def test_kept_unreachable_or_refused_farside_close_is_a_note_never_a_failed_close(self) -> None:
         cases = [
-            (3, "FARSIDE KEPT box:/wt (t): outstanding reservation: r1\nFARSIDE CLOSE w: 1 kept",
+            (3, "FARSIDE KEPT box:/wt (t): outstanding reservation: r1\nFARSIDE CLOSE w: 1 kept", "",
              "NOTE farside-close w --task t (1 kept): FARSIDE KEPT box:/wt (t): outstanding reservation: r1"),
-            (3, "FARSIDE REMOVED box:/a (t): ok\nFARSIDE KEPT box:/b (t): ignored data that --regenerable does not name: x.log\nFARSIDE CLOSE w: 1 kept, 1 removed",
+            (3, "FARSIDE REMOVED box:/a (t): ok\nFARSIDE KEPT box:/b (t): ignored data that --regenerable does not name: x.log\nFARSIDE CLOSE w: 1 kept, 1 removed", "",
              "NOTE farside-close w --task t (1 kept, 1 removed): FARSIDE KEPT box:/b (t): ignored data that --regenerable does not name: x.log"),
-            (4, "FARSIDE UNREACHABLE box:/wt (t): box did not answer\nFARSIDE CLOSE w: 1 unreachable",
+            (4, "FARSIDE UNREACHABLE box:/wt (t): box did not answer\nFARSIDE CLOSE w: 1 unreachable", "",
              "NOTE farside-close w --task t (1 unreachable): FARSIDE UNREACHABLE box:/wt (t): box did not answer"),
-            (6, "FARSIDE CLOSE REFUSED w: coordinator lease held by other",
+            (6, "FARSIDE CLOSE REFUSED w: coordinator lease held by other", "",
              "NOTE farside-close w --task t (exit 6: FARSIDE CLOSE REFUSED w: coordinator lease held by other)"),
-            (1, "", "NOTE farside-close w --task t (exit 1)"),
+            (1, "", "FARSIDE CLOSE REFUSED w: the registry could not be read; nothing removed",
+             "NOTE farside-close w --task t (exit 1: FARSIDE CLOSE REFUSED w: the registry could not be read; nothing removed)"),
+            (1, "", "", "NOTE farside-close w --task t (exit 1)"),
         ]
-        for far_rc, far_out, expected in cases:
-            with self.subTest(rc=far_rc, out=far_out):
-                rc, said, _ = self.run_merged("box:/wt", (far_rc, far_out))
+        for far_rc, far_out, far_err, expected in cases:
+            with self.subTest(rc=far_rc, out=far_out, err=far_err):
+                rc, said, _ = self.run_merged("box:/wt", (far_rc, far_out, far_err))
                 self.assertEqual(rc, 0)
                 self.assertIn(expected, said)
+
+    def test_cli_row_requires_exited_worker_status_before_removing_worktrees(self) -> None:
+        cli_fields = {"transport": "cli", "agent_host": "box", "worker": "w1"}
+        rc, said, calls = self.run_merged("box:/wt", extra_fields=cli_fields, status_result=(0, "EXITED(0) box/w1 codex", ""))
+        self.assertEqual(rc, 0)
+        self.assertEqual(calls[-2:], [["status", "box", "w1"], ["farside-close", "w", "--task", "t"]])
+        self.assertIn("; worktrees: 1 removed", said)
+        for status_result, expected in (
+            ((0, "IDLE box/w1 claude", ""), "not exited (IDLE)"),
+            ((0, "RUNNING box/w1 codex", ""), "not exited (RUNNING)"),
+            ((0, "ORPHANED box/w1 claude", ""), "not exited (ORPHANED)"),
+            ((0, "VANISHED box/w1 codex", ""), "not exited (VANISHED)"),
+            ((3, "UNKNOWN box/w1: never launched here", ""), "not exited (UNKNOWN box/w1: never launched here)"),
+            ((4, "STATUS UNREACHABLE box/w1", ""), "not exited (STATUS UNREACHABLE box/w1)"),
+        ):
+            with self.subTest(status=status_result):
+                rc, said, calls = self.run_merged("box:/wt", extra_fields=cli_fields, status_result=status_result)
+                self.assertEqual(rc, 0)
+                self.assertFalse(any(c[:1] == ["farside-close"] for c in calls), calls)
+                self.assertIn(expected, said)
+                self.assertIn("farside-close w --task t", said)
+        rc, said, calls = self.run_merged("box:/wt", extra_fields={"transport": "cli", "worker": "w1"})
+        self.assertEqual(rc, 0)
+        self.assertFalse(any(c[:1] == ["farside-close"] for c in calls), calls)
+        self.assertIn("CLI worker identity missing", said)
 
     def test_no_farside_or_none_never_calls_farside_close(self) -> None:
         for farside in ("", "none"):
@@ -387,10 +431,15 @@ class WorktreeClose(unittest.TestCase):
             calls.append(args)
             return 0, "ok"
 
+        def fake_both(_c: Any, args: list[str]) -> tuple[int, str, str]:
+            calls.append(args)
+            return 0, "ok", ""
+
         out = io.StringIO()
         with (mock.patch.object(closeout, "board_document", return_value=doc),
               mock.patch.object(closeout, "listing", return_value=Done(0, "[]")),
               mock.patch.object(closeout, "stepped", side_effect=fake_stepped),
+              mock.patch.object(closeout, "stepped_both", side_effect=fake_both),
               contextlib.redirect_stdout(out)):
             rc = closeout.cmd_close(CFG, ["w", "t", "--no-pr"])
         self.assertEqual(rc, 0)
@@ -406,10 +455,15 @@ class WorktreeClose(unittest.TestCase):
             calls.append(args)
             return 0, "ok"
 
+        def fake_both(_c: Any, args: list[str]) -> tuple[int, str, str]:
+            calls.append(args)
+            return 0, "ok", ""
+
         out = io.StringIO()
         with (mock.patch.object(closeout, "board_document", return_value=doc),
               mock.patch.object(closeout, "gh_json", return_value={"state": "OPEN"}),
               mock.patch.object(closeout, "stepped", side_effect=fake_stepped),
+              mock.patch.object(closeout, "stepped_both", side_effect=fake_both),
               contextlib.redirect_stdout(out), self.assertRaises(cli.Exit) as caught):
             closeout.cmd_close(CFG, ["w", "t"])
         self.assertEqual(caught.exception.rc, 1)

@@ -54,22 +54,26 @@ THE GATES, in order; the first that fails keeps the worktree, and says why.
     shape with one component only: it resolves the name on the filesystem and removes it before its
     gates, where a pattern would need this status-based match first.
   - THE PROJECT FILE (``.github/fleet-regenerable``, ludics#1310): what it reads and what it
-    deliberately does not, a fail-closed allowlist. On the box, it reads ONLY the blob at
-    ``.github/fleet-regenerable`` in the local remote-tracking commit named by
-    ``refs/remotes/<remote>/HEAD``, which must be a symbolic ref pointing under
-    ``refs/remotes/<remote>/`` and resolving to a commit. It deliberately does NOT read the
-    worktree's working tree, index or ``HEAD``, any local branch (``refs/heads/*``), any other
-    remote's ref, or a symbolic ref pointing outside ``refs/remotes/<remote>/``, and it fetches
-    nothing and moves no ref to read it: an unmerged worktree cannot vouch for the removal of its
-    own ignored data. If ``refs/remotes/<remote>/HEAD`` is absent, points outside
-    ``refs/remotes/<remote>/``, does not resolve to a commit, or that commit has no
-    ``.github/fleet-regenerable``, zero project entries are added and ``--regenerable`` alone
-    applies. When present, the entry must be a regular file (git mode ``100644`` or ``100755``,
-    never a symlink, tree or submodule), hold no NUL byte and no CR (``\r``), and every line
-    after stripping leading/trailing ASCII spaces and tabs must be blank, start with ``#``, or be
-    one valid ``--regenerable`` value (no inline ``#`` comment, no extra words). Any read error,
-    wrong mode, NUL/CR byte or line outside this grammar returns ``KEPT`` naming the file, ref and
-    reason, removing and trimming nothing.
+    deliberately does not, a fail-closed allowlist. On the box, it resolves the default branch name
+    from ``refs/remotes/<remote>/HEAD`` (which must be a symbolic ref pointing under
+    ``refs/remotes/<remote>/``), fetches ONLY ``+refs/heads/<branch>`` from ``<remote>`` into a
+    private ref ``refs/fleet-close-policy/<token>`` (bounded by ``FLEET_FETCH_TIMEOUT``, with
+    ``--refmap=`` so no ref of the served checkout moves, deleted on exit), resolves that exact
+    ref with ``show-ref --verify --hash`` and verifies it is a commit, and reads ONLY its blob at
+    ``.github/fleet-regenerable`` with ``GIT_NO_REPLACE_OBJECTS=1`` and ``GIT_NO_LAZY_FETCH=1``.
+    It deliberately does NOT read the worktree's working tree, index or ``HEAD``, a stale local
+    tracking ref when the remote cannot be asked (a merged PR that revokes a directory must never
+    be undercut by a pre-merge local ref), any local branch (``refs/heads/*``), any other
+    remote's ref, any ``refs/replace/*`` object replacement, or a symbolic ref pointing outside
+    ``refs/remotes/<remote>/``. If ``refs/remotes/<remote>/HEAD`` is absent or points outside
+    ``refs/remotes/<remote>/``, if the fetch fails (freshness unverified), or if the fetched commit
+    has no ``.github/fleet-regenerable``, zero project entries are added and ``--regenerable``
+    alone applies. When present, the entry must be a regular file (git mode ``100644`` or
+    ``100755``, never a symlink, tree or submodule), hold no NUL byte and no CR (``\r``), and every
+    line after stripping leading/trailing ASCII spaces and tabs must be blank, start with ``#``, or
+    be one valid ``--regenerable`` value (no inline ``#`` comment, no extra words). Any read error
+    (including a missing object in a partial clone), wrong mode, NUL/CR byte or line outside this
+    grammar returns ``KEPT`` naming the file, ref and reason, removing and trimming nothing.
   - HEAD exactly matches a concluded record's observed_sha for this wave and row's nonempty
     worker, execution host and exact checkout (trailing slash ignored), or is on a remote branch.
     Only full lowercase object IDs qualify. Requested/resolved revisions express intent, not an
@@ -145,11 +149,14 @@ FAR_VERDICTS = ("REMOVED", "TRIMMED", "KEPT", "GONE", "WOULD-REMOVE", "WOULD-TRI
 CLOSE = WORKTREE + f"operations={shlex.quote(' '.join(ACTIVE_OPERATIONS))}\n" + r"""wt=$(expand_tilde "$1") remote="$2" fetch_timeout="$3" dry="$4" token="$5" observed="$6"; shift 6
 # No trailing `/`: `[ -L "$wt/" ]` follows the link and reads the directory behind it.
 wt=${wt%"${wt##*[!/]}"}
-ns="refs/fleet-close/$token"; cdir=""
+ns="refs/fleet-close/$token"; pref="refs/fleet-close-policy/$token"; cdir=""
 verdict() {
-  [ -z "$cdir" ] || git --git-dir="$cdir" for-each-ref --format='%(refname)' "$ns/" 2>/dev/null | while IFS= read -r r; do
-    git --git-dir="$cdir" update-ref -d "$r" >/dev/null 2>&1
-  done
+  if [ -n "$cdir" ]; then
+    git --git-dir="$cdir" update-ref -d "$pref" >/dev/null 2>&1
+    git --git-dir="$cdir" for-each-ref --format='%(refname)' "$ns/" 2>/dev/null | while IFS= read -r r; do
+      git --git-dir="$cdir" update-ref -d "$r" >/dev/null 2>&1
+    done
+  fi
   printf '%s\t%s\n' "$1" "$(printf '%s' "$2" | tr '\t\n' '  ')"
   exit 0
 }
@@ -181,8 +188,9 @@ hidden=$(printf '%s\n' "$flagged" | grep -c '^[a-zS] ')
 [ "$hidden" -eq 0 ] || kept "$hidden path(s) hidden from status by an index flag (assume-unchanged or skip-worktree)"
 private=$(git -C "$wt" for-each-ref --count=1 --format='%(refname)' refs/worktree/ refs/bisect/ refs/rewritten/ 2>/dev/null) || kept "cannot read its refs"
 [ -z "$private" ] || kept "it holds a private ref: $private"
-# THE PROJECT FILE (.github/fleet-regenerable, ludics#1310): read from local refs/remotes/<remote>/HEAD,
-# never from the worktree or HEAD; fail closed on any unreadable or malformed file.
+# THE PROJECT FILE (.github/fleet-regenerable, ludics#1310): fetch the remote's default branch
+# into a private ref so a revoked entry on the remote is never honored from a stale local ref, and
+# read with replacement objects and lazy partial-clone fetches disabled (the header).
 valid_regen() {
   local v="$1" p rest part
   case "$v" in
@@ -212,27 +220,34 @@ allow=("$@")
 rhead=$(git -C "$wt" symbolic-ref -q "refs/remotes/$remote/HEAD" 2>/dev/null) || rhead=""
 case "$rhead" in
   "refs/remotes/$remote/"?*)
-    rsha=$(git -C "$wt" rev-parse --verify -q "$rhead^{commit}" 2>/dev/null) || rsha=""
-    if [ -n "$rsha" ]; then
-      entry=$(git -C "$wt" ls-tree "$rsha" -- .github/fleet-regenerable 2>/dev/null) || kept "cannot inspect .github/fleet-regenerable at $rhead"
+    rbranch=${rhead#"refs/remotes/$remote/"}
+    ( exec 9>&-; bounded "$fetch_timeout" env GIT_TERMINAL_PROMPT=0 git -C "$wt" fetch -q --no-tags --refmap= "$remote" "+refs/heads/$rbranch:$pref" >&2 ); drc=$?
+    if [ "$drc" -eq 0 ]; then
+      rsha=$(GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1 git -C "$wt" show-ref --verify --hash "$pref" 2>/dev/null) || rsha=""
+      [ -n "$rsha" ] && [ "$(GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1 git -C "$wt" cat-file -t "$rsha" 2>/dev/null)" = commit ] ||
+        kept "cannot verify $remote/$rbranch commit for .github/fleet-regenerable"
+      entry=$(GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1 git -C "$wt" ls-tree "$rsha" -- .github/fleet-regenerable 2>/dev/null) ||
+        kept "cannot inspect .github/fleet-regenerable at $remote/$rbranch"
       if [ -n "$entry" ]; then
         mode=${entry%% *}
         case "$mode" in
           100644|100755) ;;
-          *) kept ".github/fleet-regenerable at $rhead is not a regular file (mode $mode)" ;;
+          *) kept ".github/fleet-regenerable at $remote/$rbranch is not a regular file (mode $mode)" ;;
         esac
-        fsize=$(git -C "$wt" cat-file -s "$rsha:.github/fleet-regenerable" 2>/dev/null) || kept "cannot read .github/fleet-regenerable at $rhead"
-        fbytes=$(git -C "$wt" cat-file blob "$rsha:.github/fleet-regenerable" 2>/dev/null) || kept "cannot read .github/fleet-regenerable at $rhead"
-        ncount=$(git -C "$wt" cat-file blob "$rsha:.github/fleet-regenerable" 2>/dev/null | LC_ALL=C tr -d '\000' | wc -c | tr -d ' ')
-        [ "$ncount" = "$fsize" ] || kept ".github/fleet-regenerable at $rhead holds NUL bytes"
+        fsize=$(GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1 git -C "$wt" cat-file -s "$rsha:.github/fleet-regenerable" 2>/dev/null) ||
+          kept "cannot read .github/fleet-regenerable at $remote/$rbranch"
+        fbytes=$(GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1 git -C "$wt" cat-file blob "$rsha:.github/fleet-regenerable" 2>/dev/null) ||
+          kept "cannot read .github/fleet-regenerable at $remote/$rbranch"
+        ncount=$(GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1 git -C "$wt" cat-file blob "$rsha:.github/fleet-regenerable" 2>/dev/null | LC_ALL=C tr -d '\000' | wc -c | tr -d ' ')
+        [ "$ncount" = "$fsize" ] || kept ".github/fleet-regenerable at $remote/$rbranch holds NUL bytes"
         sp=" $(printf '\t')" cr=$(printf '\r') ln=0
         while IFS= read -r raw || [ -n "$raw" ]; do
           ln=$((ln + 1))
-          case "$raw" in *"$cr"*) kept ".github/fleet-regenerable at $rhead line $ln holds a CR byte" ;; esac
+          case "$raw" in *"$cr"*) kept ".github/fleet-regenerable at $remote/$rbranch line $ln holds a CR byte" ;; esac
           line=${raw#"${raw%%[!$sp]*}"}
           line=${line%"${line##*[!$sp]}"}
           case "$line" in ''|'#'*) continue ;; esac
-          valid_regen "$line" || kept ".github/fleet-regenerable at $rhead line $ln is not a regenerable directory path: $(printf '%q' "$line")"
+          valid_regen "$line" || kept ".github/fleet-regenerable at $remote/$rbranch line $ln is not a regenerable directory path: $(printf '%q' "$line")"
           allow+=("$line")
         done <<< "$fbytes"
       fi

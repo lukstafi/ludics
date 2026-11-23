@@ -4400,6 +4400,11 @@ expect "unmerged board close refuses and removes nothing" 1 'o/r#7 is OPEN, not 
   "${FWCF[@]}" board close cw t11
 [ -d "$cw_wt_open/_build" ] && ok "...unmerged close left the worktree intact" || ko "unmerged close removed worktree"
 cpr MERGED "$MERGE" claude/close
+# 5) A CLI row whose worker has not exited (no exited status on testbox) keeps its worktree with a NOTE.
+"$FW" board set --new-row cw t12 repository=o/r pr=7 standing=none transport=cli agent_host=testbox worker=w-live "farside=testbox:$cw_wt_open" >/dev/null
+expect "CLI board close keeps the worktree when the worker has not exited" 0 '; row set; NOTE CLI worker w-live on testbox is not exited .*; close it first, then run farside-close cw --task t12$' -- \
+  "${FWCF[@]}" board close cw t12
+[ -d "$cw_wt_open/_build" ] && ok "...unexited CLI worker kept its worktree" || ko "unexited CLI worker lost worktree"
 expect "...and without the lease the close writes nothing" 1 "." -- env -u FLEET_COORDINATOR FLEET_COORDINATOR=somebody-else "$FW" board close cw t1 --agent agent-3
 [ "$(cfield t1 agent)" = agent-2 ] && ok "...its row as it was" || ko "a close with no lease set the row: $(cfield t1 agent)"
 # #1109, THE UNUSED LEG: a standing GPU-home-box leg no batch ran under has no worktree to read, and
