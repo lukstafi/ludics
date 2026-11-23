@@ -1,7 +1,7 @@
 """The second planner of paired planning (issue-wave/references/paired-planning.md).
 
     peer-plan.sh start <dir> --issue <owner/repo>#<n> --checkout <path> --base <ref>
-                       [--model <m>] [--effort <e>] [--managed]
+                       [--model <m>] [--effort <e>] [--wave <wave> --task <task>] [--managed]
     peer-plan.sh save-plan <dir> --from-transcript <file>
     peer-plan.sh critique <dir> --plan <file> [--managed]
     peer-plan.sh clean <dir>
@@ -37,6 +37,13 @@ session id in ``<dir>/thread`` (agy's ``conversation_id``) and the critique's re
 session follow the same files for all three; a claude run's ``<kind>.jsonl`` holds its one JSON
 result, an agy run's its event stream.
 
+With ``--wave`` and ``--task``, the planning run records its model and effort on that existing
+paired row through ``board set``, after preparing the planner command and before dispatch.
+The row's recorded ``plan_dir`` must match the run's absolute plan directory.
+For agy, ``planner`` carries the full slug and ``planner_effort`` is empty. The board records
+the dispatch configuration. The bg-run verdict establishes whether a plan was produced.
+A failed board write ends the run before dispatch, with the board diagnostic in its log.
+
 ``--managed`` is for a coordinator that must hold the run in a managed foreground session of its
 own (a native Codex runtime, issue-wave/references/native-codex.md): the run directory is only
 allocated (``bg-run.sh new``) and recorded, nothing starts, and the caller runs
@@ -60,12 +67,14 @@ from pathlib import Path
 from typing import cast
 
 from ludics import agy, bgrun, claude as claude_cli, cli, fs, proc
+from ludics.fleetworker.boardstore import WAVE
 from ludics.peerplan import transcript
 
 PROG = "peer-plan.sh"
 ROOT = Path(__file__).resolve().parents[3]
 PY = ROOT / "scripts" / "py"
 BG_RUN = ROOT / "issue-wave" / "scripts" / "bg-run.sh"
+FLEET_WORKER = BG_RUN.with_name("fleet-worker.sh")
 DEFAULT_MODEL = "fable"
 DEFAULT_EFFORT = "high"
 CLAUDE_MODELS = ("fable", "opus")
@@ -102,7 +111,8 @@ def remove_worktree(d: str, checkout: str, worktree: str) -> proc.Completed | No
     return proc.run_tool("git", ["-C", checkout, "worktree", "prune"], stdin=subprocess.DEVNULL)
 
 USAGE = f"""\
-usage: {PROG} start <dir> --issue <owner/repo>#<n> --checkout <path> --base <ref> [--model <m>] [--effort <e>] [--managed]
+usage: {PROG} start <dir> --issue <owner/repo>#<n> --checkout <path> --base <ref>
+          [--model <m>] [--effort <e>] [--wave <wave> --task <task>] [--managed]
        {PROG} save-plan <dir> --from-transcript <file>
        {PROG} critique <dir> --plan <file> [--managed]
        {PROG} clean <dir>"""
@@ -164,6 +174,8 @@ class Meta:
     worktree: str
     model: str
     effort: str
+    wave: str = ""
+    task: str = ""
 
 
 def usage(message: str) -> cli.Exit:
@@ -254,6 +266,8 @@ def load_meta(d: str) -> Meta:
     except (OSError, ValueError) as err:
         raise cli.Exit(1, f"{d} is not a plan directory {PROG} started: {err}") from None
     fields = cast(dict[str, object], raw) if isinstance(raw, dict) else {}
+    # Existing plan directories lack a board target and can still run their critique.
+    fields = {"wave": "", "task": "", **fields}
     missing = [k for k in Meta.__dataclass_fields__ if not isinstance(fields.get(k), str)]
     if missing:
         raise cli.Exit(1, f"{path} lacks {', '.join(missing)}")
@@ -301,8 +315,13 @@ def live(run: str) -> bool:
 
 
 def start(args: Sequence[str]) -> int:
-    d, values = parse(args, {"--issue", "--checkout", "--base", "--model", "--effort"}, frozenset({"--managed"}))
+    d, values = parse(args, {"--issue", "--checkout", "--base", "--model", "--effort", "--wave", "--task"},
+                      frozenset({"--managed"}))
     required(values, "--issue", "--checkout", "--base")
+    if "--wave" in values or "--task" in values:
+        required(values, "--wave", "--task")
+        if not WAVE.fullmatch(values["--wave"]):
+            raise usage(f"--wave must match {WAVE.pattern}, got {values['--wave']!r}")
     ref = values["--issue"]
     m = re.fullmatch(r"([\w.-]+/[\w.-]+)#([0-9]+)", ref)
     if m is None:
@@ -378,6 +397,8 @@ def launch(
         worktree=worktree,
         model=values.get("--model") or DEFAULT_MODEL,
         effort=values.get("--effort") or DEFAULT_EFFORT,
+        wave=values.get("--wave", ""),
+        task=values.get("--task", ""),
     )
     write(os.path.join(d, "meta.json"), json.dumps(meta.__dict__, indent=2) + "\n")
     write(os.path.join(d, "issue.json"), issue)
@@ -535,6 +556,18 @@ def run_planner(d: str, kind: str) -> int:
             tid = read(os.path.join(d, "thread")).strip()
             # resume takes no -s and no -C: the sandbox is set by config and the directory by cwd.
             argv = ["exec", "resume", tid, "--json", "-m", meta.model, "-c", effort, "-c", 'sandbox_mode="read-only"', "-o", out, "-"]
+    if kind == "plan" and meta.wave:
+        recorded_effort = "" if gemini else meta.effort
+        recorded = proc.run_tool(
+            str(FLEET_WORKER),
+            ["board", "set", meta.wave, meta.task, f"plan_dir={d}",
+             f"planner={meta.model}", f"planner_effort={recorded_effort}"],
+            stdin=subprocess.DEVNULL,
+        )
+        if recorded.rc != 0:
+            detail = last_line(recorded.stderr.strip() or recorded.stdout)
+            raise cli.Exit(1, f"cannot record the planner for {meta.wave!r} {meta.task!r}"
+                           f" (board set exit {recorded.rc}): {detail}")
     # No timeout: run_tool would start the planner in a session of its own, out of reach of the
     # `bg-run.sh stop` that bounds an overdue planner. Unbounded, it stays in the run's group.
     done = proc.run_tool(tool, argv, cwd=meta.worktree, stdin=stdin, env=agy.environment() if gemini else None)

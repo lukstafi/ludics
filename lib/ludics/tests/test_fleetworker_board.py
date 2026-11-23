@@ -151,6 +151,17 @@ class Store(StoreCase):
         self.assertEqual([row["task"] for row in doc["tasks"]], ["b", "a"])
         self.assertEqual(doc["tasks"][0]["fields"], {"state": "merged", "pr": "", **ZERO})
 
+    def test_changing_a_paired_rows_plan_clears_its_planner_fields(self) -> None:
+        for task, update in (("t1", ("planning", "none")), ("t2", ("plan_dir", "/plans/next"))):
+            with self.subTest(update=update):
+                fields = {"planning": "paired", "plan_dir": f"/plans/{task}"}
+                self.assertEqual(self.set(task, *fields.items())[0], 0)
+                self.assertEqual(self.set(task, ("plan_dir", fields["plan_dir"]), ("planner", "fable"),
+                                          ("planner_effort", "high"))[0], 0)
+                self.assertEqual(self.set(task, update)[0], 0)
+                fields[update[0]] = update[1]
+                self.assertEqual(self.doc()["tasks"][-1]["fields"], {**fields, **ZERO})
+
     def test_a_launch_is_stamped_once_by_the_stores_clock(self) -> None:
         """THE LAUNCH STAMP: ``state=launched`` (wave launch's, or a native coordinator's by hand)
         writes ``launched_at`` beside it, so every launch is timed with no step of its own."""

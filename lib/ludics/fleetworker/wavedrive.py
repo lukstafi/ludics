@@ -221,7 +221,8 @@ it, one a tick (THE GATE and the halt are read once a tick, for the cues and the
             coordinator before unprep can remove the row. A fenced unprep is already in progress.
 A PAIRED LAUNCH, of an entry whose ``mode`` is not ``none``, is told once its launch answers: one
 non-final attention line, ``launched <mode> at <sha>: start its peer planner on that sha``. The
-driver starts no planner; the coordinator starts it on that sha, since both plans must read one tree.
+notice gives the coordinator the board target flags for ``peer-plan.sh start``. Both plans must
+read one tree, so the coordinator starts the planner on that sha.
 THE REFRESH: ``wave prep`` runs from the agent host's served skills checkout, and the project part
 it renders is read at the fetched tip, so a checkout one merge behind can lack a built-in that part
 names (a ``WAVE PREP REFUSED`` wave-20261113b-ludics saw). ``refresh`` brings it to its origin, or
@@ -298,6 +299,7 @@ import glob
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -1252,6 +1254,7 @@ class Driver:
                 # A PAIRED LAUNCH (the header): the planner must read the tree the worker launched from.
                 base = record.base if record is not None else sha.strip()
                 self.tell(slot, LAUNCH, f"launched {queued.mode} at {base}: start its peer planner on that sha"
+                                       f" with --wave {shlex.quote(self.wave.wave)} --task {shlex.quote(queued.task)}"
                                        " (paired-planning.md, Coordinator, step 1)")
             return self.note(slot, LAUNCH, "launch", "answered", said)
         gate = PRESTART.search(said) or PRESTART.search(self.err)
