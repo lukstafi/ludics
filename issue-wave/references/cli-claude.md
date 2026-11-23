@@ -219,9 +219,9 @@ wait for it, or `unstick --kill` it, never close out over it. Then, and only the
 workers' worktrees on their boxes, once no outstanding reservation refers to the checkout.
 `wave launch` writes each CLI worker's own worktree as a `farside` word on its row;
 `execution assign` adds requested checkouts and execution hosts, including on a retry.
-`board close` of a merged PR removes that task's `farside` worktrees through `farside-close --task`
-as each row closes (turning any refusal into a `NOTE`), and close-out runs `fleet-worker.sh
-farside-close <wave>` ([executions.md](executions.md#the-gpu-home-box)) to sweep anything that
-stayed. The finished worker records under
+`board close` of a merged PR closes an `IDLE` Claude CLI worker, confirms the CLI worker exited,
+and removes that task's `farside` worktrees through `farside-close --task` as each row closes
+(turning any refusal into a `NOTE`), and close-out runs `fleet-worker.sh farside-close <wave>`
+([executions.md](executions.md#the-gpu-home-box)) to sweep anything that stayed. The finished worker records under
 `~/.local/state/issue-wave/workers/` can stay as evidence; `launch` refuses to overwrite one
 without `--replace`.

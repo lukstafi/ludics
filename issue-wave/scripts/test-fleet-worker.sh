@@ -4344,11 +4344,12 @@ expect "a close that lost its last write is finished by a re-run" 0 '; 0 standin
 [ "$(clog)" = 1 ] && [ "$(cfield t1 state)" = "merged #7 at ${MERGE:0:12}" ] && ok "...with no second log line" || ko "log $(clog) state $(cfield t1 state)"
 "$FW" board set --new-row cw t4 repository=o/r pr=7 standing=none "farside=none" >/dev/null
 expect "standing=none closes a task with no reservation" 0 '"t4" merged o/r#7 at aaaaaaaaaaaa; 0 standing concluded, 0 already; row set$' -- "$FW" board close cw t4
-"$FW" board set --new-row cw t5 repository=o/r pr=7 standing=none "farside=other:/wt/a other:/wt/b" >/dev/null
+"$FW" board set --new-row cw t5 repository=o/r pr=7 standing=none transport=subagent "farside=other:/wt/a other:/wt/b" >/dev/null
 expect "...and a far-side worktree that cannot be removed becomes a NOTE, never a failed close" 0 '; row set; NOTE farside-close cw --task t5 (2 kept):' -- "$FW" board close cw t5
 # #1310: merged board close removes farside worktrees under farside-close's own checks (reading
 # .github/fleet-regenerable from origin/<main>), keeps any with an open reservation or unlisted
-# ignored file with a NOTE, and --no-pr / unmerged closes remove nothing.
+# ignored file with a NOTE, closes an IDLE Claude CLI worker before removing its worktree, applies
+# the CLI exit gate to rows without a transport key, and --no-pr / unmerged closes remove nothing.
 FWCF=(env FLEET_BOXES="testbox other" FLEET_BOX_CORRECTNESS_SLOTS="testbox=4" FLEET_SKILLS_REPO="$HERE/../.." "$FW")
 mkdir -p "$TMP/cw-fc"
 git init -q -b master "$TMP/cw-fc/src" && mkdir -p "$TMP/cw-fc/src/.github"
@@ -4366,7 +4367,7 @@ for d in "$cw_wt_clean" "$cw_wt_res" "$cw_wt_ign" "$cw_wt_nopr" "$cw_wt_open"; d
   mkdir -p "$d/_build" && printf 'built\n' > "$d/_build/o"
 done
 # 1) Merged task: .github/fleet-regenerable allows _build, so the worktree goes at board close.
-"$FW" board set --new-row cw t7 repository=o/r pr=7 standing=none "farside=testbox:$cw_wt_clean" >/dev/null
+"$FW" board set --new-row cw t7 repository=o/r pr=7 standing=none transport=subagent "farside=testbox:$cw_wt_clean" >/dev/null
 expect "merged board close removes a clean worktree (reading .github/fleet-regenerable)" 0 '; row set; worktrees: 1 removed$' -- \
   "${FWCF[@]}" board close cw t7
 [ ! -e "$cw_wt_clean" ] && ok "...and the worktree is gone from disk" || ko "worktree stayed: $cw_wt_clean"
@@ -4376,7 +4377,7 @@ jq -n --arg co "$cw_wt_res" --arg rev "$cw_base" '{request_id:"c-hold", wave:"cw
   issue:"o/r#1310", purpose:"hold fixture", agent_host:"testbox", execution_host:"testbox", repository:"o/r",
   requested_revision:$rev, kind:"correctness", checkout:$co}' > "$TMP/c-hold.json"
 setup_step "could not reserve c-hold (setup)" "${FWCF[@]}" execution run "$TMP/c-hold.json"
-"$FW" board set --new-row cw t8 repository=o/r pr=7 standing=none worker=w-hold "farside=testbox:$cw_wt_res" >/dev/null
+"$FW" board set --new-row cw t8 repository=o/r pr=7 standing=none transport=subagent worker=w-hold "farside=testbox:$cw_wt_res" >/dev/null
 expect "merged board close keeps a worktree with an outstanding reservation, with a NOTE" 0 '; row set; NOTE still open: c-hold; NOTE farside-close cw --task t8 (1 kept): FARSIDE KEPT .*outstanding reservation: c-hold$' -- \
   "${FWCF[@]}" board close cw t8
 [ -d "$cw_wt_res/_build" ] && ok "...and leaves the reserved worktree intact" || ko "reserved worktree went"
@@ -4385,26 +4386,45 @@ jq -n --arg sha "$cw_base" --arg wt "$cw_wt_res" '{request_id:"c-hold", verdict:
 "${FWCF[@]}" execution conclude "$TMP/c-hold-done.json" >/dev/null || ko "could not conclude c-hold (cleanup)"
 # 3) Unlisted ignored file keeps it, refused as farside-close refuses today, with a NOTE, exit 0.
 printf 'precious\n' > "$cw_wt_ign/extra.log"
-"$FW" board set --new-row cw t9r repository=o/r pr=7 standing=none "farside=testbox:$cw_wt_ign" >/dev/null
+"$FW" board set --new-row cw t9r repository=o/r pr=7 standing=none transport=subagent "farside=testbox:$cw_wt_ign" >/dev/null
 expect "merged board close keeps a worktree with an unlisted ignored file, with a NOTE" 0 '; row set; NOTE farside-close cw --task t9r (1 kept): FARSIDE KEPT .*ignored data that --regenerable does not name: extra\.log$' -- \
   "${FWCF[@]}" board close cw t9r
 [ -f "$cw_wt_ign/extra.log" ] && [ -d "$cw_wt_ign/_build" ] && ok "...and leaves the worktree and its ignored files intact" || ko "unlisted-ignored worktree changed"
 # 4) --no-pr and unmerged closes remove nothing.
-"$FW" board set --new-row cw t10 repository=o/r standing=none "farside=testbox:$cw_wt_nopr" >/dev/null
+"$FW" board set --new-row cw t10 repository=o/r standing=none transport=subagent "farside=testbox:$cw_wt_nopr" >/dev/null
 expect "--no-pr board close removes no worktree and keeps the NOTE" 0 '; row set; NOTE 1 far-side worktree(s): farside-close cw --task t10$' -- \
   "${FWCF[@]}" board close cw t10 --no-pr
 [ -d "$cw_wt_nopr/_build" ] && ok "...--no-pr left the worktree intact" || ko "--no-pr removed worktree"
-"$FW" board set --new-row cw t11 repository=o/r pr=7 standing=none "farside=testbox:$cw_wt_open" >/dev/null
+"$FW" board set --new-row cw t11 repository=o/r pr=7 standing=none transport=subagent "farside=testbox:$cw_wt_open" >/dev/null
 cpr OPEN - claude/close
 expect "unmerged board close refuses and removes nothing" 1 'o/r#7 is OPEN, not merged; nothing closed' -- \
   "${FWCF[@]}" board close cw t11
 [ -d "$cw_wt_open/_build" ] && ok "...unmerged close left the worktree intact" || ko "unmerged close removed worktree"
 cpr MERGED "$MERGE" claude/close
-# 5) A CLI row whose worker has not exited (no exited status on testbox) keeps its worktree with a NOTE.
+# 5) A CLI row (explicit transport=cli or absent transport) whose worker has not exited keeps its worktree.
 "$FW" board set --new-row cw t12 repository=o/r pr=7 standing=none transport=cli agent_host=testbox worker=w-live "farside=testbox:$cw_wt_open" >/dev/null
 expect "CLI board close keeps the worktree when the worker has not exited" 0 '; row set; NOTE CLI worker w-live on testbox is not exited .*; close it first, then run farside-close cw --task t12$' -- \
   "${FWCF[@]}" board close cw t12
 [ -d "$cw_wt_open/_build" ] && ok "...unexited CLI worker kept its worktree" || ko "unexited CLI worker lost worktree"
+"$FW" board set --new-row cw t12b repository=o/r pr=7 standing=none agent_host=testbox worker=w-legacy "farside=testbox:$cw_wt_open" >/dev/null
+expect "row with absent transport applies the CLI exit gate" 0 '; row set; NOTE CLI worker w-legacy on testbox is not exited .*; close it first, then run farside-close cw --task t12b$' -- \
+  "${FWCF[@]}" board close cw t12b
+[ -d "$cw_wt_open/_build" ] && ok "...absent-transport row kept its worktree" || ko "absent-transport row lost worktree"
+# 6) Positive CLI path: a real IDLE Claude worker is closed, confirmed EXITED via real status, and loses its worktree.
+setup_step "could not launch w-idle-close (setup)" env SHIM_BASE_TIP="$cw_base" "$FW" launch testbox w-idle-close --target-repo example/project --kind claude --brief "$brief" --repo "$TMP/cw-fc/co" --branch claude/idle-close
+"$FW" attach testbox w-idle-close --interval 1 >/dev/null 2>&1 || ko "w-idle-close never became IDLE (setup)"
+cw_wt_idle="$TMP/cw-fc/co-worktrees/w-idle-close"
+mkdir -p "$cw_wt_idle/_build" && printf 'built\n' > "$cw_wt_idle/_build/o"
+cw_idle_st=$("$FW" status testbox w-idle-close)
+grep -q '^IDLE ' <<<"$cw_idle_st" && ok "fixture Claude CLI worker is IDLE before board close" || ko "fixture not IDLE: $cw_idle_st"
+cpr MERGED "$MERGE" claude/idle-close
+"$FW" board set --new-row cw t13 repository=o/r pr=7 standing=none transport=cli agent_host=testbox worker=w-idle-close branch=claude/idle-close "farside=testbox:$cw_wt_idle" >/dev/null
+expect "merged board close closes an IDLE Claude CLI worker and removes its worktree" 0 '; row set; worktrees: 1 removed$' -- \
+  "${FWCF[@]}" board close cw t13
+cw_idle_st=$("$FW" status testbox w-idle-close)
+grep -q '^EXITED(0) ' <<<"$cw_idle_st" && ok "...the Claude CLI worker is now EXITED(0)" || ko "worker did not exit: $cw_idle_st"
+[ ! -e "$cw_wt_idle" ] && ok "...and its worktree is gone from disk" || ko "CLI worktree stayed: $cw_wt_idle"
+cpr MERGED "$MERGE" claude/close
 expect "...and without the lease the close writes nothing" 1 "." -- env -u FLEET_COORDINATOR FLEET_COORDINATOR=somebody-else "$FW" board close cw t1 --agent agent-3
 [ "$(cfield t1 agent)" = agent-2 ] && ok "...its row as it was" || ko "a close with no lease set the row: $(cfield t1 agent)"
 # #1109, THE UNUSED LEG: a standing GPU-home-box leg no batch ran under has no worktree to read, and

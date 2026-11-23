@@ -34,12 +34,13 @@ WHAT IT DOES, in this order, each read before any write:
    ``farside-close <wave> --task <task>`` runs after ``board set``, applying every gate of
    ``farside-close`` (clean tree, no outstanding reservation, no not-done row naming the path,
    only ignored directories allowed by the project's ``.github/fleet-regenerable`` on
-   ``origin/<main>``, HEAD proved). For a CLI row (``transport=cli``), ``status <agent_host>
-   <worker>`` is checked first and must report ``EXITED(<n>)``: a live ``IDLE`` Claude worker or
-   running/orphaned CLI worker keeps its worktrees until closed. Any worktree kept, trimmed,
-   unreachable, or refused is reported as a ``NOTE`` on the close line and never fails the close
-   (exit stays 0; close-out's ``farside-close`` or a re-run retries it). ``--no-pr`` and unmerged
-   closes remove nothing.
+   ``origin/<main>``, HEAD proved). For a CLI row (``boardstore.cli_row``: ``transport=cli`` or
+   absent), ``status <agent_host> <worker>`` is checked first; an ``IDLE`` stream worker is closed
+   with ``fleet-worker.sh close <agent_host> <worker>`` and re-read, and removal proceeds only
+   once ``status`` reports ``EXITED(<n>)`` (a live running/orphaned worker or one whose ``close``
+   refuses keeps its worktrees). Any worktree kept, trimmed, unreachable, or refused is reported
+   as a ``NOTE`` on the close line and never fails the close (exit stays 0; close-out's
+   ``farside-close`` or a re-run retries it). ``--no-pr`` and unmerged closes remove nothing.
 
 THE VERDICT. ``conclude --standing-handback`` takes no default because its verdict is the hand-back's
 word. Here ``pass`` is what this verb establishes: a standing record is concluded as the worker's
@@ -92,13 +93,14 @@ import tempfile
 from typing import Any, cast
 
 from ludics import cli
+from ludics.fleetworker.boardstore import cli_row
 from ludics.fleetworker.config import Config
 from ludics.fleetworker import execution as ex
 from ludics.fleetworker.execution import field, listing, record_of, recorded_checkout, records_of
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.lease import mutation_failure_status
 from ludics.fleetworker.takeover import KEYS, board_document, gh_json, row_of
-from ludics.fleetworker.transport import run, substitution
+from ludics.fleetworker.transport import substitution
 
 USAGE = "board close <wave> <task> [--pr <n> | --no-pr [--run <absolute-dir>]...] [--agent <id>] [--evidence <text>]"
 OID = re.compile(r"[0-9a-f]{40}([0-9a-f]{24})?")
@@ -215,10 +217,29 @@ def to_conclude(wave: str, task: str, records: list[dict[str, Any]], ids: list[s
     return todo, [str(r.get("request_id")) for r in left]
 
 
+def stepped_both(cfg: Config, args: list[str]) -> tuple[int, str, str]:
+    """This fleet-worker.sh with ``args``, capturing stdout and stderr while forwarding stderr."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    argv = cfg.shim_command(*args)
+    try:
+        done = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    except OSError as exc:
+        msg = f"{argv[0]}: {exc.strerror}"
+        sys.stderr.write(msg + "\n")
+        sys.stderr.flush()
+        return 127, "", msg
+    err_text = done.stderr.decode("utf-8", "surrogateescape")
+    if err_text:
+        sys.stderr.write(err_text)
+        sys.stderr.flush()
+    return done.returncode, substitution(done.stdout.decode("utf-8", "surrogateescape")), substitution(err_text)
+
+
 def stepped(cfg: Config, args: list[str]) -> tuple[int, str]:
-    """This fleet-worker.sh with ``args``: its status and its output, captured."""
-    done = run(cfg.shim_command(*args), capture=True)
-    return done.rc, substitution(done.out)
+    """This fleet-worker.sh with ``args``: its status and its stdout, captured."""
+    rc, out, _ = stepped_both(cfg, args)
+    return rc, out
 
 
 def step(cfg: Config, args: list[str]) -> tuple[int, str]:
@@ -339,43 +360,40 @@ def no_pr_payloads(cfg: Config, wave: str, task: str, records: list[dict[str, An
 EXITED = re.compile(r"EXITED\([0-9]+\)")
 
 
-def stepped_both(cfg: Config, args: list[str]) -> tuple[int, str, str]:
-    """This fleet-worker.sh with ``args``, capturing stdout and stderr while forwarding stderr."""
-    sys.stdout.flush()
-    sys.stderr.flush()
-    argv = cfg.shim_command(*args)
-    try:
-        done = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-    except OSError as exc:
-        msg = f"{argv[0]}: {exc.strerror}"
-        sys.stderr.write(msg + "\n")
-        sys.stderr.flush()
-        return 127, "", msg
-    err_text = done.stderr.decode("utf-8", "surrogateescape")
-    if err_text:
-        sys.stderr.write(err_text)
-        sys.stderr.flush()
-    return done.returncode, substitution(done.stdout.decode("utf-8", "surrogateescape")), substitution(err_text)
+def _last_line(out: str, err_out: str, fallback: str) -> str:
+    lines = [line for line in out.splitlines() if line.strip()]
+    if lines:
+        return lines[-1]
+    err_lines = [line for line in err_out.splitlines() if line.strip()]
+    return err_lines[-1] if err_lines else fallback
 
 
 def close_worktrees(cfg: Config, wave: str, task: str, fields: dict[str, str]) -> str:
     """Remove a merged task's ``farside`` worktrees through ``farside-close --task`` (#1310).
-    For a ``transport=cli`` row, confirms ``status <agent_host> <worker>`` is ``EXITED(<n>)``
-    before removing anything so a live ``IDLE``/``RUNNING`` CLI worker never loses its cwd.
+    For a CLI row (``boardstore.cli_row``: ``transport=cli`` or absent), checks ``status
+    <agent_host> <worker>``, closes an ``IDLE`` stream worker first and re-reads ``status``, and
+    proceeds only once ``status`` reports ``EXITED(<n>)``.
     Returns the suffix for ``BOARD CLOSE``: ``; worktrees: <counts>`` when every word cleared,
     or ``; NOTE ...`` when any worktree stayed or the call refused. Never fails the close."""
     cmd = shlex.join(["farside-close", wave, "--task", task])
-    if fields.get("transport") == "cli":
+    if cli_row(fields):
         host, worker = fields.get("agent_host", ""), fields.get("worker", "")
         if not host or not worker:
             return f"; NOTE CLI worker identity missing (agent_host/worker); confirm it exited, then run {cmd}"
         src, sout, serr = stepped_both(cfg, ["status", host, worker])
         slines = [line for line in sout.splitlines() if line.strip()]
         first = slines[0].split(None, 1)[0] if slines else ""
+        close_note = ""
+        if src == 0 and first == "IDLE":
+            crc, cout, cerr = stepped_both(cfg, ["close", host, worker])
+            if crc != 0:
+                close_note = f"; close: {_last_line(cout, cerr, f'exit {crc}')}"
+            src, sout, serr = stepped_both(cfg, ["status", host, worker])
+            slines = [line for line in sout.splitlines() if line.strip()]
+            first = slines[0].split(None, 1)[0] if slines else ""
         if src != 0 or not EXITED.fullmatch(first):
-            elines = [line for line in serr.splitlines() if line.strip()]
-            why = first if src == 0 and first else (slines[-1] if slines else (elines[-1] if elines else f"status exit {src}"))
-            return (f"; NOTE CLI worker {shlex.quote(worker)} on {shlex.quote(host)} is not exited ({why});"
+            why = first if src == 0 and first else _last_line(sout, serr, f"status exit {src}")
+            return (f"; NOTE CLI worker {shlex.quote(worker)} on {shlex.quote(host)} is not exited ({why}{close_note});"
                     f" close it first, then run {cmd}")
     rc, out, err_out = stepped_both(cfg, ["farside-close", wave, "--task", task])
     lines = [line for line in out.splitlines() if line.strip()]
@@ -392,8 +410,7 @@ def close_worktrees(cfg: Config, wave: str, task: str, fields: dict[str, str]) -
     if stayed:
         head = f" ({counts})" if counts else f" (exit {rc})"
         return f"; NOTE {cmd}{head}: {'; '.join(stayed)}"
-    err_lines = [line for line in err_out.splitlines() if line.strip()]
-    last = lines[-1] if lines else (err_lines[-1] if err_lines else "")
+    last = _last_line(out, err_out, "")
     return f"; NOTE {cmd} (exit {rc}" + (f": {last})" if last else ")")
 
 

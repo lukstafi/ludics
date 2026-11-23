@@ -137,7 +137,11 @@ from ludics.fleetworker.transport import err, fleet_name, is_local, prelude, run
 from ludics.postmergecleanup.cleanup import ACTIVE_OPERATIONS
 
 USAGE = "farside-close <wave> [--task <task>]... [--regenerable <dir>]... [--remote <name>] [--dry-run]"
-REGENERABLE = re.compile(r"\.?[A-Za-z0-9_][A-Za-z0-9._-]*")  # one component: no separator, no `..`, no option
+# Single source of truth for the ASCII regenerable component character classes (shared by Python's
+# REGENERABLE regex and CLOSE's bash valid_regen so the CLI and .github/fleet-regenerable stay in step).
+_REGEN_HEAD = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_"
+_REGEN_TAIL = _REGEN_HEAD + ".-"
+REGENERABLE = re.compile(rf"\.?[{_REGEN_HEAD}][{_REGEN_TAIL}]*")  # one component: no separator, no `..`, no option
 ANY_DEPTH = "**/"  # a --regenerable prefix: the directory path at any depth (the header)
 CLEARED = ("REMOVED", "GONE", "WOULD-REMOVE")  # the verdicts that leave nothing to look at
 FAR_VERDICTS = ("REMOVED", "TRIMMED", "KEPT", "GONE", "WOULD-REMOVE", "WOULD-TRIM")
@@ -146,7 +150,34 @@ FAR_VERDICTS = ("REMOVED", "TRIMMED", "KEPT", "GONE", "WOULD-REMOVE", "WOULD-TRI
 # in seconds, dry (0|1), this run's token, the space-separated allowed observed SHAs, then the --regenerable values (``regenerable``'s
 # shapes: their components hold no glob character, so each is matched literally). Its stdout is one line,
 # `<verdict><TAB><why>`, whatever it found; every other word goes to stderr.
-CLOSE = WORKTREE + f"operations={shlex.quote(' '.join(ACTIVE_OPERATIONS))}\n" + r"""wt=$(expand_tilde "$1") remote="$2" fetch_timeout="$3" dry="$4" token="$5" observed="$6"; shift 6
+VALID_REGEN = (
+    "valid_regen() {\n"
+    '  local v="$1" p rest part\n'
+    '  case "$v" in\n'
+    "    '**/'*) p=${v:3} ;;\n"
+    '    *) p=$v ;;\n'
+    "  esac\n"
+    '  [ -n "$p" ] || return 1\n'
+    '  case "$p" in /*|*/|*//*) return 1 ;; esac\n'
+    "  rest=$p\n"
+    "  while :; do\n"
+    '    case "$rest" in\n'
+    '      */*) part=${rest%%/*}; rest=${rest#*/} ;;\n'
+    '      *) part=$rest; rest="" ;;\n'
+    "    esac\n"
+    '    case "$part" in\n'
+    "      ''|.|..|.[Gg][Ii][Tt]) return 1 ;;\n"
+    f"      *[!{_REGEN_TAIL}]*) return 1 ;;\n"
+    f"      .[{_REGEN_HEAD}]*) ;;\n"
+    f"      [{_REGEN_HEAD}]*) ;;\n"
+    "      *) return 1 ;;\n"
+    "    esac\n"
+    '    [ -n "$rest" ] || break\n'
+    "  done\n"
+    "  return 0\n"
+    "}\n"
+)
+CLOSE = WORKTREE + f"operations={shlex.quote(' '.join(ACTIVE_OPERATIONS))}\n" + VALID_REGEN + r"""wt=$(expand_tilde "$1") remote="$2" fetch_timeout="$3" dry="$4" token="$5" observed="$6"; shift 6
 # No trailing `/`: `[ -L "$wt/" ]` follows the link and reads the directory behind it.
 wt=${wt%"${wt##*[!/]}"}
 ns="refs/fleet-close/$token"; pref="refs/fleet-close-policy/$token"; cdir=""
@@ -191,31 +222,6 @@ private=$(git -C "$wt" for-each-ref --count=1 --format='%(refname)' refs/worktre
 # THE PROJECT FILE (.github/fleet-regenerable, ludics#1310): fetch the remote's default branch
 # into a private ref so a revoked entry on the remote is never honored from a stale local ref, and
 # read with replacement objects and lazy partial-clone fetches disabled (the header).
-valid_regen() {
-  local v="$1" p rest part
-  case "$v" in
-    '**/'*) p=${v:3} ;;
-    *) p=$v ;;
-  esac
-  [ -n "$p" ] || return 1
-  case "$p" in /*|*/|*//*) return 1 ;; esac
-  rest=$p
-  while :; do
-    case "$rest" in
-      */*) part=${rest%%/*}; rest=${rest#*/} ;;
-      *) part=$rest; rest="" ;;
-    esac
-    case "$part" in
-      ''|.|..|.[Gg][Ii][Tt]) return 1 ;;
-      *[!0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ._-]*) return 1 ;;
-      .[0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_]*) ;;
-      [0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_]*) ;;
-      *) return 1 ;;
-    esac
-    [ -n "$rest" ] || break
-  done
-  return 0
-}
 allow=("$@")
 rhead=$(git -C "$wt" symbolic-ref -q "refs/remotes/$remote/HEAD" 2>/dev/null) || rhead=""
 case "$rhead" in

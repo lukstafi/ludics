@@ -517,6 +517,20 @@ class Far(Fixture):
         for entry in entries:
             self.assertTrue(farsideclose.regenerable_value(entry), entry)
 
+    def test_python_and_shell_regenerable_validators_agree_on_every_shape(self) -> None:
+        samples = [
+            "_build", ".cache", ".cache/x", "arrayjit/test/log_files", "**/log_files", "**/__pycache__",
+            "**/a/b", ".a", "_a", "._a", ".gitignore",
+            "", "/abs", "/", "../x", "a/../b", "a/./b", "a//b", "a/", "./a", "**", "**/", "*",
+            "*/log_files", "**/**/x", "a/**/b", "a/**", "log_*", "lo?", "[l]og", ".git", ".GIT",
+            "**/.git", "x/.git", "x/.GIT", "a/-x", "-x", "..x", ".-x", "a\\b", "a b", "**/..", "**/.","café",
+        ]
+        script = farsideclose.VALID_REGEN + 'for v in "$@"; do if valid_regen "$v"; then echo 1; else echo 0; fi; done\n'
+        done = subprocess.run([BASH, "-c", script, "--", *samples], capture_output=True, text=True, check=True)
+        shell_verdicts = [line == "1" for line in done.stdout.splitlines()]
+        py_verdicts = [farsideclose.regenerable_value(s) for s in samples]
+        self.assertEqual(shell_verdicts, py_verdicts, list(zip(samples, shell_verdicts, py_verdicts)))
+
 
 def record(rid: str, *, state: str = "running", host: str = "rog", wave: str = "w", worker: str = "wk", checkout: str = "") -> dict[str, Any]:
     out: dict[str, Any] = {"request_id": rid, "state": state, "request": {"execution_host": host, "wave": wave, "worker": worker}}
