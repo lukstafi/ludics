@@ -534,6 +534,10 @@ class Tally(StoreCase):
                 self.assertEqual((rc, out), (1, ""))
                 self.assertIn("a launch_id must be", err)
                 self.assertEqual(self.doc(), before)
+        rc, out, err = self.set("t1", ("launch_id", "w-t1-3"), ("state", "launched"))
+        self.assertEqual((rc, out), (1, ""))
+        self.assertIn("launch_id is recorded by board spawned, not board set", err)
+        self.assertEqual(self.doc(), before)
 
     def test_unkeyed_spawn_after_keyed_clears_launch_id_and_keeps_replay_history(self) -> None:
         self.set("t1", ("state", "pending"))

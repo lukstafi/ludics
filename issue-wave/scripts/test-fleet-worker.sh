@@ -2959,6 +2959,10 @@ expect "reusing a launch-attempt ID for different spawn facts is refused" 1 '^BO
   ok "...the conflicting replay writes nothing" || ko "sp conflict board=$(cat "$ISSUE_WAVE_STATE/boards/sp.json")"
 expect "a launch-attempt ID outside the grammar is a usage error" 2 'board spawned: --launch-id must be' -- \
   "$FW" board spawned sp idemp --agent a1 --transport subagent --launch-id bad/id
+expect "board set refuses to write launch_id directly" 1 '^BOARD REFUSED: launch_id is recorded by board spawned, not board set$' -- \
+  "$FW" board set sp idemp launch_id=sp-idemp-3 state=launched
+[ "$spbefore" = "$(git hash-object "$ISSUE_WAVE_STATE/boards/sp.json")" ] &&
+  ok "...refused board set launch_id writes nothing" || ko "sp set launch_id board=$(cat "$ISSUE_WAVE_STATE/boards/sp.json")"
 # status --json (ludics#1165): the observers' read through the shim, with no lease and no identity --
 # every board, each row's phase derived as check reads it, the lease's host and never its token.
 expect "status --json reads every board without the lease or any identity" 0 '^{"version": 1, ' -- \

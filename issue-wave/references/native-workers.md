@@ -60,8 +60,10 @@ Residence does not preclude checks on other boxes; each execution is reserved se
    row with `fleet-worker.sh board spawned <wave> <task> --agent <id> --transport subagent
    [--model <m>] [--launch-id <id>]`. This command is the board update for the native launch step in
    SKILL.md. Supply the model when the runtime's choice differs from the prepared row, and pass a
-   stable `--launch-id` (`[A-Za-z0-9][A-Za-z0-9._-]*`) per launch attempt so an unacknowledged report
-   can be retried without counting a duplicate relaunch.
+   stable `--launch-id` matching `[A-Za-z0-9][A-Za-z0-9._-]*` — use `<wave>-<task-slug>-<n>` (for
+   example `w1123-t1294-1`, replacing characters outside that set in task names such as `ll#1`,
+   where `<n>` is the 1-based attempt number chosen before spawning and reused on every retry of
+   that attempt) — so an unacknowledged report can be retried without counting a duplicate relaunch.
    Validate the worker's startup report before calling the launch successful: actual absolute
    worktree, branch, base SHA, agent identity, and a harmless successful Git mutation such as
    `git update-index --refresh` with exit status.

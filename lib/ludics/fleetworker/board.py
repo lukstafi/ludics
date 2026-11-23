@@ -124,7 +124,7 @@ def spawned_payload(args: list[str]) -> dict[str, object]:
         if key is None or key in payload or not value.strip() or value.startswith("--"):
             die(f"board spawned: expected {SPAWNED_USAGE}")
         if key == "launch_id" and not boardstore.LAUNCH_ID.fullmatch(value):
-            die(f"board spawned: --launch-id must be [A-Za-z0-9][A-Za-z0-9._-]* ({SPAWNED_USAGE})")
+            die(f"board spawned: --launch-id must be {boardstore.LAUNCH_ID.pattern} ({SPAWNED_USAGE})")
         payload[key] = value
     if "agent" not in payload or "transport" not in payload:
         die(f"board spawned: expected {SPAWNED_USAGE}")

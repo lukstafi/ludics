@@ -54,10 +54,13 @@ as ``registry.py``'s header states it for the registry; any other word is the pa
         and acknowledge a relaunch with a ``BOARD TALLY`` line after the write acknowledgement. An
         invalid counter refuses the whole write.
         THE LAUNCH-ATTEMPT IDENTITY (ludics#1294; shared with ``wave launch``, ludics#1290): an
-        optional caller-chosen opaque identifier matching ``LAUNCH_ID``
-        (``[A-Za-z0-9][A-Za-z0-9._-]*``, the same fail-closed token grammar as ``WAVE`` and
-        ``takeover.REQUEST_ID``, validated by ``launch_id_ok``; CLI flag ``--launch-id <id>``,
-        payload key and row field ``launch_id``). When ``launch_id`` is supplied, ``spawned``
+        optional caller-chosen opaque identifier matching ``LAUNCH_ID`` (same regex as ``WAVE`` and
+        ``takeover.REQUEST_ID``: ``[A-Za-z0-9][A-Za-z0-9._-]*``, validated by ``launch_id_ok``; CLI
+        flag ``--launch-id <id>``, payload key and row field ``launch_id``). The wave's recipe is
+        ``<wave>-<task-slug>-<n>`` (for example ``w1123-t1294-1``, replacing characters outside
+        ``[A-Za-z0-9._-]`` in task names such as ``ll#1``, where ``<n>`` is the 1-based attempt
+        number chosen before spawning and reused on every retry of that attempt). ``launch_id`` is
+        owned by ``spawned`` and refused by ``set``. When ``launch_id`` is supplied, ``spawned``
         writes ``fields["launch_id"]`` and records the attempt's runtime facts (``agent``,
         ``transport``, optional ``model``) and exact acknowledgement ``said`` under
         ``row["spawns"][launch_id]`` in the same atomic publish. Replaying an ID already in
@@ -65,10 +68,9 @@ as ``registry.py``'s header states it for the registry; any other word is the pa
         and ``updated_at`` untouched, any later row state preserved) that prints the original
         ``said``; replaying it with different runtime facts refuses, nothing written. A distinct
         ``launch_id`` (even under the same ``agent``) counts a new spawn and updates
-        ``fields["launch_id"]``. An unkeyed call (no ``launch_id``) behaves as before, clearing
-        any stale ``fields["launch_id"]`` while keeping ``row["spawns"]``, and still requires a
-        re-read with ``show`` before retrying; a legacy ``set`` relaunch that does not name
-        ``launch_id`` clears ``fields["launch_id"]`` in the same way.
+        ``fields["launch_id"]``. An unkeyed ``spawned`` or a legacy ``set`` relaunch behaves as
+        before while clearing any stale ``fields["launch_id"]`` and keeping ``row["spawns"]``, and
+        an unkeyed ``spawned`` still requires a re-read with ``show`` before retrying.
   tally {"counter", "why", "wave", "task"} | {"counter", "why", "worker", "hosts": [box, ...], "done": [word, ...]}
         one more of a row's coordinator turns or relaunches (ludics#1214, ludics#1236; the
         classifier and its closed list are ``ludics.fleetworker.tally``'s, near side): ``counter``
@@ -173,8 +175,8 @@ type Doc = dict[str, Any]
 WAVE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 KEY = re.compile(r"[A-Za-z][A-Za-z0-9_-]*")
 # THE LAUNCH-ATTEMPT IDENTITY (the header): the one launch-attempt ID grammar shared by
-# ``board spawned`` (#1294) and ``wave launch`` (#1290).
-LAUNCH_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+# ``board spawned`` (#1294) and ``wave launch`` (#1290), sharing WAVE's token grammar.
+LAUNCH_ID = WAVE
 SPAWN_FACT_KEYS = ("agent", "transport", "model")
 SPAWN_RECORD_REQUIRED = frozenset({"agent", "transport", "said"})
 SPAWN_RECORD_ALLOWED = frozenset({"agent", "transport", "model", "said"})
@@ -219,7 +221,7 @@ def key_ok(value: Any) -> str:
 
 def launch_id_ok(value: Any) -> str:
     if not isinstance(value, str) or not LAUNCH_ID.fullmatch(value):
-        refuse("a launch_id must be [A-Za-z0-9][A-Za-z0-9._-]*")
+        refuse(f"a launch_id must be {LAUNCH_ID.pattern}")
     return value
 
 
@@ -692,6 +694,8 @@ def main(argv: list[str]) -> None:
         case "set" | "spawned":
             task = task_ok(payload.get("task"))
             pairs = spawn_fields(payload) if action == "spawned" else fields_ok(payload.get("fields"))
+            if action == "set" and any(key == "launch_id" for key, _ in pairs):
+                refuse("launch_id is recorded by board spawned, not board set")
             tasks = cast(list[Doc], doc["tasks"])
             row: Doc | None = next((entry for entry in tasks if entry["task"] == task), None)
             if row is None:
@@ -725,10 +729,6 @@ def main(argv: list[str]) -> None:
             before = None if created else dict(fields)
             for key, value in pairs:
                 fields[key] = value
-            if action == "spawned" and launch_id is None:
-                # An unkeyed spawn replaces the row's active launch, so drop any stale launch_id
-                # from fields while keeping row["spawns"] to guard against late keyed replays.
-                fields.pop("launch_id", None)
             if created:
                 for key in COUNTERS:
                     fields.setdefault(key, "0")  # THE COUNTERS START AT ZERO (the header)
@@ -744,13 +744,15 @@ def main(argv: list[str]) -> None:
             else:
                 said = f"BOARD SET {wave}: {json.dumps(task)} " + " ".join(key for key, _ in pairs)
                 reason = f"state={json.dumps(fields.get('state'), ensure_ascii=False)}"
+            relaunching = False
             if before is not None and "launched_at" in before and (action == "spawned" or set_relaunched(before, fields, pairs)):
+                relaunching = True
                 why = f"{reason} on a row launched at {before['launched_at']}"
                 said += "\n" + bump(doc, row, "relaunches", why, coordinator, now)
-                if action == "set" and "launch_id" not in {key for key, _ in pairs}:
-                    # A legacy set relaunch replaces the active launch, so drop any prior launch_id
-                    # from fields while retaining row["spawns"] for replays of earlier attempts.
-                    fields.pop("launch_id", None)
+            if launch_id is None and (action == "spawned" or relaunching):
+                # An unkeyed spawn or legacy set relaunch replaces the active launch, so drop any
+                # prior launch_id from fields while retaining row["spawns"] for earlier replays.
+                fields.pop("launch_id", None)
             if action == "spawned" and launch_id is not None:
                 spawns = cast(dict[str, dict[str, str]], row.setdefault("spawns", {}))
                 spawns[launch_id] = {**spawn_facts, "said": said}
