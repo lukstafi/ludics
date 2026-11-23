@@ -39,13 +39,15 @@ WHAT IT DOES, in this order:
 7. The reviewer, headless, the prompt on its stdin (``reviewer_call``). Its final message is the
    review. READ-ONLY is enforced by the CLI, not only the prompt's word, in one of two forms:
 
-   - ``claude``: a tool list, a fail-closed allowlist: the file readers, ``git -C <checkout>``
-     with a reading verb (``GIT_READS``), ``gh`` with a reading one (``GH_READS``), one exact
-     paginated GET of the current PR's inline comments (including replies in resolved threads) for
-     confirms, and the filters a pipe ends in (``FILTERS``). Other API paths and arguments are
-     outside the allowlist, and editing tools are refused by name. What that does not stop: an
-     allowed verb's own writing option (``git show --output=<file>``), and anything ``gh`` reads
-     with the fleet's token.
+   - ``claude`` (built by ``ludics.claude.readonly_argv``): ``--strict-mcp-config`` with no
+     ``--mcp-config`` bounds MCP tools by ignoring all MCP servers configured on the box, while
+     ``--allowedTools`` and ``--disallowedTools`` bound built-in tools only: a fail-closed
+     allowlist of the file readers, ``git -C <checkout>`` with a reading verb (``GIT_READS``),
+     ``gh`` with a reading one (``GH_READS``), one exact paginated GET of the current PR's inline
+     comments (including replies in resolved threads) for confirms, and the filters a pipe ends in
+     (``FILTERS``). Other API paths and arguments are outside the allowlist, and editing tools are
+     refused by name. What that does not stop: an allowed verb's own writing option
+     (``git show --output=<file>``), and anything ``gh`` reads with the fleet's token.
    - ``gemini`` (Antigravity's ``agy``): A CLONE (``ludics.agy``'s header says why agy's own
      permission rules cannot be the bound). The reviewer runs with every tool approved in a
      disposable local clone of the checkout at ``<sha>``, with no remote and ``origin/<MAIN>`` as
@@ -117,7 +119,7 @@ from collections.abc import Generator
 from dataclasses import dataclass
 from typing import Any, cast
 
-from ludics import agy, cli, proc
+from ludics import agy, claude, cli, proc
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.lease import LEASE_LOST_STATUS, anchor_gate
@@ -159,9 +161,11 @@ def reviewer_call(call: "Call", prompt: str) -> tuple[str, list[str], bytes]:
                    + [f"Bash({name}:*)" for name in FILTERS] + ["Read", "Grep", "Glob"])
         if call.kind == "confirm":
             allowed.append(f"Bash({call.inline_comments})")
-        return "claude", ["-p", "--model", review.model, "--output-format", "json", "--no-session-persistence",
-                          "--allowedTools", *allowed, "--disallowedTools", "Edit", "Write", "NotebookEdit"], \
-            prompt.encode("utf-8", "surrogateescape")
+        return "claude", claude.readonly_argv(
+            review.model,
+            claude.ToolRules(allowed, ("Edit", "Write", "NotebookEdit")),
+            persist=False,
+        ), prompt.encode("utf-8", "surrogateescape")
     if review.kind == "gemini":
         return "agy", agy.argv(review.model), agy.message(prompt)
     raise AssertionError(f"no reviewer for kind {review.kind}")
