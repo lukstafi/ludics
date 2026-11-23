@@ -342,6 +342,11 @@
 #                          # parsed whole (anything else is unreadable, which blocks), the review is
 #                          # posted on the PR, and the message that resumes the worker is written;
 #                          # a re-run never buys a second review (wavereview.py)
+#   fleet-worker.sh wave ab <wave.json>... [--json] [--no-github]   # read-only A/B comparison across
+#                          # one or more waves: joins board rows, reviews/*.json and GitHub PRs by
+#                          # tier group and (transport, kind, model) arm, prints per-arm agent_host
+#                          # counts and ten-per-arm readings, sets reassigned rows apart, and prints
+#                          # missing or partial data without guessing (waveab.py)
 #   fleet-worker.sh farside-close <wave> [--task <task>]... [--regenerable <dir>]... [--remote <name>] [--dry-run]
 #                          # remove a closed wave's far-side worktrees, the board's `farside` words,
 #                          # each only past its row's done state, no outstanding reservation, no leg
