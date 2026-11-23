@@ -58,17 +58,20 @@ cli.restore_caller_environment(os.environ)
 fixture = parse_config("command true\\ntrigger always\\nlease fleet\\n", "lease preflight fixture")
 accepted = fixture is not None and getattr(fixture, "fleet_lease", False) is True
 cfg = load_config(os.path.join(sys.argv[1], "issue-wave", "scripts", "fleet-worker.sh"), os.environ)
-if pin_refusal(cfg) or not re.fullmatch(sys.argv[3], cfg.anchor):
-    print(json.dumps([accepted, anchor_name(cfg), 2, ""]))
+endpoint = anchor_name(cfg)
+if pin_refusal(cfg):
+    print(json.dumps([accepted, endpoint, 2, ""]))
+elif not all(re.fullmatch(sys.argv[3], name) for name in (cfg.anchor, endpoint)):
+    print(json.dumps([accepted, endpoint, 4, ""]))
 else:
     argv = far_argv(cfg, cfg.anchor, [])
     script = emit_var("ANCHOR_STATE", cfg.anchor_state) + sys.argv[2]
     try:
         done = proc.run_tool(argv[0], argv[1:], stdin=script.encode(), timeout=20)
     except OSError:
-        print(json.dumps([accepted, anchor_name(cfg), 255, ""]))
+        print(json.dumps([accepted, endpoint, 255, ""]))
     else:
-        print(json.dumps([accepted, anchor_name(cfg), done.rc, done.stdout]))
+        print(json.dumps([accepted, endpoint, done.rc, done.stdout]))
 READER_PY
 """.encode()
 
@@ -99,7 +102,7 @@ def _probe(cfg: Config, box: str) -> tuple[str, Anchor | None]:
     if done.rc:
         return f"reader probe failed (exit {done.rc})", None
     match _record(done.stdout):
-        case [bool(accepted), str(endpoint), int(status), str(reply)] if _BOX.fullmatch(endpoint) and type(status) is int:
+        case [bool(accepted), str(endpoint), int(status), str(reply)] if endpoint and type(status) is int:
             pass
         case _:
             return "unrecognized reader reply", None
@@ -107,8 +110,12 @@ def _probe(cfg: Config, box: str) -> tuple[str, Anchor | None]:
     anchor = f"anchor {shlex.quote(endpoint)}"
     if status in (UNREACHABLE, 124):
         return f"{reader}, {anchor} unreachable (exit {status})", None
+    if status == 2:
+        return f"{reader}, {anchor} differs from the fleet registry pin", None
     if status == 3:
         return f"{reader}, {anchor} state path must be absolute after expanding $HOME", None
+    if status == 4 or not _BOX.fullmatch(endpoint):
+        return f"{reader}, {anchor} must be a plain fleet name", None
     if status:
         return f"{reader}, {anchor} directory probe failed (exit {status})", None
     match _record(reply):

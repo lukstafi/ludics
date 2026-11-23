@@ -1391,8 +1391,9 @@ box must carry this reader and resolve the same fleet anchor and state directory
 the line, run `pr-review.sh lease-preflight <owner/repo>`. It checks the configured roster, or
 just the names given after `--boxes`, and refuses if a box rejects the directive, is unreachable,
 or resolves a different anchor directory. The probe parses a synthetic config with each box's
-served reader and compares the anchor name, host, device and inode. The state path must be absolute
-after expanding a leading `$HOME/`. The probe reads no repository config
+served reader and compares the anchor name, host, device and inode. Configure the anchor with a
+plain fleet name and a state path that is absolute after expanding a leading `$HOME/`. The probe
+reads no repository config
 or lease records and acquires nothing. Drain in-flight merges separately before enabling the line,
 since they still use the config they read at the gate. Older readers reject `lease fleet` with
 exit 2. `merge` logs lease acquisition and acknowledged release on stderr. A waiter

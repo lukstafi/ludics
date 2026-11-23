@@ -87,7 +87,7 @@ class LeasePreflight(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertIn("usage:", err)
 
-    def local_report(self, home: Path, state_path: str) -> tuple[int, str]:
+    def local_report(self, home: Path, state_path: str, **overrides: str) -> tuple[int, str]:
         skills = home / ".claude" / "skills"
         skills.mkdir(parents=True)
         checkout = Path(__file__).resolve().parents[3]
@@ -101,6 +101,7 @@ class LeasePreflight(unittest.TestCase):
             contextlib.redirect_stderr(io.StringIO()),
         ):
             os.environ.pop("FLEET_REGISTRY_PIN", None)
+            os.environ.update(overrides)
             rc = cli.main_guard("pr-review.sh", leasepreflight.run, ["owner/name", "--boxes", "caller"])
         return rc, out.getvalue()
 
@@ -124,6 +125,19 @@ class LeasePreflight(unittest.TestCase):
             rc, out = self.local_report(Path(directory), ".")
             self.assertEqual(rc, 1)
             self.assertIn("state path must be absolute", out)
+
+    @unittest.skipUnless(os.name == "posix", "the served lease reader is POSIX")
+    def test_anchor_config_refusals_identify_the_pin_or_name(self) -> None:
+        cases = (
+            ({"FLEET_REGISTRY_PIN": '["other", "/other"]'}, "anchor caller differs from the fleet registry pin"),
+            ({"FLEET_ANCHOR": "user@host"}, "anchor user@host must be a plain fleet name"),
+        )
+        for env, diagnostic in cases:
+            with self.subTest(env=env), tempfile.TemporaryDirectory() as directory:
+                home = Path(directory)
+                rc, out = self.local_report(home, str(home), **env)
+                self.assertEqual(rc, 1)
+                self.assertIn(f"reader accepts lease fleet, {diagnostic}", out)
 
 
 @unittest.skipUnless(os.name == "posix", "the lease anchor is POSIX")
