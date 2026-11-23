@@ -321,6 +321,9 @@ def task_lock(directory: str, task: str, verb: str) -> Generator[None]:
         yield
 
 
+REASSIGNMENT_REASON_PROBLEM = "needs a nonblank single line of printable text"
+
+
 def valid_reassignment_reason(reason: str) -> bool:
     return reason.isprintable() and bool(reason.strip())
 
@@ -375,7 +378,7 @@ def build(cfg: Config, path: str, task: str, opts: dict[str, Any]) -> Prep:
         die(f"wave prep: --tier is one of {', '.join(TIERS)}, not {opts['tier']!r}")
     reason = opts["reassignment_reason"]
     if reason is not None and not valid_reassignment_reason(reason):
-        die("wave prep: --reassignment-reason needs a nonblank single line of printable text")
+        die(f"wave prep: --reassignment-reason {REASSIGNMENT_REASON_PROBLEM}")
     if not opts["base"]:
         die("wave prep: --base <rev> is required (the verified base the worktree starts from)")
     number, issue_ref, source_ref = subject(wave, task, opts["issue"], opts["source"], "prep")

@@ -316,7 +316,7 @@ from ludics.fleetworker.transport import Done, substitution
 from ludics.fleetworker.wave import USAGE, WORD, Wave, load_wave, shim, utc_now
 from ludics.fleetworker.wavebrief import write_atomically
 from ludics.fleetworker.wavelaunch import Record, read_manifest
-from ludics.fleetworker.waveprep import TASK, TIERS, Stop, valid_reassignment_reason
+from ludics.fleetworker.waveprep import REASSIGNMENT_REASON_PROBLEM, TASK, TIERS, Stop, valid_reassignment_reason
 from ludics.fleetworker.waveunprep import FENCE
 
 sleep: Callable[[float], None] = time.sleep  # the tests' seam, as waveloop's
@@ -468,7 +468,7 @@ def read_queue(wave: Wave) -> tuple[dict[str, int], list[Queued]] | str | None:
         if "tier" in item and texts["tier"] not in TIERS:
             return f"{what}: tier is one of {', '.join(TIERS)}, not {texts['tier']!r}"
         if "reassignment_reason" in item and not valid_reassignment_reason(texts["reassignment_reason"]):
-            return f"{what}: reassignment_reason needs a nonblank single line of printable text"
+            return f"{what}: reassignment_reason {REASSIGNMENT_REASON_PROBLEM}"
         if any(not TASK.fullmatch(dep) for dep in cast(list[str], lists["after"])):
             return f"{what}: after takes task ids ({TASK.pattern})"
         later.update(cast(list[str], lists["after"]))
