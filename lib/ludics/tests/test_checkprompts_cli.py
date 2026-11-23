@@ -3647,6 +3647,19 @@ BRIEF_PLANNING = "## Paired planning (mode: @@MODE@@)\n\nComment on @@ISSUE@@.\n
 BRIEF_PROJECT = "## This project\n\nRead `lib/ludics/README.md`, *Which suites drive\n  each module*.\n"
 
 
+BRIEF_AFTER_MERGE = (
+    "## After the merge\n\n"
+    "Start your final reply with the plain line `HANDBACK @@T@@`, before any heading or prose.\n"
+    "Leave `@@WT@@` in place.\n"
+)
+BRIEF_GEMINI_WHO = (
+    "## Who you are\n\n"
+    "Gemini CLI worker on `@@HOST@@`.\n"
+    "- Start every hand-back turn's final message with `HANDBACK @@T@@` on its first line, with nothing\n"
+    "  before it -- no status summary, heading, or prose.\n"
+)
+
+
 def brief_tree(root: str) -> None:
     """A passing layout with the issue-wave skill, its shipped template and the project part."""
     fresh(root)
@@ -3662,7 +3675,8 @@ def brief_tree(root: str) -> None:
     for part in BRIEF_OWN[1:]:
         write(os.path.join(template, part), f"## {part}, for `@@WORKER@@`\n")
     for part in BRIEF_SHARED:
-        write(os.path.join(root, "issue-wave", "templates", "shared", part), f"## {part}, in `@@WT@@`\n")
+        body = BRIEF_AFTER_MERGE if part == "after-merge.md" else f"## {part}, in `@@WT@@`\n"
+        write(os.path.join(root, "issue-wave", "templates", "shared", part), body)
     for part in ("planning-paired.md", "planning-paired+critique.md"):
         write(os.path.join(root, "issue-wave", "templates", "shared", part), BRIEF_PLANNING)
     write(os.path.join(root, ".github", "wave-brief.md"), BRIEF_PROJECT)
@@ -3790,6 +3804,29 @@ class BriefTemplateTest(Case):
                 review_tree()
                 damage()
                 self.expect(f"{label} is refused", 1, want)
+
+    def test_required_template_sentences_are_pinned(self) -> None:
+        R = self.root
+        gemini = os.path.join(R, "issue-wave", "templates", "cli-gemini")
+
+        def with_gemini() -> None:
+            brief_tree(R)
+            write(os.path.join(gemini, "who.md"), BRIEF_GEMINI_WHO)
+            for part in BRIEF_OWN[1:]:
+                write(os.path.join(gemini, part), f"## {part} on `@@HOST@@`\n")
+
+        with_gemini()
+        self.expect("cli-gemini with its pinned hand-back rule passes (including across a line wrap)",
+                    0, BRIEF_OK.replace("14 parts", "18 parts"))
+        write(os.path.join(gemini, "who.md"), "## Who you are\n\nGemini CLI worker on `@@HOST@@`.\n")
+        self.expect("removing the pinned hand-back rule from cli-gemini/who.md is refused", 1,
+                    "FAIL: issue-wave/templates/cli-gemini/who.md: missing pinned sentence"
+                    " \"Start every hand-back turn's final message with `HANDBACK @@T@@` on its first line, with nothing before it\"")
+        with_gemini()
+        write(os.path.join(R, "issue-wave", "templates", "shared", "after-merge.md"), "## After the merge\n\nLeave `@@WT@@`.\n")
+        self.expect("removing the pinned hand-back rule from shared/after-merge.md is refused", 1,
+                    "FAIL: issue-wave/templates/shared/after-merge.md: missing pinned sentence"
+                    " 'Start your final reply with the plain line `HANDBACK @@T@@`, before any heading or prose.'")
 
     def test_words_of_other_shapes_are_not_read(self) -> None:
         # The boundary: only ~/.claude/skills/, ~/ludics/ and top-level-entry words are references.

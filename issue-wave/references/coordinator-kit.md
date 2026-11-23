@@ -329,9 +329,13 @@ driver hands you as an attention line.
    witness*](executions.md#coordinator-recipe-for-a-workers-windows-witness)), an
    `EXECUTION_REQUEST` is assigned and the worker resumed, an `EXECUTION_RESULT` concluded, a
    `REVIEW_REQUEST` or `CONFIRM_REQUEST` reviewed (step 8) while it serves the other workers, and
-   a `HANDBACK` saved under `handbacks/` and its task closed with `board close`. Without a PR,
-   exact `RUN /absolute/path` lines select `board close --no-pr --run` (one flag per line);
-   without either a PR or a run line the hand-back stays attention. Each turn is
+   a `HANDBACK` saved under `handbacks/` and its task closed with `board close`. Without a PR, exact
+   `RUN /absolute/path` lines select `board close --no-pr --run` (one flag per line); without either
+   a PR or a run line the hand-back stays attention. `log --last-result` reads only the turn's last
+   completed message (Codex's last `agent_message`; Gemini's last completed `agent_response` step
+   verified against `result.response`, falling back to `result.response` whole if an earlier step
+   contains a marker), so mid-turn progress steps do not obscure a leading `HANDBACK`, while a
+   malformed `EXECUTION_RESULT` stays attention naming the expected JSON form. Each turn is
    answered once: the ledger is `logs/drive.jsonl`. Anything a marker does not answer becomes an
    attention line and is yours. This includes design questions, plans, vanished workers, reviews
    with no verdict and merges without posted clearance for their head. An assignment that
