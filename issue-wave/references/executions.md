@@ -1009,12 +1009,15 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   To hand the hook an exact receipt directory (ludics#1313), the main runner can create
   `ln -s "$absolute_run_dir" "$FLEET_LEG_RECEIPT_LINK"` when the leg supplies that vacant path.
   The hook then gets the symlink's target as `FLEET_LEG_RECEIPT_DIR`, including for receipts
-  outside the default state directory. A missing link leaves the variable unset, including
-  with older callers that support `owed-record`. A pointer other than a symlink to an existing
+  outside the default state directory. A missing link leaves the variable unset. When
+  nesting a leg from a caller that predates receipt pointers, unset both receipt variables
+  before invoking it so it cannot inherit the outer leg's pointer or receipt directory.
+  A pointer other than a symlink to an existing
   absolute directory skips publication with a warning. The hook still verifies that the
   receipt belongs to this leg's run record and observed SHA and meets the project's publication
   rules. The leg reads only the pointer. Its cleanup takes the record and pointer away even
-  after failure or a handled stop. The runner keeps its receipt directory.
+  after failure or a handled stop. Unexpected contents that prevent removal of the temporary
+  directory are left in place with a warning. The runner keeps its receipt directory.
 - **The failing lines.** A failed leg's log said the verdict and the goldens that differ, not the
   claims that failed, so each failed leg cost an ssh session to the far side (ludics#1040). Which
   lines count as failing, and where the runner keeps them, are the project's: it names

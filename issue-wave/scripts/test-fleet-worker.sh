@@ -4895,6 +4895,11 @@ no_owed_hook() {
   if grep -q '^owed fixture invoked$' <<<"$out"; then ko "the owed-record hook was called: $out"
   else ok "...the owed-record hook was skipped"; fi
 }
+no_owed_state() {
+  local states=("$TMP/owed tmp"/fleet-leg-owed.*)
+  [ "${#states[@]}" -eq 1 ] && [ ! -e "${states[0]}" ] && [ ! -L "${states[0]}" ] &&
+    ok "...the leg removed its owed-record temporary state" || ko "owed-record temporary state was not cleaned: $out"
+}
 TMPDIR="$TMP/owed tmp" LEG_OWED_REMOVE=1 FLEET_LEG_RUN_RECORD=/stale FLEET_LEG_RECEIPT_LINK=/stale FLEET_LEG_RECEIPT_DIR=/stale \
   expect "a clean main pass gives the owed-record hook the on-box record, request and observed SHA" 0 \
   "^owed fixture published leg-a $lowed$" -- owed_leg --control "$TMP/break.patch" -- bash -c '
@@ -4939,10 +4944,14 @@ grep -q '^owed fixture published' <<<"$out" && ko "the stale receipt was publish
 expect "a failed leg that registered a private receipt keeps its verdict" 7 '^execution-leg: exit: 7$' -- \
   private_owed_leg fail
 no_owed_hook
-owed_receipts=("$TMP/owed tmp"/fleet-leg-owed.*)
-[ "${#owed_receipts[@]}" -eq 1 ] && [ ! -e "${owed_receipts[0]}" ] && [ ! -L "${owed_receipts[0]}" ] &&
-  [ -s "$TMP/private receipt state/run-1/run-record" ] &&
-  ok "...only the runner-owned receipt remains" || ko "owed-record temporary state was not cleaned, or the receipt was lost: $out"
+no_owed_state
+[ -s "$TMP/private receipt state/run-1/run-record" ] &&
+  ok "...the runner-owned receipt remains" || ko "the runner-owned receipt was lost: $out"
+TMPDIR="$TMP/owed tmp" expect "a directory at the pointer path skips publication and is cleaned up" 0 \
+  'skipped: receipt pointer is not a symlink to an absolute directory$' -- \
+  owed_leg -- bash -c 'mkdir "${FLEET_LEG_RECEIPT_LINK:?}"'
+no_owed_hook
+no_owed_state
 expect "a missing owed-record executable warns and keeps the main verdict" 0 'WARNING: owed-record tools/absent\.sh failed (exit 127)$' -- \
   leg --request leg-a --rev owed-missing --checkout "$lco" --worktree "$lwt" --cpu -- tools/check.sh
 [ "$(last_line)" = "execution-leg: exit: 0" ] && ok "...with the main verdict's sentinel" || ko "unexpected status: $out"

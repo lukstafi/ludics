@@ -549,7 +549,7 @@ class OwedReceipt(unittest.TestCase):
             hook.chmod(0o755)
             subprocess.run(["git", "init", "-q", str(wt)], check=True)
             subprocess.run(["git", "add", "hook"], cwd=wt, check=True)
-            subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+            subprocess.run(["git", "-c", "commit.gpgsign=false", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
                             "commit", "-q", "-m", "hook"], cwd=wt, check=True)
             head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=wt, text=True).strip()
             target = root / "receipt with trailing newline\n"

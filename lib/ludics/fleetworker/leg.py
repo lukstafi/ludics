@@ -291,7 +291,8 @@ variable unset. An invalid pointer warns and skips publication. The leg clears b
 receipt variables. It reads only this pointer, with no search or receipt-content checks. The
 hook still checks the receipt's binding to the invocation and its eligibility. Leg cleanup
 unlinks the pointer and record, including after a failed or stopped run, and removes their
-directory if empty. The receipt directory belongs to the runner and is kept.
+directory. Cleanup can remove an empty directory at the pointer path. It warns if unexpected
+contents prevent removal and keeps the runner's receipt directory.
 
 THE FAILING LINES (ludics#1040). A failed leg's log carried the runner's verdict and the names of
 the goldens that differ, but not the claims that failed, so each failed GPU leg cost its worker an
@@ -851,11 +852,22 @@ lfile=""; [ -z "$fname" ] || lfile="$STATE/leg-files/$fname"
 ref="refs/fleet-leg/$$"; results=""; planned=""; owed_state=""; run_record=""
 say() { printf 'EXECUTION LEG %s: %s\n' "$BOX" "$*" >&2; }
 cleanup() {
+  local pointer
   [ -z "$patch" ] || rm -f "$patch"
   [ -z "$lfile" ] || rm -f "$lfile"
   [ -z "$planned" ] || rm -f "$planned"
-  [ -z "$run_record" ] || rm -f "$run_record" "$run_record.receipt"
-  [ -z "$owed_state" ] || rmdir "$owed_state"
+  if [ -n "$run_record" ]; then
+    rm -f "$run_record"
+    pointer="$run_record.receipt"
+    if [ ! -L "$pointer" ] && [ -d "$pointer" ]; then
+      rmdir "$pointer" 2>/dev/null
+    else
+      rm -f "$pointer"
+    fi
+  fi
+  if [ -n "$owed_state" ] && ! rmdir "$owed_state" 2>/dev/null; then
+    printf 'EXECUTION LEG %s: WARNING: could not remove owed-record directory %q\n' "$BOX" "$owed_state" >&2
+  fi
   [ -z "$results" ] || rm -f "$results" "$results.sh" "$results.report" "$results.fail" "$results.fail.shown"
   git -C "$co" update-ref -d "$ref" >/dev/null 2>&1
   return 0
