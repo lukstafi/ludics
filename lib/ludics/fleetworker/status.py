@@ -30,7 +30,7 @@ THE DOCUMENT, version 1 (this header is the one statement of it). One JSON objec
                 and whitespace with ``none`` dropped; every other key above is the row's value as
                 written, or null when the row has none. The comparison fields are included only
                 when present on the row, as stored strings (including a recorded "0"):
-                ``tier``, ``launched_at``, ``interventions``, ``routine_answers``, ``relaunches``,
+                ``tier``, ``reassignment_reason``, ``launched_at``, ``interventions``, ``routine_answers``, ``relaunches``,
                 ``counted_from``, ``interventions_from``, ``routine_answers_from``, ``relaunches_from``.
                 The latter four are the board's partial-count markers. The board's tally writes
                 counts as decimal strings.
@@ -85,7 +85,7 @@ HOURS = re.compile(r"[0-9]+(\.[0-9]+)?")
 # derived ones.
 ROW_KEYS = ("issue", "repository", "pr", "merge", "branch", "worker", "agent", "agent_host")
 TAIL_KEYS = ("worktree", "kind", "model", "transport")
-COMPARISON_KEYS = ("tier", "launched_at", *COUNTERS, "counted_from", *(f"{key}_from" for key in COUNTERS))
+COMPARISON_KEYS = ("tier", "reassignment_reason", "launched_at", *COUNTERS, "counted_from", *(f"{key}_from" for key in COUNTERS))
 # Keep these exclusions aligned with the shipped registry.lease_free compact listing.
 SECRET_KEYS = frozenset({"history", "lease_token"})
 

@@ -1,7 +1,8 @@
 """``wave prep``: one worker's launch prep in one call (ludics#1047).
 
 ``wave prep <wave.json> <task> --base <rev> [--issue <N> | --source <N>] [--mode none|paired|paired+critique]
-[--legs <box,...>] [--allow-rival <pr>]... [--profile <name>] [--host <box>] [--tier <tier>]`` makes what a worker needs before it is spawned: its
+[--legs <box,...>] [--allow-rival <pr>]... [--profile <name>] [--host <box>] [--tier <tier>]
+[--reassignment-reason <reason>]`` makes what a worker needs before it is spawned: its
 worktree and branch, its scratch directory, its standing reservations (the agent host's, and one per
 GPU home box ``--legs`` names), its rendered brief, its ``execution assign`` base, and its board row.
 Each wave's ``next.sh`` did this by hand, and each copy lost an exit status in a pipe, rendered the
@@ -22,6 +23,15 @@ coordinator does, so ``--host`` with a ``subagent`` transport refuses). A host t
 agent host is one of the wave file's ``hosts``: the worktree is then
 ``<hosts.<box>.checkout>-worktrees/<worker>`` and the scratch ``<hosts.<box>.scratch>/<wave>/<task>``,
 both on that box. HOST, WT, SCR and CHECKOUT (the host's clone) are the task's own.
+
+THE ISSUE-NUMBER SPLIT. With ``"split": "issue-number"`` in the wave file, successful prep emits a
+NOTE on stderr for a worker whose resolved kind differs from the issue's arm: odd is Sol
+(``codex``), even is Neon (``gemini``). It uses the resolved decimal issue number (the source
+for a post-wave task) and kind, so profile aliases work. The check reads neither model nor tier
+nor prose. A ``--reassignment-reason <reason>`` is a nonblank single line of printable text;
+it suppresses the NOTE and is stored verbatim as the board row's ``reassignment_reason`` field.
+Presence of that field marks the reassignment. The comparison changes neither the worker nor
+the prep exit status.
 
 A CLI TASK (transport ``cli``) is prepared and not made. ``fleet-worker.sh launch`` makes a CLI
 worker's worktree on its box and takes its standing reservation in one fenced step, so prep makes
@@ -171,7 +181,7 @@ from ludics.fleetworker.identity import die
 from ludics.fleetworker.lease import anchor_gate, mutation_failure_status
 from ludics.fleetworker.takeover import board_status, row_of
 from ludics.fleetworker.transport import run
-from ludics.fleetworker.wave import USAGE, Leg, Profile, Wave, load_wave
+from ludics.fleetworker.wave import ISSUE_NUMBER_SPLIT, USAGE, Leg, Profile, Wave, load_wave
 from ludics.fleetworker.wavebrief import PLACEHOLDER, Part, render, write_atomically
 
 MODES = ("none", "paired", "paired+critique")
@@ -222,6 +232,7 @@ class Prep:
     default_tip: str | None = None
     done: list[str] = field(default_factory=lambda: [])
     task_section: str = ""  # The rendered task part of the brief, saved for the review checkpoint.
+    reassignment_reason: str = ""
 
     def __post_init__(self) -> None:
         chosen = self.wave.profiles[self.profile] if self.profile else Profile(self.wave.transport, self.wave.kind)
@@ -310,18 +321,25 @@ def task_lock(directory: str, task: str, verb: str) -> Generator[None]:
         yield
 
 
+REASSIGNMENT_REASON_PROBLEM = "needs a nonblank single line of printable text"
+
+
+def valid_reassignment_reason(reason: str) -> bool:
+    return reason.isprintable() and bool(reason.strip())
+
+
 def parse(args: list[str]) -> tuple[str, str, dict[str, Any]]:
     if len(args) < 2 or args[0].startswith("--") or args[1].startswith("--"):
         die(f"wave prep: name the wave file and the task; usage: {USAGE}")
     opts: dict[str, Any] = {"base": "", "issue": "", "source": "", "mode": "none", "legs": "", "allow_rival": set(),
-                            "profile": "", "host": "", "tier": None}
+                            "profile": "", "host": "", "tier": None, "reassignment_reason": None}
     rest = args[2:]
     i = 0
     while i < len(rest):
         word = rest[i]
         key = {"--base": "base", "--issue": "issue", "--source": "source", "--mode": "mode", "--legs": "legs",
                "--allow-rival": "allow_rival", "--profile": "profile", "--host": "host",
-               "--tier": "tier"}.get(word)
+               "--tier": "tier", "--reassignment-reason": "reassignment_reason"}.get(word)
         if key is None or i + 1 >= len(rest):
             die(f"wave prep: {'unknown option ' + word if key is None else word + ' needs a value'}; usage: {USAGE}")
         if key == "allow_rival":
@@ -358,6 +376,9 @@ def build(cfg: Config, path: str, task: str, opts: dict[str, Any]) -> Prep:
         die(f"wave prep: --mode is one of {', '.join(MODES)}, not {opts['mode']!r}")
     if opts["tier"] is not None and opts["tier"] not in TIERS:
         die(f"wave prep: --tier is one of {', '.join(TIERS)}, not {opts['tier']!r}")
+    reason = opts["reassignment_reason"]
+    if reason is not None and not valid_reassignment_reason(reason):
+        die(f"wave prep: --reassignment-reason {REASSIGNMENT_REASON_PROBLEM}")
     if not opts["base"]:
         die("wave prep: --base <rev> is required (the verified base the worktree starts from)")
     number, issue_ref, source_ref = subject(wave, task, opts["issue"], opts["source"], "prep")
@@ -378,7 +399,17 @@ def build(cfg: Config, path: str, task: str, opts: dict[str, Any]) -> Prep:
             die(f"wave prep: --legs names {box} twice, or the worker's own host")
         legs.append(wave.legs[box])
     return Prep(wave, task, number, issue_ref, source_ref, opts["base"], opts["mode"], legs, opts["allow_rival"],
-                cfg.path(cfg.state), profile, host, opts["tier"] or "")
+                cfg.path(cfg.state), profile, host, opts["tier"] or "", reassignment_reason=reason or "")
+
+
+def note_issue_number_split(prep: Prep) -> None:
+    if prep.wave.split != ISSUE_NUMBER_SPLIT or prep.reassignment_reason or not prep.number.isdecimal():
+        return
+    kind, arm = ("codex", "Sol") if int(prep.number[-1]) % 2 else ("gemini", "Neon")
+    if prep.kind != kind:
+        chosen = f"profile {shlex.quote(prep.profile)} ({prep.kind})" if prep.profile else f"the wave default ({prep.kind})"
+        cli.note(f"WAVE PREP NOTE {shlex.quote(prep.task)}",
+                 f"{shlex.quote(prep.issue_ref or prep.source_ref)} assigns the {arm} arm ({kind} profile). Prep used {chosen}.")
 
 
 def git(prep: Prep, *args: str, timeout: float | None = None) -> proc.Completed:
@@ -719,6 +750,8 @@ def board_fields(prep: Prep, brief: str) -> list[str]:
         fields.append(f"model={prep.model}" + (f"/{prep.effort}" if prep.effort else ""))
     if prep.tier:
         fields.append(f"tier={prep.tier}")
+    if prep.reassignment_reason:
+        fields.append(f"reassignment_reason={prep.reassignment_reason}")
     if prep.mode != "none":
         plan = f"{prep.wave.wave}-{prep.number if prep.issue_ref else prep.task}"
         fields += [f"planning={prep.mode}", f"plan_dir={os.path.join(prep.state, 'plans', plan)}"]
@@ -818,6 +851,7 @@ def prepared(cfg: Config, prep: Prep) -> int:
                 cli.say(f"WAVE PREP MADE {task}: {step}")
         cli.say(f"WAVE PREP MADE {task}: the manifest {prep.manifest}" if prep.done else f"WAVE PREP MADE {task}: nothing")
         return stop.rc if isinstance(stop, Stop) else 1
+    note_issue_number_split(prep)
     standing = " ".join(prep.standing_id(b) for b in prep.boxes)
     cli.say(f"WAVE PREP {task}: ready: brief {prep.path('briefs', f'brief-{task}.md')} worktree {prep.worktree}"
             f" branch {prep.branch} base {prep.base} standing {standing}"

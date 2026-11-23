@@ -6907,11 +6907,13 @@ expect "review takes a kind" 2 "wave review: --kind is one of at-open, confirm" 
 # The shared project path contains a space. Automatic board placement uses whitespace words;
 # its successful case uses a clone alias without spaces, while unit cases pin the NOTE boundary.
 cli_proj="$TMP/cli-project"; ln -s "$proj" "$cli_proj"
-jq --arg co "$cli_proj" '. + {checkout:$co, profiles:{sol:{transport:"cli", kind:"codex"}}}' "$K/wave.json" > "$K/wave-mixed.json" && mv "$K/wave-mixed.json" "$K/wave.json"
+jq --arg co "$cli_proj" '. + {checkout:$co, split:"issue-number", profiles:{sol:{transport:"cli", kind:"codex"}}}' "$K/wave.json" > "$K/wave-mixed.json" && mv "$K/wave-mixed.json" "$K/wave.json"
 printf '# Task @@T@@\n' > "$K/tasks/t80.md"
 export SHIM_GH_PR_LIST="$K/prs.json"; echo '[]' > "$SHIM_GH_PR_LIST"
 expect "prep of a CLI task says wave launch starts it" 0 "standing wkv-t80-testbox-iterate (a CLI worker on testbox, nothing made or reserved yet: wave launch starts it)$" -- \
   "${FWK[@]}" wave prep "$K/wave.json" t80 --base master --profile sol
+grep -Fq "WAVE PREP NOTE t80: 'example/project#80' assigns the Neon arm (gemini profile)." <<<"$out" &&
+  ok "...an off-arm prep only draws a NOTE" || ko "split note: $out"
 [ ! -e "$cli_proj-worktrees/wk-80" ] && [ -z "$("${FWK[@]}" execution list | jq -r '.[] | select(.request_id == "wkv-t80-testbox-iterate") | .request_id')" ] &&
   ok "...making no worktree and reserving nothing" || ko "a CLI prep made its worktree or reserved"
 got=$("${FWK[@]}" board show wkv --json | jq -r '.tasks[] | select(.task == "t80") | .fields | "\(.state) \(.transport) \(.kind) \(.branch)"')
@@ -6986,7 +6988,7 @@ setup_step "could not clone the project's origin (setup)" git clone -q "$TMP/pro
 setup_step "could not move the project's master (setup)" sh -c 'git -C "$1" -c user.name=t -c user.email=t@t commit -q --allow-empty -m moved && git -C "$1" push -q origin HEAD:master' _ "$K/pusher"
 moved=$(git -C "$K/pusher" rev-parse HEAD)
 jq -n '{capacity:{testbox:1}, tasks:[{task:"t86", profile:"sol", host:"testbox"}, {task:"t83", profile:"sol", host:"testbox"},
-  {task:"t84", profile:"sol", host:"testbox", after:["t85"]}]}' > "$K/queue.json"
+  {task:"t84", profile:"sol", host:"testbox", after:["t85"], reassignment_reason:"Needs a local checkout"}]}' > "$K/queue.json"
 printf 'HANDBACK t86\nMerged https://github.com/example/project/pull/15. Nothing to propose.\n' > "$K/say"
 expect "the driver un-prepares a prepared task whose base the branch moved past" 0 \
   "^DRIVE ATTENTION t86 launch: master moved since the task was prepared at ${pbase:0:12} (now ${moved:0:12}): un-prepared, to be prepared again at the tip under its own id: WAVE UNPREP t86: unprepared" -- \
@@ -6995,6 +6997,8 @@ expect "the driver un-prepares a prepared task whose base the branch moved past"
   ls "$K/prep/t86.unprepared-"*.json >/dev/null 2>&1 && ok "...its row, manifest and brief gone, the manifest kept as a tombstone" || ko "t86 after unprep: $(ls "$K/prep" "$K/briefs" 2>&1)"
 expect "...and prepares it again under its own id at the tip, and launches it" 0 "^DRIVE t86 launch: launch answered: WAVE LAUNCH t86: launched testbox/wk-86 " -- \
   "${FWD[@]}" wave drive "$K/wave.json" --once
+grep -Fq "WAVE PREP NOTE t86: 'example/project#86' assigns the Neon arm (gemini profile)." <<<"$out" &&
+  ok "...the driver shows the off-arm prep's NOTE" || ko "queued split note: $out"
 [ "$("${FWK[@]}" board show wkv --json | jq -r '.tasks[] | select(.task == "t86") | .fields.base')" = "$moved" ] && ok "...its row at the moved tip" || ko "t86's base is not $moved"
 jq -n --arg m "$(printf 'b%.0s' $(seq 40))" '{number:15, state:"MERGED", headRefName:"codex/wk-86", mergeCommit:{oid:$m}}' > "$K/pr-view.json"
 "$FW" attach testbox wk-86 --interval 1 >/dev/null 2>&1
@@ -7018,6 +7022,13 @@ setup_step "could not prepare the native t85 (setup)" "${FWK[@]}" wave prep "$K/
 expect "...waits silently while that task is prepared, not merged" 0 "^$" -- "${FWD[@]}" wave drive "$K/wave.json" --once
 setup_step "could not set t85 merged (setup)" "${FWK[@]}" board set wkv t85 state=merged
 expect "...and starts once it merges" 0 "^DRIVE t84 launch: launch answered: WAVE LAUNCH t84: launched testbox/wk-84 " -- "${FWD[@]}" wave drive "$K/wave.json" --once
+if grep -q '^WAVE PREP NOTE t84:' <<<"$out"; then
+  ko "reassigned task drew a split NOTE: $out"
+elif [ "$("${FWK[@]}" board show wkv --json | jq -r '.tasks[] | select(.task == "t84") | .fields.reassignment_reason')" = "Needs a local checkout" ]; then
+  ok "...its reassignment reason is on the launched row"
+else
+  ko "t84's row lacks its reassignment reason"
+fi
 setup_step "could not close t84's row (setup)" "${FWK[@]}" board set wkv t84 state=dropped
 settle wk-84
 fixture_done wkv-t84-testbox-iterate

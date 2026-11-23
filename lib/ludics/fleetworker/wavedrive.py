@@ -174,11 +174,12 @@ THE QUEUE, ``<wave dir>/queue.json``, is the launches the coordinator decided an
 
     {"capacity": {"<box>": <n>, ...},
      "tasks": [{"task", "profile", "host"[, "legs": [<box>, ...]][, "mode"][, "after": [<task>, ...]]
-                [, "issue" | "source"][, "tier"]}, ...]}
+                [, "issue" | "source"][, "tier"][, "reassignment_reason"]}, ...]}
 
 A fail-closed allowlist, read each tick (the coordinator may add tasks while the driver runs): any
 other key, a task named twice, a profile that is no profile of the wave file, a CLI entry's host with
-no ``capacity``, a ``tier`` that is no tier of ``wave prep --tier`` (waveprep.py's THE TIER), an
+no ``capacity``, a ``tier`` that is no tier of ``wave prep --tier`` (waveprep.py's THE TIER),
+a ``reassignment_reason`` that is no nonblank single line of printable text, an
 ``after`` that is no task id, or one that names the task itself or a task
 queued LATER (the file's order is the launch order, so no two queued tasks can wait on each other)
 refuses the whole file, said once as ``DRIVE QUEUE REFUSED`` and launching nothing until it reads.
@@ -212,8 +213,11 @@ it, one a tick (THE GATE and the halt are read once a tick, for the cues and the
             read once a tick: a halt is waited out, silently); THE GATE open
   started   with no row, ``refresh <agent host>`` (THE REFRESH), then ``wave prep <task> --base
             <origin/MAIN, fetched now> --profile ... [--host] [--legs] [--mode] [--issue|--source]
-            [--tier]``
+            [--tier] [--reassignment-reason]``
             (a dependent starts from the base its prerequisite merged into), then ``wave launch``
+            Prep's split NOTE is passed through on stderr, with no change to the launch decision.
+            A stale pending row with a reassignment reason and no reason in the queue is left to the
+            coordinator before unprep can remove the row. A fenced unprep is already in progress.
 A PAIRED LAUNCH, of an entry whose ``mode`` is not ``none``, is told once its launch answers: one
 non-final attention line, ``launched <mode> at <sha>: start its peer planner on that sha``. The
 driver starts no planner; the coordinator starts it on that sha, since both plans must read one tree.
@@ -312,7 +316,7 @@ from ludics.fleetworker.transport import Done, substitution
 from ludics.fleetworker.wave import USAGE, WORD, Wave, load_wave, shim, utc_now
 from ludics.fleetworker.wavebrief import write_atomically
 from ludics.fleetworker.wavelaunch import Record, read_manifest
-from ludics.fleetworker.waveprep import TASK, TIERS, Stop
+from ludics.fleetworker.waveprep import REASSIGNMENT_REASON_PROBLEM, TASK, TIERS, Stop, valid_reassignment_reason
 from ludics.fleetworker.waveunprep import FENCE
 
 sleep: Callable[[float], None] = time.sleep  # the tests' seam, as waveloop's
@@ -380,7 +384,7 @@ LANDED = ("merged", "done")  # the row states of an ``after`` task that let its 
 # verb's refusal as stdout's last line, or the base gate's, which it writes to stderr.
 PRESTART = re.compile(r"^(?:LAUNCH REFUSED |BASE REFUSED: ).*$", re.M)
 QUEUE_KEYS, QUEUED_REQUIRED = ("capacity", "tasks"), ("task", "profile", "host")
-QUEUED_OPTIONAL = ("legs", "mode", "after", "issue", "source", "tier")
+QUEUED_OPTIONAL = ("legs", "mode", "after", "issue", "source", "tier", "reassignment_reason")
 NATIVE_KEYS = ("profile", "after", "tier")  # a native entry's keys beside ``task`` (A NATIVE ENTRY, the header)
 CUED = "cued"  # a native entry's ledger status once its cue was told: never told again, and no launch decision
 
@@ -397,6 +401,7 @@ class Queued:
     source: str
     native: bool = False  # A NATIVE ENTRY (the header): cued, never prepared or launched
     tier: str = ""  # wave prep's --tier (waveprep.py's THE TIER); "" when the entry names none
+    reassignment_reason: str = ""
 
 
 def label(turn: int) -> str:
@@ -444,7 +449,7 @@ def read_queue(wave: Wave) -> tuple[dict[str, int], list[Queued]] | str | None:
         elif set(item) - set(QUEUED_REQUIRED) - set(QUEUED_OPTIONAL) or any(key not in item for key in QUEUED_REQUIRED):
             return f"{what} takes {', '.join(QUEUED_REQUIRED)} and optionally {', '.join(QUEUED_OPTIONAL)}"
         lists = {key: item.get(key, []) for key in ("legs", "after")}
-        texts = {key: item.get(key, "") for key in ("task", "profile", "host", "mode", "issue", "source", "tier")}
+        texts = {key: item.get(key, "") for key in ("task", "profile", "host", "mode", "issue", "source", "tier", "reassignment_reason")}
         if not all(isinstance(v, str) for v in texts.values()) or not all(
                 isinstance(v, list) and all(isinstance(x, str) and x for x in cast(list[Any], v)) for v in lists.values()):
             return f"{what}: its values are text, and legs and after lists of text"
@@ -462,6 +467,8 @@ def read_queue(wave: Wave) -> tuple[dict[str, int], list[Queued]] | str | None:
             return f"{what} names both an issue and a source"
         if "tier" in item and texts["tier"] not in TIERS:
             return f"{what}: tier is one of {', '.join(TIERS)}, not {texts['tier']!r}"
+        if "reassignment_reason" in item and not valid_reassignment_reason(texts["reassignment_reason"]):
+            return f"{what}: reassignment_reason {REASSIGNMENT_REASON_PROBLEM}"
         if any(not TASK.fullmatch(dep) for dep in cast(list[str], lists["after"])):
             return f"{what}: after takes task ids ({TASK.pattern})"
         later.update(cast(list[str], lists["after"]))
@@ -469,7 +476,8 @@ def read_queue(wave: Wave) -> tuple[dict[str, int], list[Queued]] | str | None:
             return (f"{what} comes after itself, or is queued after a task that waits on it: the file's order is the launch"
                     " order, so a task's queued prerequisites are above it")
         tasks.append(Queued(texts["task"], texts["profile"], texts["host"], tuple(cast(list[str], lists["legs"])), texts["mode"],
-                            tuple(cast(list[str], lists["after"])), texts["issue"], texts["source"], native, texts["tier"]))
+                            tuple(cast(list[str], lists["after"])), texts["issue"], texts["source"], native, texts["tier"],
+                            texts["reassignment_reason"]))
     return capacity, tasks
 
 
@@ -1112,7 +1120,7 @@ class Driver:
                 if missing:
                     self.tell_missing(slot, queued, missing)
                     continue  # a missing prerequisite must not hold up another due task
-                self.start(queued, slot, row is not None, record, last)
+                self.start(queued, slot, row, record, last)
             return  # one launch a tick, and a halt, a closed gate or an unreachable anchor is the next tick's
 
     def tell_missing(self, slot: Worker, queued: Queued, missing: tuple[str, ...]) -> None:
@@ -1171,7 +1179,7 @@ class Driver:
         self.gate_refusal = why
         return False
 
-    def start(self, queued: Queued, slot: Worker, prepared: bool, record: Record | None, last: dict[str, Any] | None) -> None:
+    def start(self, queued: Queued, slot: Worker, row: dict[str, str] | None, record: Record | None, last: dict[str, Any] | None) -> None:
         main = self.wave.vars["MAIN"]
         checkout = self.wave.checkout
         fetched = execute(["git", "-C", checkout, "fetch", "-q", "origin", main])[0]
@@ -1180,6 +1188,9 @@ class Driver:
             return  # the remote did not answer: the next tick's
         fenced = self.unprepping(queued.task)
         if fenced or (record is not None and record.base != sha.strip()):
+            if not fenced and row and row.get("reassignment_reason") and not queued.reassignment_reason:
+                return self.attention(slot, LAUNCH, "launch", "the base moved and the pending row records a reassignment reason"
+                                      " absent from the queue; the row is kept, and re-prep and launch are yours")
             # A STALE PREPARED TASK (the header): un-prepared here, prepared again at the tip on a later tick.
             # A fenced manifest, its row there or not, is an un-prepare that stopped: it is finished first.
             moved = (f"{main} moved since the task was prepared at {record.base[:12]} (now {sha.strip()[:12]})" if not fenced and record
@@ -1193,7 +1204,7 @@ class Driver:
                                                               f" refused: {said[:300]}; it is yours")
             self.tell(slot, LAUNCH, f"{moved}: un-prepared, to be prepared again at the tip under its own id: {said[:300]}")
             return self.note(slot, LAUNCH, "launch", "unprepared", said[:300])
-        if not prepared:
+        if row is None:
             # THE REFRESH (the header): the served checkout's prep code, brought to its origin first.
             refreshed = self.call("refresh", self.wave.agent_host)
             fresh = "" if refreshed.rc == 0 else (substitution(refreshed.out).splitlines() or [f"refresh exit {refreshed.rc}"])[-1]
@@ -1203,7 +1214,8 @@ class Driver:
                              *(["--mode", queued.mode] if queued.mode else []),
                              *(["--issue", queued.issue] if queued.issue else []),
                              *(["--source", queued.source] if queued.source else []),
-                             *(["--tier", queued.tier] if queued.tier else []), gated=True)
+                             *(["--tier", queued.tier] if queued.tier else []),
+                             *(["--reassignment-reason", queued.reassignment_reason] if queued.reassignment_reason else []), gated=True)
             if done.rc == 4:
                 return
             if done.rc != 0:

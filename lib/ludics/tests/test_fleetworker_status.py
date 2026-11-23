@@ -198,7 +198,7 @@ class Document(Anchor):
 
     def test_the_comparison_fields_read_as_stored(self) -> None:
         fields = {
-            "tier": "D2", "model": "sol", "launched_at": "2026-11-17T09:48:55Z",
+            "tier": "D2", "model": "sol", "reassignment_reason": "Needs a local checkout", "launched_at": "2026-11-17T09:48:55Z",
             "interventions": "2", "routine_answers": "5", "relaunches": "1",
             "counted_from": "2026-11-17T10:00:00Z", "interventions_from": "2026-11-17T10:01:00Z",
             "routine_answers_from": "2026-11-17T10:02:00Z", "relaunches_from": "2026-11-17T10:03:00Z",

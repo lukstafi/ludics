@@ -62,6 +62,8 @@ missing, or a value of the wrong shape is a usage refusal (exit 2) before anythi
                     THE RESERVED SLOT's: ``reserve_slot`` needs ``cpu``, ``standby`` needs
                     ``reserve_slot`` and another box, ``failover_after`` -- whole seconds, default
                     1800 -- needs ``standby``)
+  split             "issue-number" enables wave prep's A/B NOTE      default: none
+                    (waveprep.py, THE ISSUE-NUMBER SPLIT)
   profiles          {<name>: {transport, kind[, model][, effort]}}: a  default: {}
                     kind of worker ``wave prep --profile`` gives a task in place of the wave's
                     own transport and kind (a mixed wave: native Claude workers beside Codex CLI
@@ -150,7 +152,8 @@ from ludics.fleetworker.wavebrief import NAME, cmd_render, write_atomically
 USAGE = (
     "wave render [--set NAME=VALUE]... [--set-file NAME=<path>]... [--out <file>] <part>... | "
     "wave prep <wave.json> <task> --base <base-or-stacked-rev> [--issue <N> | --source <N>] [--mode none|paired|paired+critique]"
-    " [--legs <box,...>] [--allow-rival <pr>]... [--profile <name>] [--host <box>] [--tier D1|D1/D2|D2|D2/D3|D3] | wave launch <wave.json> <task> | "
+    " [--legs <box,...>] [--allow-rival <pr>]... [--profile <name>] [--host <box>] [--tier D1|D1/D2|D2|D2/D3|D3]"
+    " [--reassignment-reason <reason>] | wave launch <wave.json> <task> | "
     "wave unprep <wave.json> <task> | "
     "wave loop <wave.json> <name> [--resume-after <request id> | --rerun <red id> -- <command> | --release] | "
     "wave heartbeat <wave.json> [--sleep <seconds>] | "
@@ -168,7 +171,8 @@ BUILTIN = frozenset({"WAVE", "T", "N", "ISSUE", "SOURCE", "REPO", "ISSUE_REPO", 
                      "BASE", "BASE_ORIGIN", "SCR", "SCR_PARENT", "WORKER", "HOST", "MODE", "PROJECT",
                      "LEGLINES", "LEG", "LEG_ID", "LEG_WT", "LEG_CHECKOUT"})
 TOP_REQUIRED = ("wave", "repository", "checkout", "worker_prefix", "agent_host", "transport", "kind", "standing_purpose")
-TOP_OPTIONAL = ("issue_repository", "vars", "legs", "loops", "project_part", "review", "profiles", "hosts")
+TOP_OPTIONAL = ("issue_repository", "vars", "legs", "loops", "project_part", "review", "profiles", "hosts", "split")
+ISSUE_NUMBER_SPLIT = "issue-number"
 PROFILE_REQUIRED, PROFILE_OPTIONAL = ("transport", "kind"), ("model", "effort")
 PROFILE_TRANSPORTS = ("subagent", "cli")
 KINDS = ("claude", "codex", "gemini")
@@ -259,6 +263,7 @@ class Wave:
     review: Review | None = None
     profiles: dict[str, Profile] = field(default_factory=lambda: {})
     hosts: dict[str, Host] = field(default_factory=lambda: {})
+    split: str = ""
 
 
 def keys_problem(obj: dict[str, Any], what: str, required: tuple[str, ...], optional: tuple[str, ...]) -> str | None:
@@ -356,6 +361,9 @@ def parse_wave(path: str, data: Any) -> Wave:
         raise ValueError(f"{w}.kind must be one of {', '.join(KINDS)}, not {json.dumps(kind)}")
     if kind == NO_NATIVE and top.get("transport") != "cli":
         raise ValueError(f"{w}: a {NO_NATIVE} wave's own workers are CLI workers (no runtime spawns agy); its transport is cli")
+    split = text(top, "split", w) if "split" in top else ""
+    if split and split != ISSUE_NUMBER_SPLIT:
+        raise ValueError(f"{w}.split must be {json.dumps(ISSUE_NUMBER_SPLIT)}, not {json.dumps(split)}")
     profiles: dict[str, Profile] = {}
     for name, entry in objects(top.get("profiles", {}), "profiles").items():
         what = f"profiles.{name}"
@@ -451,6 +459,7 @@ def parse_wave(path: str, data: Any) -> Wave:
         review=parse_review(top["review"]) if "review" in top else None,
         profiles=profiles,
         hosts=hosts,
+        split=split,
     )
 
 
