@@ -122,6 +122,22 @@ class FleetWorker(unittest.TestCase):
         self.assertIn('dir=$(fleet_worker "$fw" execution slot --bg', tiprun.FAR)
 
 
+HOLD_LOCK_GUARD = r"""
+hold_lock_guard() {
+  perl -MFcntl=:flock -e '
+    open my $dir, "<", $ARGV[0] or exit 1;
+    flock($dir, LOCK_EX) or exit 2;
+    open my $ready, ">", $ARGV[1] or exit 3;
+    close $ready;
+    sleep 8;
+  ' "$1" "$1.ready" >/dev/null 2>&1 &
+  guard=$!
+  for _ in $(seq 40); do [ -f "$1.ready" ] && return 0; sleep 0.1; done
+  return 1
+}
+"""
+
+
 class TakeLock(unittest.TestCase):
     def test_release_after_failed_mkdir_is_retried_with_zero_wait(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -200,20 +216,11 @@ exit "$rc"
     def test_busy_guard_charges_the_contenders_wait(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             lock = os.path.join(tmp, "lock")
-            done = run_far(coordinator(), "far", r"""
+            done = run_far(coordinator(), "far", HOLD_LOCK_GUARD + r"""
 mkdir "$LOCK" || exit 8
 printf '%s\n' "$$" > "$LOCK/pid"
 printf '%s\n' 'stale start' > "$LOCK/start"
-perl -MFcntl=:flock -e '
-  open my $dir, "<", $ARGV[0] or exit 1;
-  flock($dir, LOCK_EX) or exit 2;
-  open my $ready, ">", $ARGV[1] or exit 3;
-  close $ready;
-  sleep 8;
-' "$LOCK" "$LOCK.ready" >/dev/null 2>&1 &
-guard=$!
-for _ in $(seq 40); do [ -f "$LOCK.ready" ] && break; sleep 0.1; done
-[ -f "$LOCK.ready" ] || exit 8
+hold_lock_guard "$LOCK" || exit 8
 take_lock "$LOCK" 0 reclaim; reclaim_rc=$?
 # The uutils mkdir race can send a contender directly to registration.
 mkdir() { return 0; }
@@ -227,6 +234,25 @@ test "$(cat "$LOCK/pid")" = "$$" && test "$(cat "$LOCK/start")" = 'stale start'
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertRegex(done.stdout, r"(?m)^reclaim: .* held by pid [0-9]+ for 0s")
         self.assertRegex(done.stdout, r"(?m)^register: .* held by pid [0-9]+ for 0s")
+
+    def test_busy_guard_does_not_leave_a_successful_mkdir_behind(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            lock = os.path.join(tmp, "lock")
+            done = run_far(coordinator(), "far", HOLD_LOCK_GUARD + r"""
+mkdir() {
+  command mkdir "$@" || return 1
+  hold_lock_guard "$1" || exit 8
+  trap 'kill "$guard" 2>/dev/null; wait "$guard" 2>/dev/null' EXIT
+}
+take_lock "$LOCK" 0 first; first_rc=$?
+test "$first_rc" = 1 && test ! -e "$LOCK" || exit 8
+unset -f mkdir
+# The next claimant can use a new inode even while the guard on the old inode is held.
+kill -0 "$guard" && take_lock "$LOCK" 0 successor || exit 8
+test -s "$LOCK/pid" && test -s "$LOCK/start" && release_lock "$LOCK"
+""", {"LOCK": lock}, timeout=15)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertRegex(done.stdout, r"^first: .* held for 0s")
 
     def test_relative_paths_work_for_registration_and_release(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

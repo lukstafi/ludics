@@ -219,6 +219,9 @@ take_lock() {
       continue
     fi
     if [ "$waited" -ge "$wait" ]; then
+      # A successful mkdir can outlive a timed-out registration. rmdir only removes an
+      # empty directory, so a racer that has created start keeps its claim.
+      if [ "$registering" -eq 1 ]; then rmdir "$lock" 2>/dev/null; fi
       read_lock "$lock"
       owner=
       [ -z "$holder" ] || owner="by pid $(printf '%q' "$holder") "
