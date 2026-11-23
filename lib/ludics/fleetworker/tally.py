@@ -24,16 +24,18 @@ The first launch counts nothing. A CLI replacement, a native respawn, and a fini
                                                  record (the far side's archive of it under the
                                                  launch's own stamp is there), ``after_replace``'s
                                                  tally of the CLI row by worker and host
-  fleet-worker.sh board spawned <wave> <task> --agent <id> --transport <t> [--model <m>]
+  fleet-worker.sh board spawned <wave> <task> --agent <id> --transport <t> [--model <m>] [--launch-id <id>]
                                                  a recorded spawn on a row with ``launched_at``
-                                                 (boardstore.py, ludics#1264)
+                                                 (boardstore.py, ludics#1264, ludics#1294)
 
 ``board takeover`` itself writes nothing (takeover.py): it may be read, and read again, without a
 spawn. Legacy ``board set state=launched`` calls still count under THE RELAUNCH COUNT in
 ``boardstore.py``, including a CLI worker launched under a new name or on another box. A
 ``launch --replace`` whose worker no row names (a name reused outside a wave) is a ``BOARD TALLY
-NOTE``, as an unstick's is. The board records reported spawns only. Check ``board show`` after a
-lost acknowledgement, since repeating a recorded spawn increments the count again. Correct a
+NOTE``, as an unstick's is. The board records reported spawns only. With ``--launch-id <id>``,
+replaying a recorded spawn with the same ID and runtime facts is a no-op that answers as the first
+did (ludics#1294), so a lost acknowledgement needs no ``board show`` before retrying; without an ID,
+check ``board show`` first since repeating a recorded spawn increments the count again. Correct a
 count with a set that names ``relaunches`` after reading the row.
 
 The turns: two writers, one classifier (``classify``):

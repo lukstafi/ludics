@@ -271,10 +271,12 @@ and a release through five PRs on 2026-09-15 with no stranded worker.
    `routine_answers`, anything else (an escalation's answer, a nudge, a forwarded finding) in its
    `interventions`, with one board log line. A CLI worker's `unstick` counts its own, so CLI and
    native rows carry the same two fields. Record a respawn or finisher with
-   `fleet-worker.sh board spawned <wave> <task> --agent <id> --transport subagent [--model <m>]`.
-   The spawn verb counts it in `relaunches` as part of the same write (ludics#1264). A
-   tally that refuses or does not answer is re-read with `board show` before it is tried again; the
-   message is never sent again to repair a count.
+   `fleet-worker.sh board spawned <wave> <task> --agent <id> --transport subagent [--model <m>] [--launch-id <id>]`.
+   The spawn verb counts it in `relaunches` as part of the same write (ludics#1264); with
+   `--launch-id`, replaying the same launch-attempt ID and runtime facts is a no-op that answers as
+   the first call did (ludics#1294), so an unacknowledged spawn report can be retried directly
+   without re-reading the board. A `board tally` that refuses or does not answer is still re-read
+   with `board show` before it is tried again; the message is never sent again to repair a count.
 
 The same request and result lines work for a Codex native worker that prefers them; what
 differs is only that Codex may keep its turn open and wait.

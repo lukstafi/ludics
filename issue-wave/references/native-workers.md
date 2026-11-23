@@ -58,8 +58,10 @@ Residence does not preclude checks on other boxes; each execution is reserved se
 6. Spawn with that brief, recording the returned agent identity or canonical task name. Do
    not infer a runtime ID from an app thread ID. Record the returned identity on the prepared
    row with `fleet-worker.sh board spawned <wave> <task> --agent <id> --transport subagent
-   [--model <m>]`. This command is the board update for the native launch step in SKILL.md.
-   Supply the model when the runtime's choice differs from the prepared row.
+   [--model <m>] [--launch-id <id>]`. This command is the board update for the native launch step in
+   SKILL.md. Supply the model when the runtime's choice differs from the prepared row, and pass a
+   stable `--launch-id` (`[A-Za-z0-9][A-Za-z0-9._-]*`) per launch attempt so an unacknowledged report
+   can be retried without counting a duplicate relaunch.
    Validate the worker's startup report before calling the launch successful: actual absolute
    worktree, branch, base SHA, agent identity, and a harmless successful Git mutation such as
    `git update-index --refresh` with exit status.
@@ -111,8 +113,10 @@ other first word and on a `status` key, and writes both. The takeover keys are `
 `none`), `farside` (`<box>:<path>` far-side worktrees), `plan_dir` and `state`. Their grammars
 and the state words are `lib/ludics/fleetworker/takeover.py`'s. The writers check the lease
 themselves; check it before interventions. Re-read with `board show` before retrying a failed or
-unacknowledged board write. For a spawn, check the returned agent identity and relaunch record:
-repeating a recorded spawn increments the count again.
+unacknowledged `board set`, `board note`, `board log` or `board tally` write. For `board spawned`
+with `--launch-id <id>`, retrying with the same ID and runtime facts is a no-op that answers as the
+first call did, so no prior `board show` is needed; without `--launch-id`, re-read first because
+repeating a recorded spawn increments `relaunches` again.
 
 When a worker died with its process (a coordinator restart kills every in-process worker), its
 replacement's brief is `fleet-worker.sh board takeover <wave> <task>`: the stored brief, then a

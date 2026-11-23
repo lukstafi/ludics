@@ -199,9 +199,10 @@ driver hands you as an attention line.
 3. **Right before each spawn,** run `fleet-worker.sh gate --wait <seconds>`. Re-check for a
    rival PR by topic first: prep's check covers only the number and the branch. Then spawn the
    worker and record it with `fleet-worker.sh board spawned <wave> <task> --agent <id>
-   --transport subagent [--model <m>]`. Supply the model when the runtime's choice differs from
-   the prepared row. The board stamps `launched_at` on the first spawn, as it does for
-   `wave launch`.
+   --transport subagent [--model <m>] [--launch-id <id>]`. Supply the model when the runtime's
+   choice differs from the prepared row, and pass a stable `--launch-id` per launch attempt so a
+   lost acknowledgement can be retried safely. The board stamps `launched_at` on the first spawn,
+   as it does for `wave launch`.
 4. **Each worker's EXECUTION_REQUEST** is answered with one call:
 
    ```

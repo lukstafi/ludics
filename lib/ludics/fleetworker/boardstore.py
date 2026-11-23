@@ -46,13 +46,29 @@ as ``registry.py``'s header states it for the registry; any other word is the pa
         row that has the fields was measured from its start and a row without them (one made before
         ludics#1214, or for ``relaunches`` before ludics#1236) was not; a set on an existing row,
         ``--new-row`` again included, keeps the counts.
-  spawned {"wave", "task", "agent", "transport", optional "model"} records the returned runtime
-        identity on a prepared row (ludics#1264). The runtime facts are nonblank text. An omitted
-        model preserves the recorded one. It sets ``state=launched`` and uses THE LAUNCH STAMP
-        above. If ``launched_at`` was already present, it counts one relaunch for any transport.
-        Both writers publish the row, counter and tally log together and acknowledge a relaunch
-        with a ``BOARD TALLY`` line after the write acknowledgement. An invalid counter refuses
-        the whole write. A retry can count again, so re-read with ``show`` before retrying.
+  spawned {"wave", "task", "agent", "transport", optional "model", optional "launch_id"} records the
+        returned runtime identity on a prepared row (ludics#1264, ludics#1294). The runtime facts
+        are nonblank text. An omitted model preserves the recorded one. It sets ``state=launched``
+        and uses THE LAUNCH STAMP above. If ``launched_at`` was already present, it counts one
+        relaunch for any transport. Both writers publish the row, counter and tally log together
+        and acknowledge a relaunch with a ``BOARD TALLY`` line after the write acknowledgement. An
+        invalid counter refuses the whole write.
+        THE LAUNCH-ATTEMPT IDENTITY (ludics#1294; shared with ``wave launch``, ludics#1290): an
+        optional caller-chosen opaque identifier matching ``LAUNCH_ID``
+        (``[A-Za-z0-9][A-Za-z0-9._-]*``, the same fail-closed token grammar as ``WAVE`` and
+        ``takeover.REQUEST_ID``, validated by ``launch_id_ok``; CLI flag ``--launch-id <id>``,
+        payload key and row field ``launch_id``). When ``launch_id`` is supplied, ``spawned``
+        writes ``fields["launch_id"]`` and records the attempt's runtime facts (``agent``,
+        ``transport``, optional ``model``) and exact acknowledgement ``said`` under
+        ``row["spawns"][launch_id]`` in the same atomic publish. Replaying an ID already in
+        ``row["spawns"]`` with matching runtime facts is a no-op (nothing written, ``relaunches``
+        and ``updated_at`` untouched, any later row state preserved) that prints the original
+        ``said``; replaying it with different runtime facts refuses, nothing written. A distinct
+        ``launch_id`` (even under the same ``agent``) counts a new spawn and updates
+        ``fields["launch_id"]``. An unkeyed call (no ``launch_id``) behaves as before, clearing
+        any stale ``fields["launch_id"]`` while keeping ``row["spawns"]``, and still requires a
+        re-read with ``show`` before retrying; a legacy ``set`` relaunch that does not name
+        ``launch_id`` clears ``fields["launch_id"]`` in the same way.
   tally {"counter", "why", "wave", "task"} | {"counter", "why", "worker", "hosts": [box, ...], "done": [word, ...]}
         one more of a row's coordinator turns or relaunches (ludics#1214, ludics#1236; the
         classifier and its closed list are ``ludics.fleetworker.tally``'s, near side): ``counter``
@@ -156,6 +172,12 @@ type Doc = dict[str, Any]
 
 WAVE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 KEY = re.compile(r"[A-Za-z][A-Za-z0-9_-]*")
+# THE LAUNCH-ATTEMPT IDENTITY (the header): the one launch-attempt ID grammar shared by
+# ``board spawned`` (#1294) and ``wave launch`` (#1290).
+LAUNCH_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+SPAWN_FACT_KEYS = ("agent", "transport", "model")
+SPAWN_RECORD_REQUIRED = frozenset({"agent", "transport", "said"})
+SPAWN_RECORD_ALLOWED = frozenset({"agent", "transport", "model", "said"})
 # What may not appear in a task name, which is a table row's first cell: a control character, or a
 # character that breaks a line (U+0085 is Cc; U+2028 and U+2029 are Zl and Zp).
 NOT_IN_TASK = frozenset({"Cc", "Zl", "Zp"})
@@ -195,6 +217,12 @@ def key_ok(value: Any) -> str:
     return value
 
 
+def launch_id_ok(value: Any) -> str:
+    if not isinstance(value, str) or not LAUNCH_ID.fullmatch(value):
+        refuse("a launch_id must be [A-Za-z0-9][A-Za-z0-9._-]*")
+    return value
+
+
 def task_ok(value: Any) -> str:
     task = text_ok(value, "a task")
     if not task or task.startswith("-") or any(unicodedata.category(c) in NOT_IN_TASK for c in task):
@@ -216,14 +244,43 @@ def fields_ok(value: Any) -> list[tuple[str, str]]:
 
 def spawn_fields(payload: Doc) -> list[tuple[str, str]]:
     pairs: list[tuple[str, str]] = []
-    for key in ("agent", "transport", "model"):
+    for key in SPAWN_FACT_KEYS:
         if key == "model" and key not in payload:
             continue
         value = text_ok(payload.get(key), key)
         if not value.strip():
             refuse(f"{key} must not be blank")
         pairs.append((key, value))
+    if "launch_id" in payload:
+        pairs.append(("launch_id", launch_id_ok(payload["launch_id"])))
     return [*pairs, ("state", "launched")]
+
+
+def spawns_ok(value: Any) -> dict[str, dict[str, str]]:
+    if not isinstance(value, dict):
+        refuse("spawns must be an object")
+    out: dict[str, dict[str, str]] = {}
+    for lid, raw in cast(dict[Any, Any], value).items():
+        launch_id = launch_id_ok(lid)
+        if not isinstance(raw, dict):
+            refuse(f"spawn record {json.dumps(launch_id)} must be an object")
+        entry = cast(dict[Any, Any], raw)
+        keys = set(entry)
+        if not SPAWN_RECORD_REQUIRED.issubset(keys) or not keys.issubset(SPAWN_RECORD_ALLOWED):
+            refuse(f"spawn record {json.dumps(launch_id)} must hold agent, transport, said and optional model")
+        record: dict[str, str] = {}
+        for key in SPAWN_FACT_KEYS:
+            if key in entry:
+                text = text_ok(entry[key], f"spawn {key}")
+                if not text.strip():
+                    refuse(f"spawn {key} must not be blank")
+                record[key] = text
+        said = text_ok(entry["said"], "spawn said")
+        if not said.strip():
+            refuse("spawn said must not be blank")
+        record["said"] = said
+        out[launch_id] = record
+    return out
 
 
 def string_map(value: Any, what: str) -> dict[str, str]:
@@ -260,6 +317,8 @@ def validate(data: Any, wave: str, path: Path) -> Doc:
             seen.add(name)
             string_map(row.get("fields"), "fields")
             text_ok(row.get("updated_at"), "updated_at")
+            if "spawns" in row:
+                spawns_ok(row["spawns"])
         log: Any = doc.get("log")
         if not isinstance(log, list):
             refuse("log must be a list")
@@ -645,10 +704,31 @@ def main(argv: list[str]) -> None:
                 created = True
             else:
                 created = False
+            launch_id: str | None = None
+            spawn_facts: dict[str, str] = {}
+            if action == "spawned":
+                spawn_facts = {key: value for key, value in pairs if key in SPAWN_FACT_KEYS}
+                launch_id = next((value for key, value in pairs if key == "launch_id"), None)
+                if launch_id is not None:
+                    spawns = cast(dict[str, dict[str, str]], row.get("spawns") or {})
+                    if launch_id in spawns:
+                        recorded = spawns[launch_id]
+                        recorded_facts = {key: recorded[key] for key in SPAWN_FACT_KEYS if key in recorded}
+                        if recorded_facts != spawn_facts:
+                            refuse(
+                                f"launch_id {json.dumps(launch_id)} is already recorded on {json.dumps(task)}"
+                                " with different spawn facts; nothing written"
+                            )
+                        print(recorded["said"])
+                        return
             fields = cast(dict[str, str], row["fields"])
             before = None if created else dict(fields)
             for key, value in pairs:
                 fields[key] = value
+            if action == "spawned" and launch_id is None:
+                # An unkeyed spawn replaces the row's active launch, so drop any stale launch_id
+                # from fields while keeping row["spawns"] to guard against late keyed replays.
+                fields.pop("launch_id", None)
             if created:
                 for key in COUNTERS:
                     fields.setdefault(key, "0")  # THE COUNTERS START AT ZERO (the header)
@@ -659,13 +739,21 @@ def main(argv: list[str]) -> None:
             # no stdout encoding can fail the acknowledgement.
             if action == "spawned":
                 said = f"BOARD SPAWNED {wave}: {json.dumps(task)}"
-                reason = f"board spawned agent={json.dumps(fields['agent'], ensure_ascii=False)}"
+                lid_note = f" launch_id={launch_id}" if launch_id is not None else ""
+                reason = f"board spawned agent={json.dumps(fields['agent'], ensure_ascii=False)}{lid_note}"
             else:
                 said = f"BOARD SET {wave}: {json.dumps(task)} " + " ".join(key for key, _ in pairs)
                 reason = f"state={json.dumps(fields.get('state'), ensure_ascii=False)}"
             if before is not None and "launched_at" in before and (action == "spawned" or set_relaunched(before, fields, pairs)):
                 why = f"{reason} on a row launched at {before['launched_at']}"
                 said += "\n" + bump(doc, row, "relaunches", why, coordinator, now)
+                if action == "set" and "launch_id" not in {key for key, _ in pairs}:
+                    # A legacy set relaunch replaces the active launch, so drop any prior launch_id
+                    # from fields while retaining row["spawns"] for replays of earlier attempts.
+                    fields.pop("launch_id", None)
+            if action == "spawned" and launch_id is not None:
+                spawns = cast(dict[str, dict[str, str]], row.setdefault("spawns", {}))
+                spawns[launch_id] = {**spawn_facts, "said": said}
         case "note":
             pairs = fields_ok(payload.get("fields"))
             notes = cast(dict[str, str], doc["notes"])
