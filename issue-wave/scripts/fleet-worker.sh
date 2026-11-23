@@ -317,9 +317,11 @@
 #   fleet-worker.sh wave loop <wave.json> <name> [--resume-after <request id>]   # an integration
 #                          # loop around execution tip-run, restartable: it waits on its own running
 #                          # run before starting another; ends on a red (waveloop.py)
-#   fleet-worker.sh wave heartbeat <wave.json> [--sleep <seconds>]   # one tick: prs whole, halted,
-#                          # each loop's last line, the driver's state and each new attention line,
-#                          # the timestamp last; a new attention line ends the sleep early
+#   fleet-worker.sh wave heartbeat <wave.json> [--sleep <seconds>] [--until-attention] [--max-quiet <seconds>]
+#                          # one tick by default: prs whole, halted, each loop's last line,
+#                          # the driver's state and each new attention line, the timestamp last;
+#                          # a new attention line ends the sleep early. With --until-attention,
+#                          # keeps ticking silently until an actionable event or --max-quiet (4 h)
 #   fleet-worker.sh wave drive <wave.json> [--poll <seconds>] [--once]   # answer every Codex CLI
 #                          # worker's returned turns by their marker: an execution request assigned, a result
 #                          # concluded, a review or confirm run beside it, a hand-back closed; each
