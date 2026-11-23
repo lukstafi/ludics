@@ -7004,6 +7004,15 @@ expect "a queued native task is cued once its after task merged" 0 \
   ok "...and is not prepared: no manifest, no row" || ko "t87 was prepared: $(ls "$K/prep" 2>&1)"
 expect "...and a restarted driver does not cue it again" 0 "^$" -- "${FWD[@]}" wave drive "$K/wave.json" --once
 expect "...and the heartbeat hands the cue up" 0 "^HEARTBEAT attention t87 launch: t87 is due: launch it" -- "${FWK[@]}" wave heartbeat "$K/wave.json" --sleep 0
+printf '{"task":"t88","turn":-1,"why":"t88 is due: launch it"}\n' >> "$K/logs/attention.jsonl"
+expect "heartbeat --until-attention wakes immediately on pending attention with wake line and full read" 0 \
+  "^HEARTBEAT wake wkv: attention$" -- "${FWK[@]}" wave heartbeat "$K/wave.json" --sleep 60 --until-attention
+grep -q "^HEARTBEAT attention t88 launch: t88 is due: launch it$" <<<"$out" &&
+  [[ "$(tail -n 1 <<<"$out")" == "HEARTBEAT wkv "* ]] && ok "...printing the attention line and ending with the timestamp" || ko "until-attention: $out"
+expect "heartbeat --until-attention exits on --max-quiet when nothing changes" 0 \
+  "^HEARTBEAT wake wkv: quiet [0-9][0-9]*s (max-quiet 1s)$" -- "${FWK[@]}" wave heartbeat "$K/wave.json" --sleep 1 --until-attention --max-quiet 1
+expect "heartbeat refuses --max-quiet without --until-attention" 2 "--max-quiet requires --until-attention" -- "${FWK[@]}" wave heartbeat "$K/wave.json" --max-quiet 60
+expect "heartbeat refuses --sleep 0 with --until-attention" 2 "--until-attention requires a positive --sleep" -- "${FWK[@]}" wave heartbeat "$K/wave.json" --until-attention --sleep 0
 expect "wave unprep refuses a launched task" 1 "^WAVE UNPREP REFUSED t84: .* records a launch" -- "${FWK[@]}" wave unprep "$K/wave.json" t84
 expect "wave unprep of a task with no manifest has nothing to undo" 0 "^WAVE UNPREP t99: nothing recorded to undo" -- "${FWK[@]}" wave unprep "$K/wave.json" t99
 setup_step "could not restore the project's master (setup)" git -C "$K/pusher" push -q -f origin "$pbase:refs/heads/master"

@@ -232,21 +232,28 @@ driver hands you as an attention line.
 6. **The heartbeat:**
 
    ```
-   fleet-worker.sh wave heartbeat <wave.json>
+   fleet-worker.sh wave heartbeat <wave.json> --until-attention
    ```
 
-   Run it with `run_in_background` and re-arm it each tick. A tick prints `prs` whole, `halted`,
-   each loop's last line, and its time last. A tick that reads as the last full read (the board's
-   rows, the PR lines but for the head's age and a merge build's elapsed time, `halted`, the loops,
-   the driver, and no new attention line) prints one `HEARTBEAT <wave> <time> unchanged since
-   <time> ...` line instead, naming the file that holds that read (`wave.py`'s header, *THE
-   NO-CHANGE LINE*). A changed tick names up to five changed board rows with state transitions
-   (or added/removed/fields changed), then counts the rest. Its default sleep is 20 minutes
-   (`wave.py`'s header, *THE SLEEP*): when every remaining worker is either native (its hand-off
-   returns to you on its own) or served by the driver, and every native task still to launch is in
-   `queue.json` (its cue is an attention line), every wake that matters ends the sleep early. Pass
-   a shorter `--sleep` (600) only while a wake that matters does not: a CLI worker you answer
-   yourself with no driver, or a native task you launch on a merge without queueing it.
+   Run it with `run_in_background` and re-arm it after each wake. With `--until-attention`, it keeps
+   ticking silently (updating `logs/heartbeat.last` on each tick without waking you on quiet or
+   routine ticks) and exits only on the closed list in `wave.py`'s header (*UNTIL-ATTENTION MODE*)
+   - a new attention line, a loop reaching `RED` or `UNKNOWN` or its driver stopping, a halt
+   appearing or changing its reason, a board row reaching a done state, or the handoff driver
+   stopping - or after `--max-quiet <seconds>` (default 4 h, 14400 s) of unchanged ticks. Each exit
+   prints `HEARTBEAT wake <wave>: <causes>` first, then the full read (`prs` whole, `halted`, each
+   loop's last line, the driver's lines, and its time last). Plain `fleet-worker.sh wave heartbeat
+   <wave.json>` stays one tick: a tick that reads as the last full read (the board's rows, the PR
+   lines but for the head's age and a merge build's elapsed time, `halted`, the loops, the driver,
+   and no new attention line) prints one `HEARTBEAT <wave> <time> unchanged since <time> ...` line
+   instead, naming the file that holds that read (`wave.py`'s header, *THE NO-CHANGE LINE*); a
+   changed tick names up to five changed board rows with state transitions (or added/removed/fields
+   changed), then counts the rest. Its default sleep is 20 minutes (`wave.py`'s header, *THE
+   SLEEP*): when every remaining worker is either native (its hand-off returns to you on its own) or
+   served by the driver, and every native task still to launch is in `queue.json` (its cue is an
+   attention line), every wake that matters ends the sleep early. Pass a shorter `--sleep` (600)
+   only while a wake that matters does not: a CLI worker you answer yourself with no driver, or a
+   native task you launch on a merge without queueing it.
 
 7. **For a paired worker's plan,** use `peer-plan.sh save-plan <plan dir> --from-transcript
    <file>` ([paired-planning.md](paired-planning.md)).

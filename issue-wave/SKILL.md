@@ -744,10 +744,16 @@ native tasks it cues (*Launch*), and stopping it (*Close out*).
   away, keep a coordinator-side heartbeat whose wake is a command the harness tracks, not a timer:
   a background shell command whose exit re-invokes the coordinator, past the pause too (on
   2026-11-15 a lone 25-minute background command woke an idle coordinator 12 s after it exited).
-  That is Claude Code's `run_in_background` on `fleet-worker.sh wave heartbeat <wave.json>`, one
-  tick: twenty minutes' sleep by default, then `prs --wave` whole, `halted`, each loop's last line
-  and the driver's new attention lines, returning early when one arrives; re-armed each tick, so
-  the review-rounds read of *Converge long reviews* arrives with the wake.
+  That is Claude Code's `run_in_background` on `fleet-worker.sh wave heartbeat <wave.json>
+  --until-attention`: it ticks silently (twenty minutes' sleep by default, updating
+  `logs/heartbeat.last` without waking you on quiet or routine ticks) and exits only when a tick
+  has something for you to act on - a new attention line (which still ends the sleep early), a
+  loop reaching `RED` or `UNKNOWN` or its driver stopping, a halt appearing or changing, a board
+  row reaching a done state, or the handoff driver stopping - or after `--max-quiet` (default 4 h)
+  of unchanged ticks, printing the wake cause first and then the full read (`prs --wave` whole,
+  `halted`, each loop's last line and the driver's lines, so the review-rounds read of *Converge
+  long reviews* arrives with the wake). Re-arm it after handling a wake; plain `wave heartbeat
+  <wave.json>` stays one tick.
   A /loop or ScheduleWakeup tick is a fallback at most: in desktop waves they fire hours late or
   never (2026-09-19: of three ScheduleWakeups, two never surfaced and one five hours late). After
   ANY interruption - pause, restart, dropped remote-control connection, a box that slept
