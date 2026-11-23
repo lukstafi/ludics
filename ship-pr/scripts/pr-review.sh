@@ -279,6 +279,9 @@
 #                                          # --plan-only stops before the slot probe and build:
 #                                          # 0 admitted, nothing owed or no plan; 1 unadmitted or
 #                                          # conflict; 2 usage/prerequisite; 3 no verdict or read failure.
+#   pr-review.sh lease-preflight <owner/repo> [--boxes <box> ...]
+#                                          # read each box's lease support and anchor identity
+#                                          # (default: fleet roster), with no lease acquisition
 #   pr-review.sh local-review <base> [--out <dir>] [-C <dir>]
 #                                          # the local Codex review before the PR opens: HEAD
 #                                          # against its merge base with origin/<base>, the
@@ -690,6 +693,7 @@ cmd_checks() { py_forward call checks "$@"; }
 cmd_rerun() { py_forward call rerun "$@"; }
 cmd_merge() { py_forward call merge "$@"; }
 cmd_merge_build() { py_forward call merge-build "$@"; }
+cmd_lease_preflight() { py_forward call lease-preflight "$@"; }
 cmd_base() { py_forward call base "$@"; }
 cmd_reply() { py_forward call reply "$@"; }
 cmd_resolve() { py_forward call resolve "$@"; }
@@ -838,7 +842,7 @@ main() {
   --repo=*) REPO="${1#--repo=}" && shift ;;
   esac
   case "${1:-}" in
-  poll | watch | status | rounds | checks | rerun | merge | merge-build | base | reply | resolve | comment | body | retry | local-review)
+  poll | watch | status | rounds | checks | rerun | merge | merge-build | lease-preflight | base | reply | resolve | comment | body | retry | local-review)
     py_usage "$@"
     py_forward exec "$@"
     ;;
@@ -847,6 +851,8 @@ main() {
                                              # merge's build of the would-be merge commit alone,
                                              # a dry run: no PR read, no fetch, no merge
                                              # --plan-only reports the plan before the build slot
+  pr-review.sh lease-preflight <owner/repo> [--boxes <box> ...]
+                                             # compare served readers and anchor directories
   pr-review.sh local-review <base> [--out <dir>] [-C <dir>]  # the local Codex review before the
                                              # PR opens: HEAD against origin/<base>'s merge base,
                                              # the transcript to <dir>/run.log, the verdict alone

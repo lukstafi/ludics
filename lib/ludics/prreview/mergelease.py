@@ -139,6 +139,7 @@ class MergeLease:
         self._take(clock)
         heartbeat = threading.Thread(target=self._heartbeat, name="merge-lease", daemon=True)
         try:
+            warn(f"{self.subject}: acquired merge lease on {self._anchor}")
             heartbeat.start()
             yield
         finally:
@@ -149,7 +150,9 @@ class MergeLease:
                 released = self._call("release") == "released\n"
             except cli.Exit:
                 released = False
-            if not released:
+            if released:
+                warn(f"{self.subject}: released merge lease on {self._anchor}")
+            else:
                 warn(f"{self.subject}: merge lease release was unconfirmed on {self._anchor}, and the lease will expire")
 
     def verify(self) -> None:

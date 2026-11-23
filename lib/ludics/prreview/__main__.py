@@ -20,7 +20,7 @@ from ludics.prreview.core import PROG, GhSession, die, load_config
 
 PORTED = (
     "body", "reply", "resolve", "comment", "retry", "poll", "status", "rounds", "checks", "merge",
-    "base", "watch", "merge-build", "local-review", "rerun",
+    "base", "watch", "merge-build", "lease-preflight", "local-review", "rerun",
 )
 # Entry points for the suites, which pr-review.sh's command line does not route to (see status.py).
 INTERNAL = ("status-state", "status-line")
@@ -115,6 +115,10 @@ def _run(session: GhSession, args: list[str], env: dict[str, str]) -> int:
             from ludics.prreview import mergedry
 
             return mergedry.run(session, rest)
+        case "lease-preflight":
+            from ludics.prreview import leasepreflight
+
+            return leasepreflight.run(rest)
         case "local-review":
             from ludics.prreview import localreview
 

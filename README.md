@@ -1091,6 +1091,9 @@ outside comments, dune's `;` comments and strings, and each form it gives up on 
 `test-pr-review-merge.sh` also exercises `merge-build --plan-only` with an owed run before and
 after a record admits it, a config with no plan line, and a malformed verdict. The plan-only
 unit case refuses any slot probe.
+The lease takeover case checks that `merge` logs acquisition and acknowledged release around
+the refreshed build. `lib/ludics/tests/test_prreview_mergelease.py` also covers the read-only
+lease preflight, including a box that rejects the directive or resolves another anchor directory.
 
 `test-pr-review-retry.sh` drives `retry`: the plain retry's classification, and `retry run
 watch`, which addresses its run as
