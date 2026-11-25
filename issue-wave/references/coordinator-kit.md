@@ -147,8 +147,9 @@ Gemini worker's box needs agy signed
 in for SSH sessions, whose token agy keeps apart from the desktop's: `ssh -t <box> agy` once;
 `preflight <box> --gemini` probes a headless turn in a tmux session there and reports the SSH token
 file's remaining lifetime (or `lifetime unknown`). Keep SSH-launched Gemini workers off `mac-studio`
-(local `agy >= 1.5.16` purges that file on its hourly Keychain refresh; local launches on `mac-studio`
-use Keychain directly, ludics#1358).
+(observed on `agy` 1.5.16/1.5.17, local runs purge that file on their hourly Keychain refresh; local
+launches on `mac-studio` under a desktop tmux server not started from an SSH session use Keychain
+directly, ludics#1358).
 
 ## Templates
 

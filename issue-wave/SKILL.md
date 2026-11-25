@@ -107,8 +107,9 @@ script; they are what the coordinator tells its workers.
   a parallelism analysis, machine placement, and a ready-now wavefront. If it has a design
   questions section (see Decision gate), that too.
 - **The fleet**: `mac-studio` (Metal + cc, the reference dev box; keep SSH-launched Gemini workers
-  off it while `agy >= 1.5.16` purges the SSH token file on local Keychain refresh — local launches
-  from a coordinator on `mac-studio` use Keychain directly, ludics#1358), `macbook-pro` (Metal, M4 Pro;
+  off it — observed on `agy` 1.5.16/1.5.17, local Keychain refreshes purge the SSH token file;
+  local launches on a desktop tmux server not started from an SSH session use Keychain directly,
+  ludics#1358), `macbook-pro` (Metal, M4 Pro;
   wakes over Wi-Fi), `rog-nv-linux` (CUDA, 24
   cores), `minix-amd-linux` (HIP, 32 cores; Radeon 8060S `gfx1151`, unified memory), and
   `tuf-amd-linux` (HIP, 16 threads; discrete RX 7700S `gfx1102`; cabled but no Wake-on-LAN, manual wake).

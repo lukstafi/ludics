@@ -60,9 +60,10 @@ codex that refused the wave's model, while the preflight's own shell passed), an
 names that binary and its version. `--kind gemini` runs the same tmux probe through `agy`;
 standalone `fleet-worker.sh preflight <box> --gemini` also reports the remaining lifetime of
 `~/.gemini/antigravity-cli/antigravity-oauth-token` (`lifetime unknown` when absent or without a
-valid expiry). Keep SSH-launched Gemini workers off `mac-studio`, where local `agy >= 1.5.16`
-(e.g. CodexBar) purges that SSH token file on its hourly macOS Keychain refresh (local launches from
-a coordinator on `mac-studio` use Keychain directly, ludics#1358). `--no-cross` skips the preflight's sibling reach probes:
+valid expiry). Keep SSH-launched Gemini workers off `mac-studio`: observed on `agy` 1.5.16/1.5.17,
+local non-SSH runs (e.g. CodexBar) purge that SSH token file on their hourly macOS Keychain refresh
+(local launches on `mac-studio` under a desktop tmux server not started from an SSH session use
+Keychain directly, ludics#1358). `--no-cross` skips the preflight's sibling reach probes:
 a wave with no cross-box legs needs none, and each sleeping sibling costs 20 s on every launch
 (ludics#539).
 
