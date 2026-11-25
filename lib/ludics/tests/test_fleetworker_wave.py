@@ -4735,7 +4735,9 @@ class Queue(DriveCase):
                 with self.world():
                     rc, out = self.once()
                 self.assertEqual(rc, 0, out)
-                self.assertIn("DRIVE ATTENTION t50 launch:", out)
+                why = ("the task is prepared on far, and the queue names mac" if "host" in change
+                       else "the stale re-prep has no matching reassignment approval")
+                self.assertIn(f"DRIVE ATTENTION t50 launch: {why}", out)
                 self.assertEqual(self.launched(), [])
                 self.assertTrue(os.path.isfile(path))
                 os.remove(os.path.join(self.wavedir, "logs", "drive.jsonl"))
@@ -4761,6 +4763,18 @@ class Queue(DriveCase):
         self.queue({"task": "t50", "profile": "sol", "host": "far", "reassignment_reason": "Needs the far host"})
         self.rows[0]["fields"]["model"] = "gpt-6.1-sol/high"
         with self.world():
+            rc, out = self.once()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.launched(), [])
+        self.assertIn("DRIVE ATTENTION t50 launch: the stale re-prep has no matching reassignment approval", out)
+
+    def test_stale_reprep_checks_the_host_again_after_unprep(self) -> None:
+        path = self.reassigned_prep()
+        with self.world():
+            self.assertEqual(self.once()[0], 0)
+            self.rows = []
+            os.remove(path)
+            self.queue({"task": "t50", "profile": "sol", "host": "mac"})
             rc, out = self.once()
         self.assertEqual(rc, 0, out)
         self.assertEqual(self.launched(), [])

@@ -1277,6 +1277,7 @@ class Driver:
         return cast(dict[str, Any], data) if isinstance(data, dict) else {}
 
     def approved_reassignment(self, queued: Queued, saved: object) -> dict[str, str] | None:
+        """The matching saved approval, or None when the queue's resolved inputs require attention."""
         if not isinstance(saved, dict):
             return None
         approval = cast(dict[str, object], saved)
