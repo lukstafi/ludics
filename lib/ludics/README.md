@@ -1010,8 +1010,13 @@ Agent notes (wave-20261123-ludics, t1275): wave prep's opt-in issue-number split
 resolved worker kind with the issue or source issue's parity. In board JSON, field presence at
 `tasks[].fields.reassignment_reason` marks a reassignment and its string value carries the reason.
 `status --json` projects that field when present. The driver forwards the CLI queue field to prep
-and shows prep's NOTE in its stderr stream. A stale pending row with a reason absent from the queue
-goes to coordinator attention before the driver unprepares it.
+and shows prep's NOTE in its stderr stream.
+
+Agent notes (wave-20261125-ludics, t1339): the prep manifest binds the approved reason to the
+wave, issue or source, effective profile and host. The driver writes a ledger checkpoint before
+unprep can remove the row. Guarded unprep compares board fields under the deletion lock, and
+prep checks its own resolved inputs before writing. Conflicts go to coordinator attention.
+The Queue restart fixture fails on the original base at the attempted unprep.
 
 ### Safety state reads (#1092)
 

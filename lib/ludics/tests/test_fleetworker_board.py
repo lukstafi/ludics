@@ -133,6 +133,18 @@ class Store(StoreCase):
         self.assertEqual((after["notes"], after["log"], after["tasks"][0]), (before["notes"], before["log"], before["tasks"][0]))
         self.assertEqual(self.call("forget", payload)[:2], (0, 'BOARD FORGET w: "t2" has no row; nothing written\n'), "a re-run")
 
+    def test_forget_compares_approved_fields_at_deletion(self) -> None:
+        self.set("t1", ("worker", "wk"), ("state", "pending"), ("reassignment_reason", "New reason"))
+        before = self.doc()
+        payload = {"wave": "w", "task": "t1", "worker": "wk", "state": "pending"}
+        rc, _, err = self.call("forget", {**payload, "expected_fields": [["reassignment_reason", "Old reason"]]})
+        self.assertEqual(rc, 1)
+        self.assertIn("changed field reassignment_reason", err)
+        self.assertEqual(self.doc(), before)
+        rc, _, _ = self.call("forget", {**payload, "expected_fields": [["reassignment_reason", "New reason"], ["source", ""]]})
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.doc()["tasks"], [])
+
     def test_hostile_text_round_trips_in_every_field(self) -> None:
         self.assertEqual(self.set(HOSTILE, ("state", HOSTILE), ("multi", "one\ntwo"))[0], 0)
         self.assertEqual(self.call("note", {"wave": "w", "fields": [["scope", HOSTILE]]})[0], 0)

@@ -128,7 +128,7 @@ as ``registry.py``'s header states it for the registry; any other word is the pa
         farside-close reads it. A new host/checkout containing whitespace, or a host containing
         a colon, refuses before either field changes: it cannot fit one cleanup word.
         No row or board is created.
-  forget {"wave", "task", "worker", "state"}                     internal to ``wave unprep``
+  forget {"wave", "task", "worker", "state"[, "expected_fields"]} internal to ``wave unprep``
         (waveunprep.py): remove the task's row, a compare-and-delete under the same lease lock as
         set, only while its ``state`` and ``worker`` fields are the given ones; any other row
         refuses, nothing written. No board or no row is a no-op (a retried removal whose first
@@ -187,6 +187,7 @@ import json
 import math
 import os
 import re
+import shlex
 import stat
 import sys
 import tempfile
@@ -767,6 +768,7 @@ def main(argv: list[str]) -> None:
         task = task_ok(payload.get("task"))
         worker = text_ok(payload.get("worker"), "worker")
         state = text_ok(payload.get("state"), "state")
+        expected = fields_ok(payload["expected_fields"]) if "expected_fields" in payload else []
         tasks = cast(list[Doc], doc["tasks"]) if doc else []
         found = next((entry for entry in tasks if entry["task"] == task), None)
         if found is None:
@@ -776,6 +778,9 @@ def main(argv: list[str]) -> None:
         if fields.get("state") != state or fields.get("worker") != worker:
             refuse(f"the row of {json.dumps(task)} is state={json.dumps(fields.get('state'))} worker={json.dumps(fields.get('worker'))},"
                    f" not state={json.dumps(state)} worker={json.dumps(worker)}; nothing written")
+        for key, value in expected:
+            if fields.get(key, "") != value:
+                refuse(f"the row of {shlex.quote(task)} changed field {shlex.quote(key)}. Nothing written.")
         assert doc is not None
         doc["tasks"] = [entry for entry in tasks if entry is not found]
         doc["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

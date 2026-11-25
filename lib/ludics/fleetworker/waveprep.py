@@ -29,9 +29,10 @@ NOTE on stderr for a worker whose resolved kind differs from the issue's arm: od
 (``codex``), even is Neon (``gemini``). It uses the resolved decimal issue number (the source
 for a post-wave task) and kind, so profile aliases work. The check reads neither model nor tier
 nor prose. A ``--reassignment-reason <reason>`` is a nonblank single line of printable text;
-it suppresses the NOTE and is stored verbatim as the board row's ``reassignment_reason`` field.
+it suppresses the NOTE and is stored verbatim on the board row and with its resolved prep inputs.
 Presence of that field marks the reassignment. The comparison changes neither the worker nor
-the prep exit status.
+the prep exit status. The driver's internal ``--reassignment-approval`` carries a saved approval
+instead of a manual reason. Prep checks it against the inputs it resolves before making anything.
 
 A CLI TASK (transport ``cli``) is prepared and not made. ``fleet-worker.sh launch`` makes a CLI
 worker's worktree on its box and takes its standing reservation in one fenced step, so prep makes
@@ -278,6 +279,11 @@ class Prep:
     def manifest(self) -> str:
         return self.path("prep", f"{self.task}.json")
 
+    @property
+    def reassignment(self) -> dict[str, str]:
+        profile = Profile(self.transport, self.kind, self.model, self.effort)
+        return reassignment_of(self.wave.wave, self.reassignment_reason, self.issue_ref, self.source_ref, profile, self.host)
+
 
 @dataclass(frozen=True)
 class Rivalry:
@@ -337,14 +343,14 @@ def parse(args: list[str]) -> tuple[str, str, dict[str, Any]]:
     if len(args) < 2 or args[0].startswith("--") or args[1].startswith("--"):
         die(f"wave prep: name the wave file and the task; usage: {USAGE}")
     opts: dict[str, Any] = {"base": "", "issue": "", "source": "", "mode": "none", "legs": "", "allow_rival": set(),
-                            "profile": "", "host": "", "tier": None, "reassignment_reason": None}
+                            "profile": "", "host": "", "tier": None, "reassignment_reason": None, "reassignment_approval": None}
     rest = args[2:]
     i = 0
     while i < len(rest):
         word = rest[i]
         key = {"--base": "base", "--issue": "issue", "--source": "source", "--mode": "mode", "--legs": "legs",
                "--allow-rival": "allow_rival", "--profile": "profile", "--host": "host",
-               "--tier": "tier", "--reassignment-reason": "reassignment_reason"}.get(word)
+               "--tier": "tier", "--reassignment-reason": "reassignment_reason", "--reassignment-approval": "reassignment_approval"}.get(word)
         if key is None or i + 1 >= len(rest):
             die(f"wave prep: {'unknown option ' + word if key is None else word + ' needs a value'}; usage: {USAGE}")
         if key == "allow_rival":
@@ -355,22 +361,59 @@ def parse(args: list[str]) -> tuple[str, str, dict[str, Any]]:
     return args[0], args[1], opts
 
 
-def subject(wave: Wave, task: str, issue: str, source: str, verb: str) -> tuple[str, str, str]:
+def resolve_subject(wave: Wave, task: str, issue: str, source: str) -> tuple[str, str, str]:
     """What a task is about, as ``(number, issue_ref, source_ref)``: the issue of a ``t<N>`` task or of
     ``--issue``, or the issue a ``--source`` task came from; one ref is empty. ``wave review`` reads a
     task the same way."""
     if issue and source:
-        die(f"wave {verb}: --issue and --source exclude each other")
+        raise ValueError("--issue and --source exclude each other")
     for given in (issue, source):
         if given and not given.isdigit():
-            die(f"wave {verb}: an issue number is digits, not {given!r}")
+            raise ValueError(f"an issue number is digits, not {given!r}")
     issue_task = ISSUE_TASK.fullmatch(task)
     if source:
         return source, "", f"{wave.issue_repository}#{source}"
     if issue or issue_task:
         number = issue or (issue_task.group(1) if issue_task else "")
         return number, f"{wave.issue_repository}#{number}", ""
-    die(f"wave {verb}: task {task} is no t<N>: name its issue with --issue <N>, or with --source <N> the issue a no-issue task came from")
+    raise ValueError(f"task {task} is no t<N>: name its issue with --issue <N>, or with --source <N> the issue a no-issue task came from")
+
+
+def subject(wave: Wave, task: str, issue: str, source: str, verb: str) -> tuple[str, str, str]:
+    try:
+        return resolve_subject(wave, task, issue, source)
+    except ValueError as exc:
+        die(f"wave {verb}: {exc}")
+
+
+def reassignment_of(wave: str, reason: str, issue_ref: str, source_ref: str, profile: Profile, host: str) -> dict[str, str]:
+    return {"wave": wave, "reason": reason, "issue": issue_ref, "source": source_ref, "host": host, "transport": profile.transport,
+            "kind": profile.kind, "model": profile.model, "effort": profile.effort}
+
+
+def parse_reassignment(raw: str) -> dict[str, str]:
+    try:
+        approval: Any = json.loads(raw)
+    except ValueError:
+        approval = None
+    if isinstance(approval, dict):
+        fields = cast(dict[object, object], approval)
+        reason = fields.get("reason")
+        if (set(fields) == {"wave", "reason", "issue", "source", "host", "transport", "kind", "model", "effort"}
+                and all(isinstance(value, str) for value in fields.values())
+                and isinstance(reason, str) and valid_reassignment_reason(reason)):
+            return cast(dict[str, str], fields)
+    die("wave: --reassignment-approval needs the saved reassignment object from prep")
+
+
+def board_model(model: str, effort: str) -> str:
+    return f"{model}/{effort}" if model and effort else model
+
+
+def reassignment_row(approval: dict[str, str]) -> dict[str, str]:
+    return {"issue": approval["issue"], "source": approval["source"], "agent_host": approval["host"],
+            "transport": approval["transport"], "kind": approval["kind"],
+            "model": board_model(approval["model"], approval["effort"]), "reassignment_reason": approval["reason"]}
 
 
 def build(cfg: Config, path: str, task: str, opts: dict[str, Any]) -> Prep:
@@ -384,6 +427,12 @@ def build(cfg: Config, path: str, task: str, opts: dict[str, Any]) -> Prep:
     reason = opts["reassignment_reason"]
     if reason is not None and not valid_reassignment_reason(reason):
         die(f"wave prep: --reassignment-reason {REASSIGNMENT_REASON_PROBLEM}")
+    approval = None
+    if opts["reassignment_approval"] is not None:
+        if reason is not None:
+            die("wave prep: --reassignment-reason and --reassignment-approval exclude each other")
+        approval = parse_reassignment(opts["reassignment_approval"])
+        reason = approval["reason"]
     if not opts["base"]:
         die("wave prep: --base <rev> is required (the verified base the worktree starts from)")
     number, issue_ref, source_ref = subject(wave, task, opts["issue"], opts["source"], "prep")
@@ -403,8 +452,11 @@ def build(cfg: Config, path: str, task: str, opts: dict[str, Any]) -> Prep:
         if box == (host or wave.agent_host) or any(leg.box == box for leg in legs):
             die(f"wave prep: --legs names {box} twice, or the worker's own host")
         legs.append(wave.legs[box])
-    return Prep(wave, task, number, issue_ref, source_ref, opts["base"], opts["mode"], legs, opts["allow_rival"],
+    prep = Prep(wave, task, number, issue_ref, source_ref, opts["base"], opts["mode"], legs, opts["allow_rival"],
                 cfg.path(cfg.state), profile, host, opts["tier"] or "", reassignment_reason=reason or "")
+    if approval is not None and approval != prep.reassignment:
+        raise Stop(1, f"WAVE PREP REFUSED {shlex.quote(task)}: the resolved inputs differ from the stored reassignment approval")
+    return prep
 
 
 def note_issue_number_split(prep: Prep) -> None:
@@ -766,6 +818,7 @@ def reservations(prep: Prep) -> list[tuple[str, dict[str, Any]]]:
 def record(prep: Prep, step: str) -> None:
     prep.done.append(step)
     os.makedirs(os.path.dirname(prep.manifest), exist_ok=True)
+    reassignment = {"reassignment": prep.reassignment} if prep.reassignment_reason else {}
     write_atomically(prep.manifest, json.dumps({
         "task": prep.task, "wave": prep.wave.wave, "worker": prep.worker, "branch": prep.branch, "base": prep.base,
         "worktree": prep.worktree, "standing": [prep.standing_id(b) for b in prep.boxes], "task_section": prep.task_section,
@@ -781,7 +834,7 @@ def record(prep: Prep, step: str) -> None:
             "standing": prep.standing_id(prep.host),
             "legs": [{"box": leg.box, "suffix": leg.suffix, "worktree": prep.leg_worktree(leg), "standing": prep.standing_id(leg.box)}
                      for leg in prep.legs]},
-        "done": prep.done}, indent=1) + "\n")
+        **reassignment, "done": prep.done}, indent=1) + "\n")
 
 
 def board_fields(prep: Prep, brief: str) -> list[str]:
@@ -794,7 +847,7 @@ def board_fields(prep: Prep, brief: str) -> list[str]:
               f"standing={' '.join(prep.standing_id(h) for h in hosts)}", "requests=none",
               f"runs={os.path.join(prep.scratch, 'runs')}", "state=pending"]
     if prep.model:
-        fields.append(f"model={prep.model}" + (f"/{prep.effort}" if prep.effort else ""))
+        fields.append(f"model={board_model(prep.model, prep.effort)}")
     if prep.tier:
         fields.append(f"tier={prep.tier}")
     if prep.reassignment_reason:
@@ -863,8 +916,8 @@ def write(cfg: Config, prep: Prep, brief: str, payloads: list[tuple[str, dict[st
 
 def cmd_prep(cfg: Config, args: list[str]) -> int:
     path, task, opts = parse(args)
-    prep = build(cfg, path, task, opts)
     try:
+        prep = build(cfg, path, task, opts)
         with task_lock(prep.wave.directory, task, "WAVE PREP"):
             return prepared(cfg, prep)
     except Stop as stop:
