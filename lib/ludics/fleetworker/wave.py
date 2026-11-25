@@ -181,7 +181,8 @@ cold-start baseline) is tracked separately and persisted in ``logs/heartbeat.las
 unknown (omitted when equal; an omitted ``reported`` falls back to ``at``/``parts``, and a present
 ``null`` or malformed one yields no diff and stays ``null`` across silent saves until a full read
 re-establishes it). Silent ticks advance ``at``/``parts``/``read`` for plain ticks without advancing
-``reported``. When an exit condition or the stall bound triggers, it prints
+``reported`` (a plain tick's ``unchanged since`` check still compares against ``at``/``parts``,
+while a printed plain full read diffs against ``reported`` and clears it when the board reads). When an exit condition or the stall bound triggers, it prints
 ``HEARTBEAT wake <wave>: <comma-separated causes>`` first, then the full read with
 ``HEARTBEAT changed since`` diffed against the last reported read (including any captured board
 diagnostic and ending with ``HEARTBEAT <wave> <UTC time>``), and updates ``logs/heartbeat.last``
@@ -678,8 +679,7 @@ def board_rows(cfg: Config, wave: Wave) -> list[Any] | None:
     return sorted([task, sorted([k, v] for k, v in fields.items())] for task, fields in rows_of(doc))
 
 
-def saved_read(path: str) -> dict[str, Any] | None:
-    """The last full read (THE NO-CHANGE LINE), or None for a missing, torn or other-version file."""
+def _load_state(path: str) -> dict[str, Any] | None:
     try:
         with open(path, encoding="utf-8") as f:
             data: Any = json.load(f)
@@ -687,8 +687,21 @@ def saved_read(path: str) -> dict[str, Any] | None:
         return None
     if not isinstance(data, dict):
         return None
-    saved = cast(dict[str, Any], data)
-    if saved.get("v") != HEARTBEAT_STATE or not isinstance(saved.get("at"), str) or not isinstance(saved.get("parts"), dict):
+    doc = cast(dict[str, Any], data)
+    return doc if doc.get("v") == HEARTBEAT_STATE else None
+
+
+def _read_lines(saved: dict[str, Any] | None) -> list[str] | None:
+    raw = saved.get("read") if saved is not None else None
+    if isinstance(raw, list) and all(isinstance(x, str) for x in cast(list[Any], raw)):
+        return list(cast(list[str], raw))
+    return None
+
+
+def saved_read(path: str) -> dict[str, Any] | None:
+    """The last full read (THE NO-CHANGE LINE), or None for a missing, torn or other-version file."""
+    saved = _load_state(path)
+    if saved is None or not isinstance(saved.get("at"), str) or not isinstance(saved.get("parts"), dict):
         return None
     return saved
 
@@ -842,15 +855,8 @@ def _loops_by_name(raw: Any) -> dict[str, str]:
 
 def saved_alert_state(path: str) -> dict[str, Any] | None:
     """Read ``alert_state`` from ``heartbeat.last`` (persisted across unread-board wakes), or None."""
-    try:
-        with open(path, encoding="utf-8") as f:
-            data: Any = json.load(f)
-    except (OSError, ValueError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    doc = cast(dict[str, Any], data)
-    if doc.get("v") != HEARTBEAT_STATE or not isinstance(doc.get("alert_state"), dict):
+    doc = _load_state(path)
+    if doc is None or not isinstance(doc.get("alert_state"), dict):
         return None
     return cast(dict[str, Any], doc["alert_state"])
 
@@ -858,15 +864,8 @@ def saved_alert_state(path: str) -> dict[str, Any] | None:
 def saved_reported(path: str) -> tuple[str, dict[str, Any]] | None:
     """Read ``reported`` (the last read printed to the coordinator) from ``heartbeat.last``, or None.
     Falls back to ``at``/``parts`` when ``reported`` is absent; a present malformed ``reported`` returns None."""
-    try:
-        with open(path, encoding="utf-8") as f:
-            data: Any = json.load(f)
-    except (OSError, ValueError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    doc = cast(dict[str, Any], data)
-    if doc.get("v") != HEARTBEAT_STATE:
+    doc = _load_state(path)
+    if doc is None:
         return None
     if "reported" in doc:
         raw = doc["reported"]
@@ -1093,8 +1092,9 @@ def cmd_heartbeat(cfg: Config, args: list[str]) -> int:
             cli.say(f"HEARTBEAT {wave.wave} {tick.stamp} unchanged since {saved['at']} (prs exit={tick.prs_rc}, halted exit={tick.halted_rc}, {drive}):"
                     f" the last full read is {state}")
             return 0
-        emit_full_read(tick, cast(str, saved["at"]) if saved is not None else None,
-                       cast(dict[str, Any], saved["parts"]) if saved is not None else None)
+        prior_reported = saved_reported(state)
+        emit_full_read(tick, prior_reported[0] if prior_reported is not None else None,
+                       prior_reported[1] if prior_reported is not None else None)
         if tick.rows is not None:
             loop_running = saved_loop_running(saved if saved is not None else saved_alert_state(state))
             save_heartbeat_state(state, at=tick.stamp, checked_at=tick.stamp, parts=tick.parts, read=tick.read,
@@ -1102,11 +1102,7 @@ def cmd_heartbeat(cfg: Config, args: list[str]) -> int:
         else:
             alerts = saved_alert_state(state)
             if saved is not None or alerts is not None:
-                prior_reported = saved_reported(state)
-                raw_read = saved.get("read") if saved is not None else None
-                read_lines = (list(cast(list[str], raw_read))
-                              if isinstance(raw_read, list) and all(isinstance(x, str) for x in cast(list[Any], raw_read))
-                              else [])
+                read_lines = _read_lines(saved) or []
                 loop_running = saved_loop_running(saved if saved is not None else alerts)
                 save_heartbeat_state(
                     state,
@@ -1138,9 +1134,7 @@ def cmd_heartbeat(cfg: Config, args: list[str]) -> int:
     if saved is not None:
         saved_parts = dict(cast(dict[str, Any], saved["parts"]))
         saved_at = cast(str, saved["at"])
-        raw_read = saved.get("read")
-        if isinstance(raw_read, list) and all(isinstance(x, str) for x in cast(list[Any], raw_read)):
-            saved_read_lines = list(cast(list[str], raw_read))
+        saved_read_lines = _read_lines(saved)
         prev_loops = _loops_by_name(saved_parts.get("loops"))
         prev_loop_running = saved_loop_running(saved) or {}
         h = halt_state(saved_parts.get("halted"))

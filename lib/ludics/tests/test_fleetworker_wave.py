@@ -15,14 +15,14 @@ import subprocess
 import tempfile
 import time
 import unittest
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from typing import Any
 from unittest import mock
 
 from ludics import agy, cli, proc
 from ludics.fleetworker import farside, gate, preflight, revision, takeover, tally, wave, wavedecide, wavedrive, wavelaunch, waveloop, waveprep, wavereview, waveunprep, workers
 from ludics.fleetworker.boardstore import NO_BOARD_EXIT
-from ludics.fleetworker.config import load_config
+from ludics.fleetworker.config import Config, load_config
 from ludics.fleetworker.transport import UNREACHABLE, Done
 from ludics.fleetworker.wavebrief import Part, cmd_render, render
 from ludics.prreview.state import PR_FEED_FILTER
@@ -5318,6 +5318,79 @@ class Heartbeat(unittest.TestCase):
             self.assertRegex(lines[1], r"^HEARTBEAT changed since \S+: board rows \(t0 merged→closed; t7 reviewing→merged; t8 added\)$")
             self.assertRegex(lines[-1], r"^HEARTBEAT wv \S+Z$")
 
+    def _run_heartbeat(
+        self,
+        cfg: Config,
+        args: list[str],
+        *,
+        now: list[float],
+        prs_or_run: str | Callable[..., Done],
+        rows: Any,
+        on_sleep: Callable[[float], None] | None = None,
+    ) -> tuple[int, str, str]:
+        def fake_utc() -> str:
+            return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(1700000000 + int(now[0])))
+
+        def advance(dt: float) -> None:
+            now[0] += dt
+
+        def default_run(argv: list[str], **_: Any) -> Done:
+            assert isinstance(prs_or_run, str)
+            return Done(0, prs_or_run) if argv[1] == "prs" else Done(0, "launches open\n")
+
+        run_fn: Callable[..., Done] = default_run if isinstance(prs_or_run, str) else prs_or_run
+        rows_patch = (
+            mock.patch.object(wave, "board_rows", side_effect=rows)
+            if callable(rows) else mock.patch.object(wave, "board_rows", return_value=rows)
+        )
+        with (mock.patch.object(wave, "run", side_effect=run_fn),
+              rows_patch,
+              mock.patch.object(wave, "clock", side_effect=lambda: now[0]),
+              mock.patch.object(wave, "sleep", side_effect=on_sleep or advance),
+              mock.patch.object(wave, "utc_now", side_effect=fake_utc)):
+            return captured(wave.cmd_heartbeat, cfg, args)
+
+    def _seed_silent_heartbeat_state(
+        self, d: str,
+    ) -> tuple[str, str, str, Config, str, str, str, str, list[Any], list[Any], list[Any]]:
+        path = os.path.join(d, "wave.json")
+        with open(path, "w") as f:
+            json.dump(wave_data(d), f)
+        logs = os.path.join(d, "logs")
+        os.makedirs(logs)
+        loop_file = os.path.join(logs, "loop-cc.log")
+        loop_line = "2026-11-23T12:00:00Z LOOP cc PASS wv-cc-1 at abc"
+        with open(loop_file, "w") as f:
+            f.write(loop_line + "\n")
+        cfg = load_config(SCRIPT, {"HOME": d})
+        state_file = os.path.join(logs, "heartbeat.last")
+        t0_stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(1700000000))
+        t1_stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(1700000600))
+        t0_rows: list[Any] = [["t6", [["state", "launched"]]], ["t7", [["state", "reviewing"]]]]
+        t1_rows: list[Any] = [["t6", [["state", "reviewing"]]], ["t7", [["state", "merging"], ["pr", "14"]]]]
+        t2_rows: list[Any] = [["t6", [["state", "reviewing"]]], ["t7", [["state", "merged #14"], ["pr", "14"]]]]
+        t0_prs = "o/staging#7 rounds=1 ci=green branch=current head=10m claude/w1-7: T\n"
+        t1_prs = "o/staging#7 rounds=2 ci=green branch=current head=10m claude/w1-7: T\n"
+        t0_parts: dict[str, Any] = {
+            "board rows": t0_rows,
+            "prs": ["o/staging#7 rounds=1 ci=green branch=current claude/w1-7: T", "exit=0"],
+            "halted": ["launches open", "exit=0"],
+            "loops": [f"HEARTBEAT loop cc: {loop_line}"],
+            "driver": [],
+        }
+        t1_parts: dict[str, Any] = {
+            "board rows": t1_rows,
+            "prs": ["o/staging#7 rounds=2 ci=green branch=current claude/w1-7: T", "exit=0"],
+            "halted": ["launches open", "exit=0"],
+            "loops": [f"HEARTBEAT loop cc: {loop_line}"],
+            "driver": [],
+        }
+        wave.save_heartbeat_state(
+            state_file, at=t1_stamp, checked_at=t1_stamp, parts=t1_parts, read=[],
+            loop_running={"cc": False}, reported=(t0_stamp, t0_parts),
+        )
+        return path, state_file, loop_file, cfg, t0_stamp, t1_stamp, t0_prs, t1_prs, t0_rows, t1_rows, t2_rows
+
     def test_until_attention_wake_diffs_against_last_reported_read(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "wave.json")
@@ -5325,28 +5398,18 @@ class Heartbeat(unittest.TestCase):
                 json.dump(wave_data(d), f)
             logs = os.path.join(d, "logs")
             os.makedirs(logs)
-            loop_file = os.path.join(logs, "loop-cc.log")
-            with open(loop_file, "w") as f:
+            with open(os.path.join(logs, "loop-cc.log"), "w") as f:
                 f.write("2026-11-23T12:00:00Z LOOP cc PASS wv-cc-1 at abc\n")
             cfg = load_config(SCRIPT, {"HOME": d})
             state_file = os.path.join(logs, "heartbeat.last")
             now = [0.0]
 
-            def advance(dt: float) -> None:
-                now[0] += dt
-
-            def fake_utc() -> str:
-                return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(1700000000 + int(now[0])))
-
             # Prior reported read at T0 (plain tick).
             t0_rows = [["t6", [["state", "launched"]]], ["t7", [["state", "reviewing"]]]]
             t0_prs = "o/staging#7 rounds=1 ci=green branch=current head=10m claude/w1-7: T\n"
-            with (mock.patch.object(wave, "run", side_effect=lambda argv, **_: Done(0, t0_prs) if argv[1] == "prs" else Done(0, "launches open\n")),  # pyright: ignore[reportUnknownLambdaType]
-                  mock.patch.object(wave, "board_rows", return_value=t0_rows),
-                  mock.patch.object(wave, "utc_now", side_effect=fake_utc)):
-                rc, _, _ = captured(wave.cmd_heartbeat, cfg, [path, "--sleep", "0"])
+            rc, _, _ = self._run_heartbeat(cfg, [path, "--sleep", "0"], now=now, prs_or_run=t0_prs, rows=t0_rows)
             self.assertEqual(rc, 0)
-            t0_stamp = fake_utc()
+            t0_stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(1700000000))
 
             # Tick 1 (t=600, silent): non-exit board + PR transitions advance heartbeat.last but not reported.
             # Tick 2 (t=1200, wake): t7 reaches merged; wake changed-since must name both silent and waking transitions from T0.
@@ -5363,15 +5426,10 @@ class Heartbeat(unittest.TestCase):
                     return Done(0, t1_prs)
                 return Done(0, "launches open\n")
 
-            def fake_rows(*_: Any) -> list[Any]:
-                return t1_rows if now[0] < 1200.0 else t2_rows
-
-            with (mock.patch.object(wave, "run", side_effect=fake_run),
-                  mock.patch.object(wave, "board_rows", side_effect=fake_rows),
-                  mock.patch.object(wave, "clock", side_effect=lambda: now[0]),
-                  mock.patch.object(wave, "sleep", side_effect=advance),
-                  mock.patch.object(wave, "utc_now", side_effect=fake_utc)):
-                rc, out, _ = captured(wave.cmd_heartbeat, cfg, [path, "--sleep", "600", "--until-attention", "--max-quiet", "3600"])
+            rc, out, _ = self._run_heartbeat(
+                cfg, [path, "--sleep", "600", "--until-attention", "--max-quiet", "3600"],
+                now=now, prs_or_run=fake_run, rows=lambda *_: t1_rows if now[0] < 1200.0 else t2_rows,  # pyright: ignore[reportUnknownLambdaType]
+            )
             self.assertEqual(rc, 0)
             lines = out.rstrip("\n").split("\n")
             self.assertEqual(lines[0], "HEARTBEAT wake wv: board done (t7 merged)")
@@ -5388,70 +5446,72 @@ class Heartbeat(unittest.TestCase):
             self.assertEqual(after_wake["at"], time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(1700001200)))
             self.assertNotIn("reported", after_wake, "after a complete wake, at/parts IS the last reported read")
 
-            # A plain tick against a silent-tick heartbeat.last sees it as fresh (unchanged since T1),
-            # while a re-armed --until-attention still diffs against persisted reported (T0).
+            # Against a silent-tick heartbeat.last: an unchanged plain tick sees it as fresh (unchanged since T1),
+            # a re-armed --until-attention still diffs against persisted reported (T0), and a changed plain tick
+            # diffs its printed read against T0 and clears reported.
             with open(state_file, "w") as f:
                 json.dump(mid_state[0], f)
             now[0] = 900.0
-            with (mock.patch.object(wave, "run", side_effect=lambda argv, **_: Done(0, t1_prs) if argv[1] == "prs" else Done(0, "launches open\n")),  # pyright: ignore[reportUnknownLambdaType]
-                  mock.patch.object(wave, "board_rows", return_value=t1_rows),
-                  mock.patch.object(wave, "utc_now", side_effect=fake_utc)):
-                rc, plain_out, _ = captured(wave.cmd_heartbeat, cfg, [path, "--sleep", "0"])
+            rc, plain_out, _ = self._run_heartbeat(cfg, [path, "--sleep", "0"], now=now, prs_or_run=t1_prs, rows=t1_rows)
             self.assertEqual(rc, 0)
             self.assertIn(f"unchanged since {t1_stamp}", plain_out)
 
-            with (mock.patch.object(wave, "run", side_effect=lambda argv, **_: Done(0, t1_prs) if argv[1] == "prs" else Done(0, "launches open\n")),  # pyright: ignore[reportUnknownLambdaType]
-                  mock.patch.object(wave, "board_rows", return_value=t2_rows),
-                  mock.patch.object(wave, "clock", side_effect=lambda: now[0]),
-                  mock.patch.object(wave, "sleep", side_effect=advance),
-                  mock.patch.object(wave, "utc_now", side_effect=fake_utc)):
-                rc, rearm_out, _ = captured(wave.cmd_heartbeat, cfg, [path, "--sleep", "600", "--until-attention", "--max-quiet", "3600"])
+            rc, rearm_out, _ = self._run_heartbeat(
+                cfg, [path, "--sleep", "600", "--until-attention", "--max-quiet", "3600"],
+                now=now, prs_or_run=t1_prs, rows=t2_rows,
+            )
             self.assertEqual(rc, 0)
-            rearm_lines = rearm_out.rstrip("\n").split("\n")
             self.assertEqual(
-                rearm_lines[1],
+                rearm_out.rstrip("\n").split("\n")[1],
                 f"HEARTBEAT changed since {t0_stamp}: board rows (t6 launched→reviewing; t7 reviewing→merged), prs",
             )
 
-            # Unreadable-board wake advances reported non-board parts while keeping last reported board rows.
             with open(state_file, "w") as f:
                 json.dump(mid_state[0], f)
+            now[0] = 1500.0
+            rc, plain_changed_out, _ = self._run_heartbeat(cfg, [path, "--sleep", "0"], now=now, prs_or_run=t1_prs, rows=t2_rows)
+            self.assertEqual(rc, 0)
+            self.assertEqual(
+                plain_changed_out.rstrip("\n").split("\n")[0],
+                f"HEARTBEAT changed since {t0_stamp}: board rows (t6 launched→reviewing; t7 reviewing→merged), prs",
+            )
+            with open(state_file) as f:
+                self.assertNotIn("reported", json.load(f))
+
+    def test_until_attention_reported_survives_board_outage_and_plain_outage_read(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            path, state_file, loop_file, cfg, t0_stamp, _, _, t1_prs, _, _, t2_rows = self._seed_silent_heartbeat_state(d)
+            with open(state_file) as f:
+                seeded = json.load(f)
+
+            # Unreadable-board wake advances reported non-board parts while keeping T0's reported board rows.
             with open(loop_file, "a") as f:
                 f.write("2026-11-23T12:15:00Z LOOP cc UNKNOWN: tip-run exited 4\n")
-            now[0] = 1500.0
-            with (mock.patch.object(wave, "run", side_effect=lambda argv, **_: Done(0, t1_prs) if argv[1] == "prs" else Done(0, "launches open\n")),  # pyright: ignore[reportUnknownLambdaType]
-                  mock.patch.object(wave, "board_rows", return_value=None),
-                  mock.patch.object(wave, "clock", side_effect=lambda: now[0]),
-                  mock.patch.object(wave, "sleep", side_effect=advance),
-                  mock.patch.object(wave, "utc_now", side_effect=fake_utc)):
-                rc, outage_out, _ = captured(wave.cmd_heartbeat, cfg, [path, "--sleep", "600", "--until-attention", "--max-quiet", "3600"])
+            now = [1500.0]
+            rc, outage_out, _ = self._run_heartbeat(
+                cfg, [path, "--sleep", "600", "--until-attention", "--max-quiet", "3600"],
+                now=now, prs_or_run=t1_prs, rows=None,
+            )
             self.assertEqual(rc, 0)
             outage_lines = outage_out.rstrip("\n").split("\n")
             self.assertEqual(outage_lines[0], "HEARTBEAT wake wv: loop cc UNKNOWN")
             self.assertEqual(outage_lines[1], f"HEARTBEAT changed since {t0_stamp}: prs, loops")
-            outage_stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(1700002100))
 
             # Re-arming while board stays unreadable and nothing else changed must not repeat prs/loops.
-            now[0] = 2100.0
-            with (mock.patch.object(wave, "run", side_effect=lambda argv, **_: Done(0, t1_prs) if argv[1] == "prs" else Done(0, "launches open\n")),  # pyright: ignore[reportUnknownLambdaType]
-                  mock.patch.object(wave, "board_rows", return_value=None),
-                  mock.patch.object(wave, "clock", side_effect=lambda: now[0]),
-                  mock.patch.object(wave, "sleep", side_effect=advance),
-                  mock.patch.object(wave, "utc_now", side_effect=fake_utc)):
-                rc, quiet_outage_out, _ = captured(wave.cmd_heartbeat, cfg, [path, "--sleep", "600", "--until-attention", "--max-quiet", "1200"])
+            rc, quiet_outage_out, _ = self._run_heartbeat(
+                cfg, [path, "--sleep", "600", "--until-attention", "--max-quiet", "1200"],
+                now=now, prs_or_run=t1_prs, rows=None,
+            )
             self.assertEqual(rc, 0)
             self.assertTrue(quiet_outage_out.startswith("HEARTBEAT wake wv: quiet 1200s (max-quiet 1200s)\n"))
             self.assertNotIn("HEARTBEAT changed since", quiet_outage_out)
-            quiet_outage_stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(1700003300))
+            quiet_outage_stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(1700000000 + int(now[0])))
 
             # Once the board recovers, board rows still diff against T0's last reported rows (not T1's silent tick).
-            now[0] = 3300.0
-            with (mock.patch.object(wave, "run", side_effect=lambda argv, **_: Done(0, t1_prs) if argv[1] == "prs" else Done(0, "launches open\n")),  # pyright: ignore[reportUnknownLambdaType]
-                  mock.patch.object(wave, "board_rows", return_value=t2_rows),
-                  mock.patch.object(wave, "clock", side_effect=lambda: now[0]),
-                  mock.patch.object(wave, "sleep", side_effect=advance),
-                  mock.patch.object(wave, "utc_now", side_effect=fake_utc)):
-                rc, recover_out, _ = captured(wave.cmd_heartbeat, cfg, [path, "--sleep", "600", "--until-attention", "--max-quiet", "3600"])
+            rc, recover_out, _ = self._run_heartbeat(
+                cfg, [path, "--sleep", "600", "--until-attention", "--max-quiet", "3600"],
+                now=now, prs_or_run=t1_prs, rows=t2_rows,
+            )
             self.assertEqual(rc, 0)
             recover_lines = recover_out.rstrip("\n").split("\n")
             self.assertEqual(recover_lines[0], "HEARTBEAT wake wv: board done (t7 merged)")
@@ -5459,28 +5519,23 @@ class Heartbeat(unittest.TestCase):
                 recover_lines[1],
                 f"HEARTBEAT changed since {quiet_outage_stamp}: board rows (t6 launched→reviewing; t7 reviewing→merged)",
             )
-            self.assertNotEqual(outage_stamp, quiet_outage_stamp)
 
-            # Plain full read during a board outage records the printed non-board parts while keeping
-            # the last complete snapshot and last reported board rows intact.
+            # Plain full read during a board outage records the printed non-board parts while preserving
+            # the last complete snapshot and T0's reported board rows.
             with open(state_file, "w") as f:
-                json.dump(mid_state[0], f)
+                json.dump(seeded, f)
             with open(loop_file, "w") as f:
                 f.write("2026-11-23T12:00:00Z LOOP cc PASS wv-cc-1 at abc\n")
             now[0] = 3600.0
-            with (mock.patch.object(wave, "run", side_effect=lambda argv, **_: Done(0, t1_prs) if argv[1] == "prs" else Done(0, "launches open\n")),  # pyright: ignore[reportUnknownLambdaType]
-                  mock.patch.object(wave, "board_rows", return_value=None),
-                  mock.patch.object(wave, "utc_now", side_effect=fake_utc)):
-                rc, plain_outage_out, _ = captured(wave.cmd_heartbeat, cfg, [path, "--sleep", "0"])
+            rc, plain_outage_out, _ = self._run_heartbeat(cfg, [path, "--sleep", "0"], now=now, prs_or_run=t1_prs, rows=None)
             self.assertEqual(rc, 0)
+            self.assertTrue(plain_outage_out.startswith(f"HEARTBEAT changed since {t0_stamp}: prs\n"))
             self.assertIn("HEARTBEAT board: did not read", plain_outage_out)
             plain_outage_stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(1700003600))
-            with (mock.patch.object(wave, "run", side_effect=lambda argv, **_: Done(0, t1_prs) if argv[1] == "prs" else Done(0, "launches open\n")),  # pyright: ignore[reportUnknownLambdaType]
-                  mock.patch.object(wave, "board_rows", return_value=t2_rows),
-                  mock.patch.object(wave, "clock", side_effect=lambda: now[0]),
-                  mock.patch.object(wave, "sleep", side_effect=advance),
-                  mock.patch.object(wave, "utc_now", side_effect=fake_utc)):
-                rc, after_plain_outage, _ = captured(wave.cmd_heartbeat, cfg, [path, "--sleep", "600", "--until-attention", "--max-quiet", "3600"])
+            rc, after_plain_outage, _ = self._run_heartbeat(
+                cfg, [path, "--sleep", "600", "--until-attention", "--max-quiet", "3600"],
+                now=now, prs_or_run=t1_prs, rows=t2_rows,
+            )
             self.assertEqual(rc, 0)
             after_plain_lines = after_plain_outage.rstrip("\n").split("\n")
             self.assertEqual(after_plain_lines[0], "HEARTBEAT wake wv: board done (t7 merged)")
@@ -5489,12 +5544,16 @@ class Heartbeat(unittest.TestCase):
                 f"HEARTBEAT changed since {plain_outage_stamp}: board rows (t6 launched→reviewing; t7 reviewing→merged)",
             )
 
-            # Malformed reported payload fails closed to None and persists as null across silent saves on restart.
-            bad_state = dict(mid_state[0], reported="not-a-dict")
+    def test_until_attention_malformed_reported_persists_as_null_across_silent_saves(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            path, state_file, _, cfg, _, _, _, t1_prs, _, _, t2_rows = self._seed_silent_heartbeat_state(d)
+            with open(state_file) as f:
+                bad_state = dict(json.load(f), reported="not-a-dict")
             with open(state_file, "w") as f:
                 json.dump(bad_state, f)
             self.assertIsNone(wave.saved_reported(state_file))
-            now[0] = 4200.0
+
+            now = [4200.0]
             silent_rows = [["t6", [["state", "merging"]]], ["t7", [["state", "merging"], ["pr", "14"]]]]
 
             class _StopAfterSilent(BaseException):
@@ -5505,24 +5564,21 @@ class Heartbeat(unittest.TestCase):
                     raise _StopAfterSilent
                 now[0] += dt
 
-            with (mock.patch.object(wave, "run", side_effect=lambda argv, **_: Done(0, t1_prs) if argv[1] == "prs" else Done(0, "launches open\n")),  # pyright: ignore[reportUnknownLambdaType]
-                  mock.patch.object(wave, "board_rows", return_value=silent_rows),
-                  mock.patch.object(wave, "clock", side_effect=lambda: now[0]),
-                  mock.patch.object(wave, "sleep", side_effect=stop_on_second_sleep),
-                  mock.patch.object(wave, "utc_now", side_effect=fake_utc)):
-                with self.assertRaises(_StopAfterSilent):
-                    wave.cmd_heartbeat(cfg, [path, "--sleep", "600", "--until-attention", "--max-quiet", "3600"])
+            with self.assertRaises(_StopAfterSilent):
+                self._run_heartbeat(
+                    cfg, [path, "--sleep", "600", "--until-attention", "--max-quiet", "3600"],
+                    now=now, prs_or_run=t1_prs, rows=silent_rows, on_sleep=stop_on_second_sleep,
+                )
             with open(state_file) as f:
                 persisted_unknown = json.load(f)
             self.assertIn("reported", persisted_unknown)
             self.assertIsNone(persisted_unknown["reported"])
             self.assertIsNone(wave.saved_reported(state_file))
-            with (mock.patch.object(wave, "run", side_effect=lambda argv, **_: Done(0, t1_prs) if argv[1] == "prs" else Done(0, "launches open\n")),  # pyright: ignore[reportUnknownLambdaType]
-                  mock.patch.object(wave, "board_rows", return_value=t2_rows),
-                  mock.patch.object(wave, "clock", side_effect=lambda: now[0]),
-                  mock.patch.object(wave, "sleep", side_effect=advance),
-                  mock.patch.object(wave, "utc_now", side_effect=fake_utc)):
-                rc, unknown_wake_out, _ = captured(wave.cmd_heartbeat, cfg, [path, "--sleep", "600", "--until-attention", "--max-quiet", "3600"])
+
+            rc, unknown_wake_out, _ = self._run_heartbeat(
+                cfg, [path, "--sleep", "600", "--until-attention", "--max-quiet", "3600"],
+                now=now, prs_or_run=t1_prs, rows=t2_rows,
+            )
             self.assertEqual(rc, 0)
             self.assertTrue(unknown_wake_out.startswith("HEARTBEAT wake wv: board done (t7 merged)\n"))
             self.assertNotIn("HEARTBEAT changed since", unknown_wake_out)
