@@ -20,8 +20,10 @@ the registry is asked, so a malformed request reserves nothing, and neither do i
 
 - ``<base.json>``: one JSON object, the coordinator's completion of every request in the call, of
   BASE_FIELDS only: ``wave``, ``worker``, ``transport``, ``agent_host``, ``repository`` (required,
-  nonempty strings), ``issue`` and ``purpose`` (optional strings). Nothing a worker cannot be
-  trusted to choose comes from the worker: a block cannot set the transport, the wave, ``standing``,
+  nonempty strings), ``issue`` and ``purpose`` (optional strings). The base's ``purpose`` is retained
+  for the shared Windows witness base format. Assignment takes its purpose from the request block.
+  Nothing a worker cannot be trusted to choose comes from the worker: a block cannot set the
+  transport, the wave, ``standing``,
   ``integration`` or ``triage_reason``, so ``assign`` never takes a standing, integration or triage
   reservation (those keep their own verbs: ``run``, ``tip-run``).
 - the requests file (``-``: stdin): the worker's final message as written, of which only the blocks
@@ -29,10 +31,10 @@ the registry is asked, so a malformed request reserves nothing, and neither do i
   that is, stripped, ``END_EXECUTION_REQUEST``, which must be one JSON object of BLOCK_FIELDS only.
   Text outside the blocks is not read (prose, code fences, the brief's indentation). Required:
   ``request_id``, ``execution_host``, ``kind`` (correctness or measurement), ``requested_revision``
-  (strings), and exactly one of ``command`` (a string, sent as written) or ``runner`` (a string, or
-  an array of strings, the box-relative runner command of a leg). Optional: ``checkout`` (absolute;
-  kept beside the request as the record's, THE CHECKOUT), ``log`` (a string, ``-`` when absent),
-  ``purpose`` (a string, preferred to the base's; one of the two must give it), and, with ``runner``,
+  and ``purpose`` (nonempty strings), and exactly one of ``command`` (a string, sent as written) or
+  ``runner`` (a string, or an array of strings, the box-relative runner command of a leg).
+  Optional: ``checkout`` (absolute; kept beside the request as the record's, THE CHECKOUT),
+  ``log`` (a string, ``-`` when absent), and, with ``runner``,
   ``clone`` (the leg's ``--checkout``) and ``leg_options`` (see THE RUNNER). An unterminated block, a block in a block,
   no block, two blocks with one ``request_id``, and a ``--request`` naming no block are refused.
 - THE RUNNER (quirk 9): a block with ``runner`` is assigned as the leg form, ``<this fleet-worker.sh>
@@ -186,8 +188,8 @@ USAGE = ("execution assign <base.json> <requests file|-> [--request <id>]... [--
          " [--message <file>] [--unstick <box> <name>] [--status <file>]")
 BASE_REQUIRED = ("wave", "worker", "transport", "agent_host", "repository")
 BASE_FIELDS = frozenset((*BASE_REQUIRED, "issue", "purpose"))
-BLOCK_REQUIRED = ("request_id", "execution_host", "kind", "requested_revision")
-BLOCK_FIELDS = frozenset((*BLOCK_REQUIRED, "checkout", "command", "runner", "clone", "leg_options", "log", "purpose"))
+BLOCK_REQUIRED = ("request_id", "execution_host", "kind", "requested_revision", "purpose")
+BLOCK_FIELDS = frozenset((*BLOCK_REQUIRED, "checkout", "command", "runner", "clone", "leg_options", "log"))
 OPEN, CLOSE = "EXECUTION_REQUEST", "END_EXECUTION_REQUEST"
 OBJECT_ID = re.compile(r"[0-9a-f]{40}")
 HEAD_OF = "head-of:"
@@ -449,9 +451,8 @@ def block_problem(block: Any) -> str | None:
             return f"must give {key}, a nonempty string"
     if fields["kind"] not in ("correctness", "measurement"):
         return "kind must be correctness or measurement"
-    for key in ("log", "purpose"):
-        if key in fields and not (isinstance(fields[key], str) and fields[key]):
-            return f"{key} must be a nonempty string"
+    if "log" in fields and not (isinstance(fields["log"], str) and fields["log"]):
+        return "log must be a nonempty string"
     if "checkout" in fields and not is_absolute(fields["checkout"]):
         return "checkout must be an absolute path on the execution host"
     if ("command" in fields) == ("runner" in fields):
@@ -507,9 +508,6 @@ def payload_of(base: dict[str, Any], block: dict[str, Any]) -> dict[str, Any]:
     them (THE CHECKOUT), and the worker's command as the dispatch's evidence."""
     request = {key: base[key] for key in BASE_FIELDS if key in base and key != "purpose"}
     request.update({key: block[key] for key in BLOCK_REQUIRED})
-    purpose = block.get("purpose") or base.get("purpose")
-    if purpose:
-        request["purpose"] = purpose
     asked = block.get("command") if "command" in block else block["runner"]
     shown = asked if isinstance(asked, str) else shlex.join(cast(list[str], asked))
     payload: dict[str, Any] = {**request, "evidence": f"assigned by execution assign; the worker asked: {shown}"}
@@ -736,9 +734,6 @@ def cmd_assign(cfg: Config, args: list[str], *, call: Step = step, resend: Unsti
         die(f"execution assign: --request {', '.join(missing)} names no block; nothing assigned")
     selected = [block for block in blocks if not parsed.only or block["request_id"] in parsed.only]
     base_fields = cast(dict[str, Any], base)
-    aimless = [block["request_id"] for block in selected if not (block.get("purpose") or base_fields.get("purpose"))]
-    if aimless:
-        die(f"execution assign: {', '.join(aimless)} has no purpose, and the base gives none; nothing assigned")
 
     done = execution.listing(cfg)
     records = execution.records_of(done.out) if done.rc == 0 and not done.unreachable else None

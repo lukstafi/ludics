@@ -84,6 +84,7 @@ with tempfile.TemporaryDirectory(prefix='fleet-execution-') as temporary:
                                           agent_host='fixture', repository='owner/repo', purpose='fixture')))
     lease_text = 'EXECUTION REFUSED fixture: coordinator lease held by fixture'
     assign_block = dict(request_id='assign-cpu', execution_host='rog', kind='correctness',
+                        purpose='check runner slot flag placement',
                         requested_revision='b' * 40, clone=f'/srv/{lease_text}', checkout='/srv/project worktree',
                         runner='run --cpu build @test/operations/scans -j 4')
     assignment = subprocess.run(

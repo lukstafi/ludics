@@ -226,6 +226,9 @@ driver hands you as an attention line.
    ```
    fleet-worker.sh execution assign <wave>/reserve/<task>-base.json <saved final message>
    ```
+
+   For a request handed to the coordinator by wave drive, use the request file named in its attention line.
+
 5. **Each loop:**
 
    ```

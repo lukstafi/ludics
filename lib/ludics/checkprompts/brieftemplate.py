@@ -73,6 +73,9 @@ RETIRED: tuple[tuple[str, str], ...] = (
 )
 REQUIRED: tuple[tuple[str, str, str], ...] = (
     (f"{TEMPLATES}/cli-gemini/who.md",
+     "Start every final message with its handoff marker on the first line.",
+     "#1357 pins the Gemini final-message first-line rule"),
+    (f"{TEMPLATES}/cli-gemini/who.md",
      "Start every hand-back turn's final message with `HANDBACK @@T@@` on its first line, with nothing before it",
      "#1308 pins the Gemini hand-back first-line rule"),
     (f"{TEMPLATES}/{SHARED_DIR}/after-merge.md",

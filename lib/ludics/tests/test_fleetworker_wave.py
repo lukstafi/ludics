@@ -3132,6 +3132,27 @@ def row(task: str, **fields: str) -> dict[str, Any]:
 
 
 class Markers(unittest.TestCase):
+    def test_t1357_fenced_result_and_quoted_marker_are_examples_in_a_handback(self) -> None:
+        for fence in ("````", "~~~~"):
+            with self.subTest(fence=fence):
+                got = wavedrive.classify(
+                    f"HANDBACK t42\n{fence}text\nEXECUTION_RESULT {{}}\n"
+                    f"{fence[:-1]}\nEXECUTION_RESULT {{}}\n{fence} still inside\n"
+                    f"{fence[0] * 3}\n/pull/6\n{fence[0] * 5}\n"
+                    f"> REVIEW_REQUEST 8 {A}\n> /pull/9\nMerged /pull/7\n")
+                self.assertEqual((got.kind, got.pr), ("handback", "7"))
+        quoted = wavedrive.classify("HANDBACK t42\n  > EXECUTION_RESULT {} from /pull/8\nMerged /pull/7\n")
+        self.assertEqual((quoted.kind, quoted.pr), ("handback", "7"))
+
+    def test_quoted_blocks_do_not_change_first_and_last_marker_positions(self) -> None:
+        for message in ("> Preface\nHANDBACK t42\nMerged /pull/7\n",
+                        f"REVIEW_REQUEST 7 {A}\n> Postscript",
+                        "HANDBACK t42\n    ```\nEXECUTION_RESULT {}\n    ```"):
+            with self.subTest(message=message):
+                got = wavedrive.classify(message)
+                self.assertEqual(got.kind, "other")
+                self.assertFalse(got.markerless)
+
     def test_exactly_one_marker_names_a_turn(self) -> None:
         request = "I need a leg.\n\nEXECUTION_REQUEST\n{\"request_id\":\"x\"}\nEND_EXECUTION_REQUEST\n"
         result = 'Done.\nEXECUTION_RESULT {"request_id":"x","run":"/r","exit":0,"observed_sha":"' + A + '"}\n'
@@ -3298,6 +3319,73 @@ class DriveCase(WaveDirCase):
 
 class Drive(DriveCase):
     """wave drive: each returned turn answered once, by its marker, and everything else handed up."""
+
+    def test_t1357_a_quoted_request_is_not_forwarded_with_the_real_request(self) -> None:
+        self.message = ("EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\n"
+                        "\n```json\nEXECUTION_REQUEST\n{\"example\":true}\nEND_EXECUTION_REQUEST\n```\n")
+        self.out["execution assign"] = "EXECUTION_ASSIGNED x\ncommand: true\n"
+        with self.world():
+            self.assertIn("request answered", self.once()[1])
+        call = next(c for c in self.calls if c[:2] == ["execution", "assign"])
+        with open(call[3], encoding="utf-8") as f:
+            self.assertEqual(f.read().strip(), "EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST")
+        with open(os.path.join(self.wavedir, "msgs", "t42.w1-42.0199-a.0.md"), encoding="utf-8") as f:
+            self.assertEqual(f.read(), self.message)
+
+    def test_t1357_assign_preserves_invalid_payload_and_names_its_recovery_input(self) -> None:
+        from ludics.fleetworker.assign import read_blocks
+
+        self.message = ("EXECUTION_REQUEST\n{}\n> invalid JSON\nEND_EXECUTION_REQUEST\n"
+                        "\n```json\nEXECUTION_REQUEST\n{\"example\":true}\nEND_EXECUTION_REQUEST\n```\n")
+        self.rc["execution assign"] = 2
+        with self.world():
+            _, out = self.once()
+        call = next(c for c in self.calls if c[:2] == ["execution", "assign"])
+        with open(call[3], encoding="utf-8") as f:
+            staged = f.read()
+        self.assertEqual(read_blocks(staged), "block 1 is not one JSON object")
+        self.assertNotIn("example", staged)
+        self.assertIn(f"({call[3]})", out)
+
+    def test_t1357_a_gemini_markerless_final_gets_one_reprompt_across_restarts(self) -> None:
+        self.rows = [row("t42", kind="gemini")]
+        self.message = "Implementation and tests are complete."
+        with self.world():
+            self.assertIn("reprompt answered", self.once()[1])
+            sent = next(c for c in self.calls if c[0] == "unstick")
+            with open(sent[-1], encoding="utf-8") as f:
+                prompt = f.read()
+            self.assertIn("resend the same final message with its handoff marker on the first line", prompt)
+            self.assertIn("If your final is a question for the coordinator, resend the question as written.", prompt)
+            for marker in ("WINDOWS_WITNESS_REQUEST", "EXECUTION_REQUEST", "EXECUTION_RESULT", "REVIEW_REQUEST", "CONFIRM_REQUEST", "HANDBACK"):
+                self.assertIn(marker, prompt)
+            self.assertEqual(self.ledger(), [(0, "reprompt", "reprompting"), (0, "reprompt", "answered")])
+            self.assertEqual((self.once()[1], self.calls), ("", []))
+            self.resumes += 1
+            self.assertIn("DRIVE ATTENTION t42 turn 1: no marker this driver answers", self.once()[1])
+            self.assertEqual(self.calls, [["log", "far", "w1-42", "--last-result"]])
+            self.assertEqual(len(self.attention()), 1)
+            self.assertEqual((self.once()[1], self.calls), ("", []))
+
+    def test_t1357_an_interrupted_reprompt_is_never_sent_again(self) -> None:
+        self.rows = [row("t42", kind="gemini")]
+        self.message = "The checks are green."
+        self.rc["unstick"] = 6
+        with self.world():
+            rc, out = self.once()
+            self.assertEqual(rc, 1)
+            self.assertIn("coordinator lease lost (unstick exit 6)", out)
+            self.assertEqual(self.ledger(), [(0, "reprompt", "reprompting")])
+            self.rc["unstick"] = 0
+            self.assertIn("the re-prompt may have been sent before the driver stopped", self.once()[1])
+            self.assertEqual(self.calls, [["log", "far", "w1-42", "--last-result"]])
+
+    def test_t1357_a_gemini_plan_escalation_goes_straight_to_attention(self) -> None:
+        self.rows = [row("t42", kind="gemini")]
+        self.message = "PLAN_ESCALATION\nWhich approach should I take?\nA or B."
+        with self.world():
+            self.assertIn("DRIVE ATTENTION t42 turn 0", self.once()[1])
+            self.assertEqual(self.calls, [["log", "far", "w1-42", "--last-result"]])
 
     def test_a_returned_turn_is_answered_in_the_tick_with_no_gate_verdict(self) -> None:
         with open(self.path, "w") as f:
@@ -3885,6 +3973,17 @@ class Drive(DriveCase):
                 self.resumes, self.message = turn, f"HANDBACK t42\n{text}\n"
                 self.assertIn("the hand-back names no PR", self.once()[1])
                 self.assertFalse(any(c[:2] == ["board", "close"] for c in self.calls))
+
+    def test_t1357_no_pr_handback_skips_quoted_runs(self) -> None:
+        self.message = "HANDBACK t42\nRUN /actual  \t\n```text\nRUN /example\nSee /pull/8\n```\n> RUN /quoted\n"
+        self.out["board close"] = "BOARD CLOSE done, no PR\n"
+        with self.world():
+            self.assertIn("handback answered", self.once()[1])
+        kept = f"{self.wavedir}/handbacks/t42.md"
+        self.assertEqual(self.calls[1], ["board", "close", "wv", "t42", "--no-pr", "--run", "/actual",
+                                         "--evidence", f"hand-back {kept}"])
+        with open(kept, encoding="utf-8") as f:
+            self.assertEqual(f.read(), self.message)
 
     def test_a_hand_back_closes_the_task_and_an_unconfirmed_blocking_review_is_said(self) -> None:
         self.message = "HANDBACK t42\nMerged https://github.com/o/staging/pull/7 at abc. Proposals: ...\n"

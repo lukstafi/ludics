@@ -1425,6 +1425,7 @@ BRIEF_AFTER_MERGE = (
 BRIEF_GEMINI_WHO = (
     "## Who you are\n\n"
     "Gemini CLI worker on `@@HOST@@`.\n"
+    "- Start every final message with its handoff marker on the first line.\n"
     "- Start every hand-back turn's final message with `HANDBACK @@T@@` on its first line, with nothing\n"
     "  before it -- no status summary, heading, or prose.\n"
 )
@@ -1597,6 +1598,17 @@ class BriefTemplateTest(Case):
         self.expect("removing the pinned hand-back rule from shared/after-merge.md is refused", 1,
                     "FAIL: issue-wave/templates/shared/after-merge.md: missing pinned sentence"
                     " 'Start your final reply with the plain line `HANDBACK @@T@@`, before any heading or prose.'")
+
+    def test_t1357_the_first_line_rule_has_its_own_pin(self) -> None:
+        brief_tree(self.root)
+        gemini = os.path.join(self.root, "issue-wave", "templates", "cli-gemini")
+        sentence = "Start every final message with its handoff marker on the first line."
+        write(os.path.join(gemini, "who.md"), BRIEF_GEMINI_WHO.replace(f"- {sentence}\n", ""))
+        for part in BRIEF_OWN[1:]:
+            write(os.path.join(gemini, part), f"## {part} on `@@HOST@@`\n")
+        self.expect("removing only the final-message first-line rule is refused", 1,
+                    "FAIL: issue-wave/templates/cli-gemini/who.md: missing pinned sentence"
+                    f" '{sentence}'")
 
     def test_words_of_other_shapes_are_not_read(self) -> None:
         # The boundary: only ~/.claude/skills/, ~/ludics/ and top-level-entry words are references.
