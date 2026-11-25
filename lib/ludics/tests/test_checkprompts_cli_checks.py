@@ -1429,6 +1429,10 @@ BRIEF_GEMINI_WHO = (
     "- Start every hand-back turn's final message with `HANDBACK @@T@@` on its first line, with nothing\n"
     "  before it -- no status summary, heading, or prose.\n"
 )
+BRIEF_GEMINI_WAKEUP = (
+    "When `run_command` returns a managed task,\n"
+    "stop calling tools and wait for agy's reactive wakeup without polling."
+)
 
 
 def brief_tree(root: str) -> None:
@@ -1451,6 +1455,17 @@ def brief_tree(root: str) -> None:
     for part in ("planning-paired.md", "planning-paired+critique.md"):
         write(os.path.join(root, "issue-wave", "templates", "shared", part), BRIEF_PLANNING)
     write(os.path.join(root, ".github", "wave-brief.md"), BRIEF_PROJECT)
+
+
+def gemini_brief_tree(root: str) -> str:
+    brief_tree(root)
+    gemini = os.path.join(root, "issue-wave", "templates", "cli-gemini")
+    write(os.path.join(gemini, "who.md"), BRIEF_GEMINI_WHO)
+    for part in BRIEF_OWN[1:]:
+        write(os.path.join(gemini, part), f"## {part} on `@@HOST@@`\n")
+    for part in ("blocking.md", "tests.md"):
+        append(os.path.join(gemini, part), f"\n{BRIEF_GEMINI_WAKEUP}\n")
+    return gemini
 
 
 class BriefTemplateTest(Case):
@@ -1578,37 +1593,38 @@ class BriefTemplateTest(Case):
 
     def test_required_template_sentences_are_pinned(self) -> None:
         R = self.root
-        gemini = os.path.join(R, "issue-wave", "templates", "cli-gemini")
-
-        def with_gemini() -> None:
-            brief_tree(R)
-            write(os.path.join(gemini, "who.md"), BRIEF_GEMINI_WHO)
-            for part in BRIEF_OWN[1:]:
-                write(os.path.join(gemini, part), f"## {part} on `@@HOST@@`\n")
-
-        with_gemini()
+        gemini = gemini_brief_tree(R)
         self.expect("cli-gemini with its pinned hand-back rule passes (including across a line wrap)",
                     0, BRIEF_OK.replace("14 parts", "18 parts"))
         write(os.path.join(gemini, "who.md"), "## Who you are\n\nGemini CLI worker on `@@HOST@@`.\n")
         self.expect("removing the pinned hand-back rule from cli-gemini/who.md is refused", 1,
                     "FAIL: issue-wave/templates/cli-gemini/who.md: missing pinned sentence"
                     " \"Start every hand-back turn's final message with `HANDBACK @@T@@` on its first line, with nothing before it\"")
-        with_gemini()
+        gemini_brief_tree(R)
         write(os.path.join(R, "issue-wave", "templates", "shared", "after-merge.md"), "## After the merge\n\nLeave `@@WT@@`.\n")
         self.expect("removing the pinned hand-back rule from shared/after-merge.md is refused", 1,
                     "FAIL: issue-wave/templates/shared/after-merge.md: missing pinned sentence"
                     " 'Start your final reply with the plain line `HANDBACK @@T@@`, before any heading or prose.'")
 
     def test_t1357_the_first_line_rule_has_its_own_pin(self) -> None:
-        brief_tree(self.root)
-        gemini = os.path.join(self.root, "issue-wave", "templates", "cli-gemini")
+        gemini = gemini_brief_tree(self.root)
         sentence = "Start every final message with its handoff marker on the first line."
         write(os.path.join(gemini, "who.md"), BRIEF_GEMINI_WHO.replace(f"- {sentence}\n", ""))
-        for part in BRIEF_OWN[1:]:
-            write(os.path.join(gemini, part), f"## {part} on `@@HOST@@`\n")
         self.expect("removing only the final-message first-line rule is refused", 1,
                     "FAIL: issue-wave/templates/cli-gemini/who.md: missing pinned sentence"
                     f" '{sentence}'")
+
+    def test_t1351_each_gemini_part_pins_the_wakeup_sentence(self) -> None:
+        gemini_brief_tree(self.root)
+        self.expect("wrapped wakeup sentences pass", 0, BRIEF_OK.replace("14 parts", "18 parts"))
+        for part in ("blocking.md", "tests.md"):
+            with self.subTest(part=part):
+                gemini = gemini_brief_tree(self.root)
+                write(os.path.join(gemini, part), f"## {part} on `@@HOST@@`\n")
+                self.expect(f"removing only the wakeup sentence from {part} is refused", 1,
+                            f"FAIL: issue-wave/templates/cli-gemini/{part}: missing pinned sentence"
+                            ' "When `run_command` returns a managed task, stop calling tools and wait'
+                            " for agy's reactive wakeup without polling.\" (#1351")
 
     def test_words_of_other_shapes_are_not_read(self) -> None:
         # The boundary: only ~/.claude/skills/, ~/ludics/ and top-level-entry words are references.

@@ -37,10 +37,13 @@ joined with `&&`, as a script under `set -eo pipefail` that pipes nothing, or as
 slot refusal prints `EXECUTION SLOT REFUSED` in the log: that batch never ran, and it is not a
 test failure.
 
-Keep every command in the foreground until it exits. If your shell tool hands you back a running
-session instead of an exit status, keep polling that session until it reports the exit. A
-measurement window on your box is not a reason to end your turn: `--wait-window` waits inside the
-batch until the window closes, then runs it, so keep polling and do not cancel it.
+Keep every command in the foreground until it exits. When `run_command` returns a managed task,
+stop calling tools and wait for agy's reactive wakeup without polling. This includes batches
+waiting inside `--wait-window` for a measurement window to close.
+
+For a process detached with `bg-run.sh spawn`, block on `bg-run.sh wait <dir>` until the run
+exits before sending the final message. Apply the same wakeup rule if `run_command` manages the
+wait itself.
 
 A commit gated on a batch (the project section names any such gate) is made only after that
 batch's own `exit=0`, with no edit in between, and never chained after the batch with `;`.

@@ -34,9 +34,10 @@ without it has no template to keep, as the suites' trees of copied prompts do no
 - RETIRED. No part holds a line containing one of ``RETIRED``'s strings: the worker steps a PR
   retired from the brief, each with that PR. The PR that retires a brief step adds its
   string here.
-- REQUIRED. Each shipped part named in ``REQUIRED`` that is present in the tree holds its pinned
-  sentence (whitespace-normalized across Markdown line wraps), so critical handoff-marker rules
-  cannot be edited away silently.
+- REQUIRED. Each shipped part named in ``REQUIRED`` that is present in the tree contains its
+  exact pinned text after whitespace normalization. The allowlist covers handoff-marker rules
+  and Gemini's managed-task wakeup instruction. It reads presence only, regardless of Markdown
+  context, and leaves other wording and runtime behavior to review.
 
 What it deliberately does NOT read: the prose's meaning outside ``REQUIRED``; whether the template
 states each other rule a worker needs (the template is where those rules live, and SKILL.md's *The
@@ -78,6 +79,12 @@ REQUIRED: tuple[tuple[str, str, str], ...] = (
     (f"{TEMPLATES}/cli-gemini/who.md",
      "Start every hand-back turn's final message with `HANDBACK @@T@@` on its first line, with nothing before it",
      "#1308 pins the Gemini hand-back first-line rule"),
+    (f"{TEMPLATES}/cli-gemini/blocking.md",
+     "When `run_command` returns a managed task, stop calling tools and wait for agy's reactive wakeup without polling.",
+     "#1351 pins the Gemini managed-task wakeup rule"),
+    (f"{TEMPLATES}/cli-gemini/tests.md",
+     "When `run_command` returns a managed task, stop calling tools and wait for agy's reactive wakeup without polling.",
+     "#1351 pins the Gemini managed-task wakeup rule"),
     (f"{TEMPLATES}/{SHARED_DIR}/after-merge.md",
      "Start your final reply with the plain line `HANDBACK @@T@@`, before any heading or prose.",
      "#1308 pins the shared hand-back first-line rule"),
