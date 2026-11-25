@@ -250,6 +250,7 @@ cli.py proc.py
     ship-pr/scripts/test-pr-review-*.sh
     ship-pr/scripts/test-post-merge-cleanup.sh
     lib/ludics/tests/test_checkprompts_cli.py
+    lib/ludics/tests/test_checkprompts_cli_checks.py
     lib/ludics/tests/test_peerplan.py
     scripts/test-py.sh
 
@@ -278,6 +279,7 @@ checkprompts/drift.py checkprompts/frontmatter.py checkprompts/links.py checkpro
 checkprompts/roster.py checkprompts/slots.py checkprompts/suitemap.py checkprompts/tree.py
 checkprompts/verdicts.py
     lib/ludics/tests/test_checkprompts_cli.py
+    lib/ludics/tests/test_checkprompts_cli_checks.py
 
 fleetworker/__main__.py fleetworker/config.py fleetworker/identity.py fleetworker/transport.py
     issue-wave/scripts/test-fleet-worker.sh
@@ -455,6 +457,7 @@ fleetworker/wave.py fleetworker/wavebrief.py fleetworker/waveprep.py fleetworker
     issue-wave/scripts/test-fleet-worker.sh "wave kit"
     lib/ludics/tests/test_fleetworker_wave.py
     lib/ludics/tests/test_checkprompts_cli.py
+    lib/ludics/tests/test_checkprompts_cli_checks.py
 
 fleetworker/waveab.py
     issue-wave/scripts/test-fleet-worker.sh "wave kit"
@@ -771,8 +774,9 @@ Evidence is in `wave-20261119-ludics/scratch/t1245/runs/negative.log`.
 Python unit sharding (#1164): `scripts/run-python-tests.py` partitions sorted `lib/`
 `test_*.py` module paths at `PYTHON_TEST_CUTS`. CI passes job-index/job-total, so losing
 one matrix row refuses against the cut count; new modules enter a range automatically.
-`scripts/test-python-shards.py` pins the workflow's shard rows, cut count and complete
-module coverage. Its module-path boundary is stated in the checker header. Pyright runs
+`scripts/test-python-shards.py` pins the workflow's shard rows, cut count, complete
+module coverage, and >= 30 s headroom at 1.4x slow-runner scale under `LUDICS_TEST_WATCHDOG`
+(#1336). Its module-path boundary is stated in the checker header. Pyright runs
 in one independent job; the checker is registered among preflight's guards, with triggers
 for the checker, runner, workflow and package paths.
 The tmux setup is shared by fleet jobs through `.github/actions/setup-tmux`, retaining

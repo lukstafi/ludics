@@ -150,6 +150,9 @@ jobs:
         # but that job is conditioned on the diff, and a prompt-only head is what this one judges.
         if: ${{ !cancelled() }}
         run: scripts/py -m unittest ludics.tests.test_checkprompts_cli || { echo '::error title=suite failed::test_checkprompts_cli.py'; exit 1; }
+      - name: Exercise the hygiene checks against defective scratch trees (links, readings, templates)
+        if: ${{ !cancelled() }}
+        run: scripts/py -m unittest ludics.tests.test_checkprompts_cli_checks || { echo '::error title=suite failed::test_checkprompts_cli_checks.py'; exit 1; }
       - name: Exercise the Python interpreter wrapper
         # scripts/py, which every Python entry point of the v2 rewrite runs through (ludics-lite
         # #403): seconds, and it is what the other Python steps stand on.
@@ -555,20 +558,20 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.scripts == 'true') }}
     runs-on: ubuntu-latest
-    # Four contiguous module ranges, with the matrix size checked against the cut count:
+    # Five contiguous module ranges, with the matrix size checked against the cut count:
     # deleting a row refuses, and new test modules land in a range without editing this job.
-    # Baseline 43549924107: 373s unit step, 416s combined job. First PR split
-    # (43720533138) took 168/62/54/86s, so the first cut moved from gate to execution.
-    # Rebalanced PR run 43721587938: steps 132/70/59/70s, jobs 137/77/64/73s
-    # (one green sample per new range). THE CAPS: max(5, ceil(1.5 x 137 / 60)) = 5 min.
-    # Watchdog: 1.5 x 132 = 198s, rounded to 200s, leaving 100s for setup and stack output.
+    # Rebalanced in #1336 after test_checkprompts_cli grew to 149-197s on Ubuntu (tripping the
+    # 200s watchdog on slower ~1.4x runners): test_checkprompts_cli was split into two modules
+    # and the suite partitioned into five shards (planned baseline medians 91/93/100/90/109s,
+    # x1.4 = 128/130/140/125/152s, each leaving >= 47s headroom under the 200s watchdog).
+    # scripts/test-python-shards.py pins coverage and >= 30s headroom at 1.4x under LUDICS_TEST_WATCHDOG.
     timeout-minutes: 5
     strategy:
       fail-fast: false
       matrix:
-        part: [0, 1, 2, 3]
+        part: [0, 1, 2, 3, 4]
     env:
-      PYTHON_TEST_CUTS: ludics.tests.test_fleetworker_execution|ludics.tests.test_fleetworker_wave|ludics.tests.test_prreview_gate
+      PYTHON_TEST_CUTS: ludics.tests.test_checkprompts_cli_checks|ludics.tests.test_fleetworker_group|ludics.tests.test_fleetworker_waveab|ludics.tests.test_prreview_merge
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
