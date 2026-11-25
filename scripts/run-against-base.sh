@@ -25,11 +25,13 @@
 #   <suite-path>     a file in the current checkout's working tree (relative to the cwd, or
 #                    absolute)
 # The options come right after the suite path, in any order; the first word that is not one of
-# them, and every word after it, goes to the suite (`--` included for non-`*.py` suites: it is
-# the suite's), so a suite whose own first argument is one of these names cannot take it through
-# the helper. For a `*.py` suite, a bare `--` as the first suite argument is refused (125) with
-# the corrected command (without `--`), because unittest reads `--` as end-of-options and exits 1
-# while testing nothing (#1296). A repeated --base or --timeout: the later one wins.
+# them, and every word after it, goes to the suite, so a suite whose own first argument is one of
+# these names cannot take it through the helper (use `--command`). There is no `--` separator in
+# suite mode (`--` belongs in `--command [options] -- <program> [args...]`): for any suite (shell
+# or `*.py`), a bare `--` as the first suite argument is refused (125) with the corrected command
+# without `--` (and the `--command` form to pass a literal `--` or a helper option name verbatim),
+# so a stray `--` never reaches unittest or a shell suite and exits nonzero while testing nothing
+# (#1296, #1338). A repeated --base or --timeout: the later one wins.
 #
 # COMMAND MODE (ludics-lite#765): `--command`, as the FIRST argument, runs a project's own runner
 # instead of one suite file -- OCANNL's `tools/test-run.sh run @dir/runtest-x`, say -- from the
@@ -56,7 +58,7 @@
 # suite form's only.
 #
 # Examples (run from the checkout root):
-#   # Targeted Python unittest (suite form; no `--` before unittest args):
+#   # Targeted Python unittest (suite form; no `--` before unittest args; repeat `-k` for OR):
 #   scripts/run-against-base.sh lib/ludics/tests/test_bgrun.py --base origin/main -v -k test_every_form
 #   # Targeted Python unittest (command form, by fully-qualified test name):
 #   scripts/run-against-base.sh --command --also lib/ludics/tests/test_bgrun.py -- scripts/py -m unittest ludics.tests.test_bgrun.Parse.test_every_form
@@ -152,12 +154,14 @@
 #     (`lib/ludics/tests/test_x.py` is `ludics.tests.test_x`): lib/ is on the path, the >= 3.12
 #     gate applies, and the module is imported under the name CI's `unittest discover -s lib -t
 #     lib` gives it, so its package and relative imports resolve. The suite args follow the module
-#     name on unittest's own command line: `-v`, `-k <pattern>` to pick cases (a bare `Class.test`
-#     is not relative to the module there; spell it `ludics.tests.test_x.Class.test`). A path
-#     under lib/ that discovery never runs (not an importable name, not `test_*.py`, or below a
-#     directory with no `__init__.py`) is refused. When scripts/py finds no Python >= 3.12 (or
-#     does not find one inside --timeout) the suite never runs, and that is this helper's 125,
-#     not the base's result;
+#     name on unittest's own command line: `-v`, `-k <pattern>` to pick cases (repeat `-k` for OR,
+#     not pytest's `"a or b"`; a bare `Class.test` is not relative to the module there; spell it
+#     `ludics.tests.test_x.Class.test`). A path under lib/ that discovery never runs (not an
+#     importable name, not `test_*.py`, or below a directory with no `__init__.py`) is refused.
+#     When scripts/py finds no Python >= 3.12 (or does not find one inside --timeout) the suite
+#     never runs, and that is this helper's 125, not the base's result. When unittest exits 5
+#     (`NO TESTS RAN`, e.g. a `-k` filter matched nothing), that is refused as 125 too with the
+#     corrected command, never reported as a base failure (#1338);
 #   - a base older than scripts/py (before 2026-10-05) has none: the file then runs under plain
 #     `python3 <file>`, as it did before, and the run says so;
 #   - a `*.py` file outside lib/ (issue-wave/scripts/test-fleet-execution.py, say) runs under plain
@@ -165,8 +169,8 @@
 #     unchanged, where scripts/py's `-P` would drop the one and its PYTHONPATH reach every program
 #     the suite starts.
 # Exit: the suite's (or command's) own exit status; 124 when the timeout expired; 125 when the helper could not
-# run it at all, could not start it (exec failed: it never ran), or could not clean up after it
-# (the `git bisect run` convention for "cannot test"), so a refusal is never read as the suite's
+# run it at all, could not start it (exec failed: it never ran), a `lib/` unittest suite ran 0
+# tests (exit 5), or cleanup failed (the `git bisect run` convention for "cannot test"), so a refusal is never read as the suite's
 # failure -- and a suite's own 125 is reported as 1, as is its own 124 when a timeout is armed.
 # Whatever the suite left running is stopped with it: its process group gets TERM, then KILL
 # after RUN_AGAINST_BASE_GRACE whole seconds (default 5). A capture of its output that never ends
@@ -228,8 +232,9 @@ RED=${RUN_AGAINST_BASE_RED:-'^(FAIL|ERROR)[: ]'}
 OPTS=()
 ended=
 # The helper's options, up to the first word that is not one: that word and the rest are the
-# suite's. No `--` terminator, because a non-`*.py` suite may take `--` itself and always could.
-# In command mode the `--` is required, and nothing else may end the options.
+# suite's. No `--` terminator in suite mode (a leading bare `--` is refused below with the corrected
+# form, and `--command` is the verbatim escape). In command mode the `--` is required, and nothing
+# else may end the options.
 while [ $# -gt 0 ]; do
   case "$1" in
   --)
@@ -604,39 +609,43 @@ else
     RUN=("./$rel")
     ;;
   esac
-  # In the suite form there is no `--` separator: the first non-option word ends the helper's
-  # options, and every word from it on goes to the suite. A `*.py` suite handed a leading `--`
-  # (unittest in particular) exits 1 while testing nothing -- which looks like a passing negative
-  # control (#1296). Refuse with 125 and print the corrected command without the leading `--`.
-  case "$rel" in
-  *.py)
-    if [ $# -gt 0 ] && [ "$1" = -- ]; then
-      orig_args=("$@")
-      while [ $# -gt 0 ] && [ "$1" = -- ]; do shift; done
-      case "${1-}" in
-      --base | --also | --mutate | --revert | --timeout | --tally | --mutants | --red)
-        # Dropping `--` would let the helper consume the suite's own leading option; use --command
-        # to pass it verbatim (with $TOP/scripts/py so the command works from any subdirectory).
-        if [ -n "$module" ] && [ -f "$TOP/scripts/py" ] && [ -x "$TOP/scripts/py" ]; then
-          fixed=("$0" --command ${OPTS[@]+"${OPTS[@]}"} --also "$suite_arg" -- "$TOP/scripts/py" -m unittest "$module" ${@+"$@"})
-        else
-          fixed=("$0" --command ${OPTS[@]+"${OPTS[@]}"} --also "$suite_arg" -- python3 "./$rel" ${@+"$@"})
-        fi
-        die "in the suite form, there is no \`--\` before a *.py suite's arguments, and $(printf '%q' "$1") is a helper option name -- use --command to pass it to $rel verbatim (or place helper options directly after the suite path): $(shell_join "${fixed[@]}")"
-        ;;
-      *)
-        fixed=("$0" "$suite_arg" ${OPTS[@]+"${OPTS[@]}"} ${@+"$@"})
-        if [ -z "$module" ]; then
-          verbatim=("$0" --command ${OPTS[@]+"${OPTS[@]}"} --also "$suite_arg" -- python3 "./$rel" "${orig_args[@]}")
-          die "in the suite form, there is no \`--\` before a *.py suite's arguments (the first non-option word ends the helper's options, so \`--\` would go straight to $rel); drop the \`--\`: $(shell_join "${fixed[@]}") (or to pass a literal \`--\` to $rel verbatim: $(shell_join "${verbatim[@]}"))"
-        fi
-        die "in the suite form, there is no \`--\` before a *.py suite's arguments (the first non-option word ends the helper's options, so \`--\` would go straight to $rel); drop the \`--\`: $(shell_join "${fixed[@]}")"
-        ;;
+  [ -n "$module" ] || check_interp "$suite_abs" "$rel" "$runner"
+  # In the suite form there is no `--` separator (`--` belongs in `--command [options] -- ...`):
+  # the first non-option word ends the helper's options, and every word from it on goes to the
+  # suite. A leading bare `--` handed to unittest or a shell suite exits nonzero while testing
+  # nothing -- which looks like a passing negative control (#1296, #1338). Refuse with 125 and
+  # print the corrected command without the leading `--` (plus `--command` to pass a literal `--`
+  # or a helper option name verbatim).
+  if [ $# -gt 0 ] && [ "$1" = -- ]; then
+    orig_args=("$@")
+    while [ $# -gt 0 ] && [ "$1" = -- ]; do shift; done
+    if [ -n "$module" ] && [ -f "$TOP/scripts/py" ] && [ -x "$TOP/scripts/py" ]; then
+      cmd_run=("$TOP/scripts/py" -m unittest "$module")
+    elif [ -n "$module" ] || [ -n "$runner" ]; then
+      cmd_run=(python3 "./$rel")
+    else
+      case "$suite_arg" in
+      */*) cmd_run=("$suite_arg") ;;
+      *) cmd_run=("./$suite_arg") ;;
       esac
     fi
-    ;;
-  esac
-  [ -n "$module" ] || check_interp "$suite_abs" "$rel" "$runner"
+    case "${1-}" in
+    --base | --also | --mutate | --revert | --timeout | --tally | --mutants | --red)
+      # Dropping `--` would let the helper consume the suite's own leading option; use --command
+      # to pass it verbatim (with $TOP/scripts/py so lib/ commands work from any subdirectory).
+      fixed=("$0" --command ${OPTS[@]+"${OPTS[@]}"} --also "$suite_arg" -- "${cmd_run[@]}" ${@+"$@"})
+      die "in the suite form, there is no \`--\` before a suite's arguments (\`--\` belongs in \`--command [options] -- <program> [args...]\`), and $(printf '%q' "$1") is a helper option name -- use --command to pass it to $(printf '%q' "$rel") verbatim (or place helper options directly after the suite path): $(shell_join "${fixed[@]}")"
+      ;;
+    *)
+      fixed=("$0" "$suite_arg" ${OPTS[@]+"${OPTS[@]}"} ${@+"$@"})
+      if [ -z "$module" ]; then
+        verbatim=("$0" --command ${OPTS[@]+"${OPTS[@]}"} --also "$suite_arg" -- "${cmd_run[@]}" "${orig_args[@]}")
+        die "in the suite form, there is no \`--\` before a suite's arguments (\`--\` belongs in \`--command [options] -- <program> [args...]\`; the first non-option word ends the helper's options, so \`--\` would go straight to $(printf '%q' "$rel")); drop the \`--\`: $(shell_join "${fixed[@]}") (or to pass a literal \`--\` to $(printf '%q' "$rel") verbatim: $(shell_join "${verbatim[@]}"))"
+      fi
+      die "in the suite form, there is no \`--\` before a suite's arguments (\`--\` belongs in \`--command [options] -- <program> [args...]\`; the first non-option word ends the helper's options, so \`--\` would go straight to $(printf '%q' "$rel")); drop the \`--\`: $(shell_join "${fixed[@]}")"
+      ;;
+    esac
+  fi
 fi
 SNAPSHOT=
 SNAP_NOTE=
@@ -1312,6 +1321,123 @@ else
 fi
 teepid=
 [ "$tee_rc" = 0 ] || die "capturing the suite's output failed (tee: $tee_rc); its exit $rc is not a result"
+
+# For a `lib/` unittest suite, Python 3.12+ exits 5 (`NO TESTS RAN`) when 0 tests ran (e.g. a
+# pytest-style `-k "a or b"` or unmatched `-k` filter). Refuse with 125 and the corrected command
+# so a vacuous run never reads as a negative control's expected nonzero exit (#1338).
+split_or_pattern() {
+  local pat=$1 j tok
+  local -a words=()
+  OR_PARTS=()
+  case "$pat" in *$'\n'*) return 1 ;; esac
+  set -f
+  IFS=$' \t' read -r -a words <<<"$pat"
+  set +f
+  [ "${#words[@]}" -ge 3 ] || return 1
+  [ $((${#words[@]} % 2)) -eq 1 ] || return 1
+  j=0
+  while [ "$j" -lt "${#words[@]}" ]; do
+    tok=${words[$j]}
+    if [ $((j % 2)) -eq 1 ]; then
+      [ "$tok" = or ] || return 1
+    else
+      case "$tok" in
+      '' | -* | or | and | not | *[\(\)\'\"\`]*) return 1 ;;
+      esac
+      OR_PARTS+=("$tok")
+    fi
+    j=$((j + 1))
+  done
+  return 0
+}
+refuse_unittest_no_tests() {
+  local arg prefix rest pat p saw_k= rewrote_or= past_opts=
+  local -a rewritten=() dropped=() fixed=()
+  while [ $# -gt 0 ]; do
+    arg=$1
+    shift
+    if [ -n "$past_opts" ]; then
+      rewritten+=("$arg")
+      dropped+=("$arg")
+      continue
+    fi
+    case "$arg" in
+    --)
+      past_opts=1
+      rewritten+=(--)
+      dropped+=(--)
+      ;;
+    --durations)
+      rewritten+=("$arg")
+      dropped+=("$arg")
+      if [ $# -gt 0 ]; then
+        rewritten+=("$1")
+        dropped+=("$1")
+        shift
+      fi
+      ;;
+    -[vqfcb]*k* | -k*)
+      prefix=${arg%%k*}
+      case "${prefix#-}" in
+      *[!vqfcb]*)
+        rewritten+=("$arg")
+        dropped+=("$arg")
+        continue
+        ;;
+      esac
+      rest=${arg#*k}
+      if [ -n "$rest" ]; then
+        pat=$rest
+      elif [ $# -gt 0 ]; then
+        pat=$1
+        shift
+      else
+        rewritten+=("$arg")
+        dropped+=("$arg")
+        continue
+      fi
+      saw_k=1
+      if [ -n "${prefix#-}" ]; then
+        rewritten+=("$prefix")
+        dropped+=("$prefix")
+      fi
+      if split_or_pattern "$pat"; then
+        rewrote_or=1
+        for p in "${OR_PARTS[@]}"; do
+          rewritten+=(-k "$p")
+        done
+      else
+        rewritten+=(-k "$pat")
+      fi
+      ;;
+    *)
+      rewritten+=("$arg")
+      dropped+=("$arg")
+      ;;
+    esac
+  done
+  if [ -n "$rewrote_or" ]; then
+    fixed=("$0" "$suite_arg" ${OPTS[@]+"${OPTS[@]}"} ${rewritten[@]+"${rewritten[@]}"})
+    die "unittest exited 5 (NO TESTS RAN) for $(printf '%q' "$rel") on $base: 0 tests ran, so this is not a negative control -- unittest -k takes literal substrings/globs (repeat -k for OR, not pytest's \"a or b\"); run: $(shell_join "${fixed[@]}")"
+  fi
+  if [ -n "$saw_k" ]; then
+    case "${dropped[0]-}" in
+    -- | --base | --also | --mutate | --revert | --timeout | --tally | --mutants | --red)
+      dropped=()
+      ;;
+    esac
+    fixed=("$0" "$suite_arg" ${OPTS[@]+"${OPTS[@]}"} ${dropped[@]+"${dropped[@]}"})
+    die "unittest exited 5 (NO TESTS RAN) for $(printf '%q' "$rel") on $base: 0 tests ran, so this is not a negative control -- the -k filter matched nothing (unittest takes literal substrings/globs and repeats -k <p1> -k <p2>, not pytest expressions); run the module without -k: $(shell_join "${fixed[@]}")"
+  fi
+  fixed=("$0" "$suite_arg" ${OPTS[@]+"${OPTS[@]}"})
+  if [ "${#rewritten[@]}" -gt 0 ]; then
+    die "unittest exited 5 (NO TESTS RAN) for $(printf '%q' "$rel") on $base: 0 tests ran, so this is not a negative control -- check the suite arguments or run the whole module: $(shell_join "${fixed[@]}")"
+  fi
+  die "unittest exited 5 (NO TESTS RAN) for $(printf '%q' "$rel") on $base: 0 tests ran, so this is not a negative control -- check that $(printf '%q' "$rel") defines unittest.TestCase test_* methods, then re-run: $(shell_join "${fixed[@]}")"
+}
+if [ -n "$module" ] && [ -z "$timed_out" ] && [ "$rc" -eq 5 ]; then
+  refuse_unittest_no_tests "$@"
+fi
 
 # -a: a NUL byte in the output would otherwise make grep call the log binary and print no line.
 # A project's own verdict line (--tally) is the only line that may stand for it: no fallback to the

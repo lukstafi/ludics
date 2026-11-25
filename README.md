@@ -400,7 +400,10 @@ with it (its process group: TERM, then KILL after a grace). It is a suite run, s
 transport's form (`executions.md`, *Which form a caller uses*).
 `scripts/test-run-against-base.sh` pins it against a scratch repo. Its options come right after
 the suite path, in any order (ludics-lite#501); the first other word, and everything after it, is
-the suite's:
+the suite's. There is no `--` separator in suite mode (`--` belongs in `--command [options] --
+<program> [args...]`): passing a bare `--` as any suite's first suite argument is refused with 125
+and prints the corrected command without `--`, plus the `--command` form to pass a literal `--` or
+a helper option name verbatim (#1296, #1338):
 - `--also <path>` (repeatable) carries a working-tree file the suite changed with — a fixture
   library — into the base too; everything not named stays the base's.
 - `--mutate <file> <sed-expr>` (repeatable) is the control for a change the base cannot
@@ -468,12 +471,12 @@ file) runs through the base's `scripts/py` as `scripts/py -m unittest <module>` 
 for `lib/ludics/tests/test_x.py`, the name CI's discovery gives it), so `lib/` is on the path with
 no `PYTHONPATH` of yours, the >= 3.12 gate applies, and package and relative imports resolve. The
 suite args go to unittest after the module name without any `--` separator: `-v`, `-k <pattern>`
-to pick cases — for example,
+to pick cases (repeat `-k` for OR, not pytest's `"a or b"`) — for example,
 `scripts/run-against-base.sh lib/ludics/tests/test_bgrun.py --base origin/main -v -k test_every_form`
 (or in command mode by fully-qualified test name:
 `scripts/run-against-base.sh --command --also lib/ludics/tests/test_bgrun.py -- scripts/py -m unittest ludics.tests.test_bgrun.Parse.test_every_form`).
-Passing a bare `--` as a `*.py` suite's first suite argument is refused with 125 and prints the
-corrected command without `--`, so unittest can never exit 1 while testing nothing (#1296). A `lib/`
+When unittest exits 5 (`NO TESTS RAN`, e.g. a `-k` filter matched nothing), that is refused with
+125 and the corrected command rather than reported as a base failure (#1338). A `lib/`
 file that discovery never runs (not `test_*.py`, or below a directory with no `__init__.py`) is
 refused, and so is a run whose `scripts/py` never started an interpreter (125, not a base failure). A base older
 than `scripts/py` falls back to plain `python3 <file>` and says so. A `*.py` file outside `lib/`

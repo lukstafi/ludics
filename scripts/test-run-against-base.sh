@@ -44,9 +44,11 @@
 #     PYTHONPATH from the caller, reaching its own verdict (relative imports included); scripts/py
 #     finding no interpreter, or hanging past --timeout while it looks, is 125, and so is a base
 #     scripts/py that cannot run; a base without one falls back to python3 and says so; a lib/ path CI's discovery never runs (no
-#     module name, not test_*.py, outside a package) is refused; a *.py outside lib/ runs under
-#     python3; a *.py suite whose first suite argument is a bare `--` exits 125 with the corrected
-#     command without `--` (#1296);
+#     module name, not test_*.py, outside a package) is refused; unittest's exit 5 (NO TESTS RAN,
+#     e.g. a pytest-style `-k "a or b"` or unmatched `-k`) exits 125 with the corrected command,
+#     never a suite exit (#1338); a *.py outside lib/ runs under python3; any suite (shell or *.py)
+#     whose first suite argument is a bare `--` exits 125 with the corrected command without `--`
+#     and the `--command` verbatim form (#1296, #1338);
 #   - --command runs a project's runner (a PATH program, or the run tree's copy of a checkout
 #     file, the working tree's only when --also carries it) from the root of the run's tree, its
 #     argv after the required `--` verbatim; the malformed forms, a program not found or not
@@ -321,6 +323,73 @@ if [ "$rc" -eq 0 ] && grep -qF 'ARGS=[one --base x --timeout 5]' <<<"$out" \
 else
   ko "option boundary: rc=$rc -- $out"
 fi
+# A shell (or other non-*.py) suite with a leading bare `--` exits 125 with the corrected command
+# without `--` and the verbatim `--command` escape, never running the suite (#1338).
+run_rab test-toy.sh -- one two
+if [ "$rc" -eq 125 ] \
+  && grep -qF -- '--command [options] -- <program> [args...]' <<<"$out" \
+  && grep -qF -- 'test-toy.sh one two' <<<"$out" \
+  && grep -qF -- '--command --also test-toy.sh -- ./test-toy.sh -- one two' <<<"$out" \
+  && ! grep -qE 'ARGS=\[|passed,' <<<"$out"; then
+  ok "a shell suite with leading \`--\` exits 125 with the corrected command and --command escape, never running the suite"
+else
+  ko "shell suite leading --: rc=$rc -- $out"
+fi
+run_rab test-toy.sh --base fixed -- one two
+if [ "$rc" -eq 125 ] \
+  && grep -qF -- 'test-toy.sh --base fixed one two' <<<"$out" \
+  && ! grep -qE 'ARGS=\[|passed,' <<<"$out"; then
+  ok "...preserving helper options (--base) in a shell suite's corrected command"
+else
+  ko "shell suite --base then --: rc=$rc -- $out"
+fi
+run_rab test-toy.sh --
+if [ "$rc" -eq 125 ] \
+  && grep -qF -- 'drop the `--`:' <<<"$out" \
+  && grep -qF -- '--command --also test-toy.sh -- ./test-toy.sh --' <<<"$out" \
+  && ! grep -qE 'ARGS=\[|passed,' <<<"$out"; then
+  ok "...and a trailing bare \`--\` on a shell suite exits 125 too"
+else
+  ko "shell suite trailing --: rc=$rc -- $out"
+fi
+run_rab test-toy.sh --base fixed -- -- one
+if [ "$rc" -eq 125 ] \
+  && grep -qF -- 'test-toy.sh --base fixed one' <<<"$out" \
+  && ! grep -qE 'ARGS=\[|passed,' <<<"$out"; then
+  ok "...and repeated leading \`--\` on a shell suite are all dropped from the corrected command"
+else
+  ko "shell suite repeated --: rc=$rc -- $out"
+fi
+run_rab test-toy.sh -- --base fixed
+if [ "$rc" -eq 125 ] \
+  && grep -qF -- '--command --also test-toy.sh -- ./test-toy.sh --base fixed' <<<"$out" \
+  && ! grep -qE 'ARGS=\[|passed,' <<<"$out"; then
+  ok "...and when a helper option name follows \`--\` on a shell suite, the correction uses --command"
+else
+  ko "shell suite -- --base: rc=$rc -- $out"
+fi
+run_rab --command --also test-toy.sh -- ./test-toy.sh -- one
+if [ "$rc" -eq 1 ] && grep -qF 'FAIL: add 2 3' <<<"$out" && grep -qF 'ARGS=[-- one]' <<<"$out"; then
+  ok "...and the suggested verbatim --command form passes a literal \`--\` to the shell suite from a subdirectory"
+else
+  ko "shell suite verbatim --command: rc=$rc -- $out"
+fi
+out=$(cd "$R" && TMPDIR="$HTMP" RUN_AGAINST_BASE_GRACE=1 "$RAB" scripts/test-toy.sh -- one 2>&1)
+rc=$?
+if [ "$rc" -eq 125 ] \
+  && grep -qF -- 'scripts/test-toy.sh one' <<<"$out" \
+  && grep -qF -- '--command --also scripts/test-toy.sh -- scripts/test-toy.sh -- one' <<<"$out" \
+  && ! grep -qE 'ARGS=\[|passed,' <<<"$out"; then
+  ok "...and from the checkout root, the verbatim --command form keeps the suite path without adding \`./\`"
+else
+  ko "shell suite root leading --: rc=$rc -- $out"
+fi
+run_rab test-dir --base linked -- foo
+if [ "$rc" -eq 125 ] && grep -qF -- 'test-dir --base linked foo' <<<"$out" && ! grep -qF 'passed,' <<<"$out"; then
+  ok "...and an extensionless executable suite with leading \`--\` exits 125 too"
+else
+  ko "extensionless suite leading --: rc=$rc -- $out"
+fi
 worktrees_clean "after a failing base run"
 if [ "$(git -C "$R" status --porcelain)" = "$status_before" ]; then
   ok "the checkout's working tree is untouched"
@@ -561,8 +630,8 @@ else
   ko "env -S missing: rc=$rc -- $out"
 fi
 if [ "$(uname)" = Darwin ] || env -S true 2>/dev/null; then
-  run_rab test-envSok.sh -- a
-  if [ "$rc" -eq 0 ] && grep -qF 'ARGS=[-- a]' <<<"$out"; then
+  run_rab test-envSok.sh a -- b
+  if [ "$rc" -eq 0 ] && grep -qF 'ARGS=[a -- b]' <<<"$out"; then
     ok "an env -S shebang with its program present runs, arguments intact"
   else
     ko "env -S present: rc=$rc -- $out"
@@ -1070,6 +1139,7 @@ if __name__ == "__main__":
     unittest.main()
 EOF
 cp -p "$P/lib/toy/tests/test_calc.py" "$P/lib/toy/tests/test-dash.py"
+printf '%s\n' 'import unittest' >"$P/lib/toy/tests/test_empty.py"
 mkdir -p "$P/lib/toy/loose"
 cp -p "$P/lib/toy/tests/test_calc.py" "$P/lib/toy/loose/test_loose.py"
 printf '#!/bin/sh\nexec sleep 60\n' >"$TMP/interp-bin/rab-hanging-python"
@@ -1115,6 +1185,74 @@ if [ "$rc" -eq 0 ] && grep -qF 'Ran 1 test' <<<"$out" && grep -qF 'exit 0 on fix
   ok "a fixed base passes, and the suite args reach unittest (-k picks the case)"
 else
   ko "fixed base with -k: rc=$rc -- $out"
+fi
+# unittest exit 5 (NO TESTS RAN) is refused as 125 with the corrected command, never a suite exit (#1338).
+run_py lib/toy/tests/test_calc.py -v -k "test_add_zero or test_add_nonzero"
+if [ "$rc" -eq 125 ] \
+  && grep -qF 'NO TESTS RAN' <<<"$out" \
+  && grep -qF -- 'lib/toy/tests/test_calc.py -v -k test_add_zero -k test_add_nonzero' <<<"$out" \
+  && ! grep -qF 'run-against-base: exit 5 on' <<<"$out"; then
+  ok "lib/ unittest exit 5 from pytest-style \`-k \"a or b\"\` exits 125 with repeated -k, never exit 5"
+else
+  ko "lib/ unittest exit 5 pytest or: rc=$rc -- $out"
+fi
+run_py lib/toy/tests/test_calc.py -v -k test_add_zero -k test_add_nonzero
+if [ "$rc" -eq 1 ] && grep -qF 'Ran 2 tests' <<<"$out" && grep -qE '^test_add_nonzero .* FAIL$' <<<"$out"; then
+  ok "...and the corrected repeated -k command reaches the real base failure"
+else
+  ko "lib/ unittest corrected repeated -k: rc=$rc -- $out"
+fi
+run_py lib/toy/tests/test_calc.py --base fixed -vk"test_add_zero or test_add_nonzero"
+if [ "$rc" -eq 125 ] \
+  && grep -qF -- 'lib/toy/tests/test_calc.py --base fixed -v -k test_add_zero -k test_add_nonzero' <<<"$out" \
+  && ! grep -qF 'run-against-base: exit 5 on' <<<"$out"; then
+  ok "...preserving --base and combined -vk in the repeated -k correction"
+else
+  ko "lib/ unittest exit 5 -vk: rc=$rc -- $out"
+fi
+run_py lib/toy/tests/test_calc.py -k "*_zero or *_nonzero"
+if [ "$rc" -eq 125 ] \
+  && grep -qF -- '-k \*_zero -k \*_nonzero' <<<"$out" \
+  && ! grep -qF 'run-against-base: exit 5 on' <<<"$out"; then
+  ok "...and glob patterns in \`-k \"a* or b*\"\` are shell-quoted without expanding against cwd"
+else
+  ko "lib/ unittest exit 5 glob or: rc=$rc -- $out"
+fi
+run_py lib/toy/tests/test_calc.py --base fixed -v -k no_such_test
+if [ "$rc" -eq 125 ] \
+  && grep -qF -- 'run the module without -k:' <<<"$out" \
+  && grep -qF -- 'lib/toy/tests/test_calc.py --base fixed -v' <<<"$out" \
+  && ! grep -qF -- '-k no_such_test' <<<"$out" \
+  && ! grep -qF 'run-against-base: exit 5 on' <<<"$out"; then
+  ok "lib/ unittest exit 5 from an unmatched -k exits 125 suggesting the module without -k"
+else
+  ko "lib/ unittest exit 5 unmatched -k: rc=$rc -- $out"
+fi
+run_py lib/toy/tests/test_calc.py -k "test_add_zero and not test_add_nonzero"
+if [ "$rc" -eq 125 ] \
+  && grep -qF -- 'run the module without -k:' <<<"$out" \
+  && ! grep -qF -- '-k and' <<<"$out" \
+  && ! grep -qF 'run-against-base: exit 5 on' <<<"$out"; then
+  ok "...and pytest boolean expressions with and/not fall back to running without -k"
+else
+  ko "lib/ unittest exit 5 and/not: rc=$rc -- $out"
+fi
+run_py lib/toy/tests/test_calc.py -k "test_add_zero or test_add_nonzero" -k no_such_extra
+if [ "$rc" -eq 125 ] \
+  && grep -qF -- 'lib/toy/tests/test_calc.py -k test_add_zero -k test_add_nonzero -k no_such_extra' <<<"$out" \
+  && ! grep -qF 'run-against-base: exit 5 on' <<<"$out"; then
+  ok "...and a second plain -k beside a pytest-or -k is preserved intact"
+else
+  ko "lib/ unittest exit 5 mixed -k: rc=$rc -- $out"
+fi
+run_py lib/toy/tests/test_empty.py
+if [ "$rc" -eq 125 ] \
+  && grep -qF 'NO TESTS RAN' <<<"$out" \
+  && grep -qF -- 'lib/toy/tests/test_empty.py' <<<"$out" \
+  && ! grep -qF 'run-against-base: exit 5 on' <<<"$out"; then
+  ok "lib/ unittest exit 5 from a module with 0 test methods exits 125 too"
+else
+  ko "lib/ unittest exit 5 empty module: rc=$rc -- $out"
 fi
 # scripts/py that finds no Python >= 3.12 runs nothing: the suite never ran, which is not a result.
 PY_EXTRA=LUDICS_PY_CANDIDATES=/nonexistent/run-against-base-python3
