@@ -878,6 +878,7 @@ warning if publication fails.
 The "wave kit" section also prepares a shipped CLI brief without a wave-local common.md:
 a project part absent at the stacked base comes from the default tip, and the brief retains
 the explicit base origin (#1099).
+It also checks that a sibling's prose mention gets a NOTE and that a closing keyword or the task's head branch still refuses (#1347).
 Which sections (and which other suites) a change to a `lib/ludics` module reaches is that
 package's map, *Which suites drive each module* in `lib/ludics/README.md`, which check-prompts
 keeps naming only modules, suites and sections that exist (#718).

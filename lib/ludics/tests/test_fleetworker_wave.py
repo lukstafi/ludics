@@ -273,14 +273,17 @@ class CoordinatorPreflight(WaveDirCase):
 class Prep(WaveDirCase):
     @contextlib.contextmanager
     def world(self, prs: list[dict[str, Any]] | None = None, records: list[dict[str, Any]] | None = None,
-              board: Any = NO_BOARD_EXIT, head_prs: list[dict[str, Any]] | None = None) -> Generator[FakeTool]:
+              board: Any = NO_BOARD_EXIT, head_prs: list[dict[str, Any]] | None = None,
+              linked: list[dict[str, Any]] | None = None) -> Generator[FakeTool]:
         with (FakeTool("gh") as gh,
               mock.patch.object(waveprep, "anchor_gate", return_value=0),
               mock.patch.object(waveprep, "listing", return_value=Done(0, json.dumps(records or []))),
               mock.patch.object(waveprep, "board_status", return_value=board),
               mock.patch.object(waveprep, "run", side_effect=self.fake_run)):
             gh.route((When(prefix=("pr", "list"), has=("--head",)), Answer(stdout=json.dumps(head_prs or []))),
-                     (When(prefix=("pr", "list")), Answer(stdout=json.dumps(prs or []))))
+                     (When(prefix=("pr", "list")), Answer(stdout=json.dumps(prs or []))),
+                     (When(prefix=("api", "graphql"), text=("closedByPullRequestsReferences",)),
+                      Answer(stdout=json.dumps(linked or []))))
             yield gh
 
     def prep(self, *args: str) -> tuple[int, str, str]:
@@ -295,7 +298,11 @@ class Prep(WaveDirCase):
         self.assertIn(f"WAVE PREP t42: ready: brief {self.wavedir}/briefs/brief-t42.md worktree {wt} branch claude/w1-42", out)
         self.assertEqual(git("-C", wt, "rev-parse", "HEAD"), self.base)
         self.assertEqual(git("-C", wt, "branch", "--show-current"), "claude/w1-42")
-        self.assertEqual([c[6:8] for c in pr_calls], [["--head", "claude/w1-42"], ["--search", "42"]])
+        self.assertEqual([c[6:8] for c in pr_calls if c[:2] == ["pr", "list"]],
+                         [["--head", "claude/w1-42"], ["--search", "42"]])
+        self.assertEqual(pr_calls[-1][:2], ["api", "graphql"])
+        self.assertIn("number=42", pr_calls[-1])
+        self.assertTrue(any("nodes { number title state repository" in arg for arg in pr_calls[-1]))
         verbs = [c[:2] for c in self.shim_calls]
         self.assertEqual(verbs, [["execution", "run"], ["execution", "run"], ["board", "set"]])
         with open(self.shim_calls[0][2]) as f:
@@ -357,7 +364,7 @@ class Prep(WaveDirCase):
         cases: list[tuple[dict[str, Any], str]] = [
             ({"records": [{"request_id": "WV-t42-mac-iterate"}]}, "the registry holds wv-t42-mac-iterate"),
             ({"board": {"tasks": [{"task": "t42", "fields": {}}]}}, "has a row for t42"),
-            ({"prs": [{"number": 7, "title": "Fix o/up#42 at last", "body": "", "headRefName": "x"}]}, "open rival PR(s) #7"),
+            ({"prs": [{"number": 7, "title": "t", "body": "Closes o/up#42", "headRefName": "x"}]}, "open rival PR(s) #7"),
             ({"head_prs": [{"number": 8, "title": "t", "body": "", "headRefName": "claude/w1-42"}]}, "open rival PR(s) #8"),
             ({"board": 4}, "WAVE PREP UNKNOWN t42: the board"),
             ({"board": 1}, "it is not a wave with no board yet"),
@@ -386,11 +393,73 @@ class Prep(WaveDirCase):
                                  "board_document's callers keep exit 1 for no board")
 
     def test_a_listed_pr_the_coordinator_passes_is_no_rival_and_near_numbers_are_none(self) -> None:
-        prs = [{"number": 7, "title": "Fix #42", "body": "", "headRefName": "x"},
+        prs = [{"number": 7, "title": "Fix o/up#42", "body": "", "headRefName": "x"},
                {"number": 9, "title": "Fix #420 and o/up#4200", "body": "&#42;", "headRefName": "y"}]
         with self.world(prs=prs):
             rc, out, err = self.prep("t42", "--base", "main", "--allow-rival", "7")
         self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("WAVE PREP NOTE", out)
+
+    def test_prose_mention_is_a_note_and_prep_continues(self) -> None:
+        prs = [{"number": 7, "title": "Sibling work", "body": "Issue #42 may change shared arguments."},
+               {"number": 8, "title": "Changes near o/up#42", "body": "Closes elsewhere/project#42"},
+               {"number": 10, "title": "Independent fix", "body": "The fix is independent of o/up#42."}]
+        links = [{"number": 11, "title": "Another repo", "state": "OPEN", "repository": {"nameWithOwner": "elsewhere/project"}}]
+        with self.world(prs=prs, linked=links):
+            rc, out, err = self.prep("t42", "--base", "main")
+        self.assertEqual(rc, 0, out + err)
+        for pr in (7, 8, 10):
+            self.assertIn(f"WAVE PREP NOTE t42: open PR #{pr} mentions issue number #42", out)
+        self.assertIn("WAVE PREP t42: ready:", out)
+
+    def test_same_sentence_prose_mention_does_not_compete(self) -> None:
+        prs = [{"number": 7, "title": "Sibling", "body": "Closes o/up#99 (sibling o/up#42 shares argv)"},
+               {"number": 8, "title": "Other sibling", "body": "Fixes o/up#98; the change in o/up#42 lands separately"}]
+        with self.world(prs=prs):
+            rc, out, err = self.prep("t42", "--base", "main")
+        self.assertEqual(rc, 0, out + err)
+        for pr in (7, 8):
+            self.assertIn(f"WAVE PREP NOTE t42: open PR #{pr} mentions issue number #42", out)
+        self.assertIn("WAVE PREP t42: ready:", out)
+
+    def test_each_closing_keyword_binds_its_own_reference(self) -> None:
+        for body in ("Fixes o/up#99 and closes o/up#42", "This fix closes o/up#42"):
+            prs = [{"number": 7, "title": "Fix", "body": body}]
+            with self.subTest(body=body), self.world(prs=prs):
+                rc, out, err = self.prep("t42", "--base", "main")
+                self.assertEqual(rc, 1, out + err)
+                self.assertIn("WAVE PREP REFUSED t42: open rival PR(s) #7 ", out)
+                self.assert_made_nothing(out)
+
+    def test_linked_pr_without_a_search_hit_refuses(self) -> None:
+        links = [{"number": 9, "title": "Independent title", "state": "OPEN", "repository": {"nameWithOwner": "O/STAGING"}}]
+        with self.world(linked=links):
+            rc, out, err = self.prep("t42", "--base", "main")
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("WAVE PREP REFUSED t42: open rival PR(s) #9 ", out)
+        self.assert_made_nothing(out)
+
+    def test_merged_closing_link_leaves_prep_ready(self) -> None:
+        link = {"number": 9, "title": "Old fix", "state": "MERGED", "repository": {"nameWithOwner": "o/staging"}}
+        with self.world(linked=[link]):
+            rc, out, err = self.prep("t42", "--base", "main")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("WAVE PREP t42: ready:", out)
+
+    def test_linked_pr_without_a_state_is_unknown(self) -> None:
+        links = [{"number": 9, "title": "Independent title", "repository": {"nameWithOwner": "o/staging"}}]
+        with self.world(linked=links):
+            rc, out, err = self.prep("t42", "--base", "main")
+        self.assertEqual(rc, 4, out + err)
+        self.assertIn("lacks its PR state", out)
+        self.assert_made_nothing(out)
+
+    def test_linked_pr_without_a_repository_is_unknown(self) -> None:
+        with self.world(linked=[{"number": 9, "title": "Independent title", "state": "OPEN", "repository": None}]):
+            rc, out, err = self.prep("t42", "--base", "main")
+        self.assertEqual(rc, 4, out + err)
+        self.assertIn("lacks its PR repository", out)
+        self.assert_made_nothing(out)
 
     def test_an_unrendered_placeholder_refuses_before_the_worktree(self) -> None:
         self.write("tasks/t42.md", "# Task @@T@@ needs @@NOPE@@\n")
@@ -405,7 +474,7 @@ class Prep(WaveDirCase):
             rc, out, err = self.prep("p8", "--source", "1910", "--base", "main", "--mode", "paired+critique")
             pr_calls = gh.calls()
         self.assertEqual(rc, 0, out + err)
-        self.assertIn(["--head", "claude/w1-p8"], [c[6:8] for c in pr_calls])
+        self.assertEqual([c[6:8] for c in pr_calls], [["--head", "claude/w1-p8"]])
         board = self.shim_calls[-1]
         self.assertIn("source=o/up#1910", board)
         self.assertIn(f"plan_dir={self.dir}/state/plans/wv-p8", board)
@@ -695,7 +764,8 @@ class MixedWave(WaveDirCase):
               mock.patch.object(waveprep, "run", side_effect=self.fake_run),
               mock.patch.object(wavelaunch, "run", side_effect=self.launch_run),
               mock.patch.object(wavelaunch, "run_on", side_effect=self.far_run)):
-            gh.route((When(prefix=("pr", "list")), Answer(stdout=json.dumps(prs or []))))
+            gh.route((When(prefix=("pr", "list")), Answer(stdout=json.dumps(prs or []))),
+                     (When(prefix=("api", "graphql"), text=("closedByPullRequestsReferences",)), Answer(stdout="[]")))
             yield gh
 
     def prep(self, *args: str) -> tuple[int, str, str]:
@@ -911,7 +981,8 @@ class MixedWave(WaveDirCase):
             self.shim_calls.clear()
             rc, out, err = self.start()
             self.assertEqual(rc, 0, out + err)
-            self.assertEqual([c[4:6] for c in gh.calls()[-2:]], [["--state", "open"]] * 2, "the rivals are read again")
+            self.assertEqual([c[:2] for c in gh.calls()[-3:]], [["pr", "list"]] * 2 + [["api", "graphql"]],
+                             "the rivals are read again")
             self.assertEqual(self.far_calls, [["far", "/home/u/wave-scratch/wv/t42/runs"]])
             launch, leg, board = self.shim_calls
             self.assertEqual(launch, ["launch", "far", "w1-42", "--target-repo", "o/staging", "--kind", "codex", "--brief",
@@ -1280,11 +1351,16 @@ class MixedWave(WaveDirCase):
             self.assertEqual(rc, 1)
             self.assertIn("a subagent worker is spawned by its coordinator's runtime", out)
             self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol")[0], 0)
-            gh.route((When(prefix=("pr", "list")), Answer(stdout=json.dumps([{"number": 9, "title": "Fix #42", "body": "", "headRefName": "x"}]))))
+            gh.route((When(prefix=("pr", "list")), Answer(stdout=json.dumps([
+                {"number": 8, "title": "Fix #42 in staging", "body": "", "headRefName": "x"},
+                {"number": 9, "title": "The fix for this resolves o/up#42", "body": "", "headRefName": "y"},
+            ]))),
+                     (When(prefix=("api", "graphql"), has=("owner=o", "name=up", "number=42")), Answer(stdout="[]")))
             self.shim_calls.clear()
             rc, out, _ = self.start()
             self.assertEqual((rc, self.shim_calls), (1, []), out)
-            self.assertIn("WAVE LAUNCH REFUSED t42: open rival PR(s) #9 Fix #42", out)
+            self.assertIn("WAVE LAUNCH NOTE t42: open PR #8 mentions issue number #42", out)
+            self.assertIn("WAVE LAUNCH REFUSED t42: open rival PR(s) #9 ", out)
         rc, _, err = captured(wavelaunch.cmd_launch, self.cfg, [self.path])
         self.assertEqual(rc, 2)
         self.assertIn("name the wave file and the task", err)
@@ -1340,7 +1416,8 @@ class Unprep(MixedWave):
               mock.patch.object(waveunprep, "forget_row", side_effect=self.forget),
               mock.patch.object(waveunprep, "run", side_effect=self.board_run),
               mock.patch.object(waveunprep, "run_on", side_effect=self.far_run)):
-            gh.route((When(prefix=("pr", "list")), Answer(stdout=json.dumps(prs or []))))
+            gh.route((When(prefix=("pr", "list")), Answer(stdout=json.dumps(prs or []))),
+                     (When(prefix=("api", "graphql"), text=("closedByPullRequestsReferences",)), Answer(stdout="[]")))
             yield gh
 
     def unprep(self, task: str = "t42") -> tuple[int, str, str]:

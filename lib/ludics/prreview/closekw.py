@@ -18,6 +18,9 @@ shaped; this is the same filter, rule for rule, in the same order:
     right after it (``negated``, ludics#815): GitHub's parser does not read negation, so "The PR
     does not close #1647:" in ocannl-staging#1463's body closed ahrefs/ocannl#1647.
 
+Wave rivalry uses the same Markdown and reference rules. Each keyword binds just the first
+reference immediately after its delimiter, optional colon and blanks.
+
 The negated reading is the README's ludics-lite#75 line-shaped scan, and its boundary is a
 fail-closed allowlist (``_NEGATION``): within ONE sentence unit of ONE line, a negation word --
 ``not``, ``never``, ``cannot``, or the contractions don't, doesn't, didn't, won't, wouldn't, can't,
@@ -41,6 +44,7 @@ did not run; here such a body is scanned. A sentence is cut at 200 characters, n
 """
 
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Literal
 
@@ -57,7 +61,7 @@ _URL_HOST = re.compile(
 _REF = re.compile(r"(^|[ \t(\[{<\"'`*_,;])([a-zA-Z0-9][-a-zA-Z0-9]*/[-a-zA-Z0-9._]+)?#[1-9][0-9]*")
 _KEYWORD = re.compile(
     r"(^|[ \t(\[{<\"'`*,;:>])(close[sd]?|fix(e[sd])?|resolve[sd]?)"
-    r"([ \t)\]}>\"'`*,;:!?]|\.[^a-z0-9_]|\.$|$)"
+    r"(?P<after>[ \t)\]}>\"'`*,;:!?]|\.[^a-z0-9_]|\.$|$)"
 )
 # The negations a closing keyword may follow (the module docstring states the boundary), matched
 # on the ASCII-lowercased unit, ending where the reference must begin.
@@ -196,10 +200,7 @@ def _columns(text: str) -> int:
     return col
 
 
-def scan(text: str, repo: str, plain: bool) -> list[Finding]:
-    """``awk -v repo=<repo> [-v plain=1] "$MULTI_CLOSE_FILTER" <<<"$text"``: the findings, in order.
-    ``plain`` reads a COMMIT MESSAGE, where an indented line is quoted, not skipped as code."""
-    findings: list[Finding] = []
+def _units(text: str, plain: bool) -> Iterator[tuple[str, bool]]:
     fence = False
     fence_ch = ""
     fence_len = 0
@@ -260,8 +261,31 @@ def scan(text: str, repo: str, plain: bool) -> list[Finding]:
         # Markdown link form (rounds 3, 7, 8, 9) while a version number does not split.
         marked = _SENTENCE_END.sub(lambda mm: mm.group(0) + "\x01", line)
         for unit in marked.split("\x01"):
-            findings.extend(_scan_unit(unit, quoted, repo))
-    return findings
+            yield unit, quoted
+
+
+def scan(text: str, repo: str, plain: bool) -> list[Finding]:
+    """``awk -v repo=<repo> [-v plain=1] "$MULTI_CLOSE_FILTER" <<<"$text"``: the findings, in order.
+    ``plain`` reads a COMMIT MESSAGE, where an indented line is quoted, not skipped as code."""
+    return [finding for unit, quoted in _units(text, plain) for finding in _scan_unit(unit, quoted, repo)]
+
+
+def closing_refs(text: str, repo: str) -> set[str]:
+    """Read PR closing directives, including a lone keyword and reference."""
+    refs: set[str] = set()
+    for unit, _ in _units(text, plain=False):
+        scrubbed = scrub_urls(unit)
+        lower = _lower(scrubbed)
+        pos = 0
+        while (keyword := _KEYWORD.search(lower, pos)) is not None:
+            # The delimiter after a noun like "fix" may introduce the real keyword.
+            pos = keyword.start("after")
+            rest = scrubbed[keyword.end() :].lstrip(" \t")
+            rest = rest.removeprefix(":").lstrip(" \t")
+            first = _REF.match(rest)
+            if first is not None and not _IDENT_CHAR.fullmatch(rest[first.end() : first.end() + 1]):
+                refs.update(refs_of(rest[: first.end()], repo))
+    return refs
 
 
 def _say(*parts: str) -> None:

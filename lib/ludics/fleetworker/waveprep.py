@@ -133,12 +133,14 @@ identity is the runtime's), or run the provider preflight (``preflight <box> --n
 THE RIVAL PR read, a preliminary check and not the coordinator's whole search: ``gh pr list --state
 open --limit 100`` in the repository, ``--head <branch>`` for every task and ``--search <N>`` beside
 it for an issue task (a number search misses a PR whose head is the branch and whose text names no
-number). A rival is an open PR whose head is the branch, or (issue tasks) whose title or body
-holds the token ``#<N>`` -- after a line start, a non-word character or an ``<owner>/<name>`` -- not
-followed by a digit. A full page of 100 hits on either read is refused as unread, never taken as no rival.
-``--allow-rival <pr>`` passes one listed PR the coordinator has judged no rival. Closed PRs, comments,
-other repositories and a topic that names no number are outside it: SKILL.md keeps the coordinator's
-topic search immediately before the launch.
+number). An issue task also reads GitHub's issue-side closing connection so a manually linked
+PR can be found without a text hit. Rivals are open PRs in the target repository on the task's
+head branch, linked as closing the issue, or carrying a closing directive in their title or body
+in the forms read by closekw.py's ``closing_refs``. Bare closing references belong to the PR's
+repository. Other title/body hits of the number token (the ``rival_token`` pattern) get a NOTE.
+The text scan is bounded by closekw.py's line, sentence, URL and indentation rules. Comments,
+commit messages, closed PRs, PRs in other repositories and topic-only matches are outside this
+check. A full page of 100 hits on any read refuses. ``--allow-rival <pr>`` exempts that PR.
 
 THE BOARD read: a row is found only on a board that reads. A board that does not answer is unknown
 (exit 4). A board the store refuses to show is taken as no row only when the refusal is the
@@ -183,6 +185,9 @@ from ludics.fleetworker.takeover import board_status, row_of
 from ludics.fleetworker.transport import run
 from ludics.fleetworker.wave import ISSUE_NUMBER_SPLIT, USAGE, Leg, Profile, Wave, load_wave
 from ludics.fleetworker.wavebrief import PLACEHOLDER, Part, render, write_atomically
+from ludics.prreview.closekw import closing_refs
+from ludics.prreview.core import shell_quote
+from ludics.prreview.jqsem import path as json_path
 
 MODES = ("none", "paired", "paired+critique")
 TIERS = ("D1", "D1/D2", "D2", "D2/D3", "D3")  # THE TIER: the sequencing plan's difficulty tiers
@@ -443,46 +448,88 @@ def rival_token(number: str) -> re.Pattern[str]:
     return re.compile(rf"(?:^|[^\w&]|[\w.-]/[\w.-]+)#{number}(?![0-9])")
 
 
-def rivals_of(prs: list[dict[str, Any]], prep: Rivalry) -> list[str]:
-    token = rival_token(prep.number)
-    found: list[str] = []
-    for pr in prs:
-        number = str(pr.get("number"))
-        if number in prep.allow_rival:
-            continue
-        head = pr.get("headRefName")
-        words = f"{pr.get('title') or ''}\n{pr.get('body') or ''}"
-        if head == prep.branch or (prep.issue_ref and token.search(words)):
-            found.append(f"#{number} {str(pr.get('title') or '')[:80]}")
-    return found
-
-
-def open_prs(cfg: Config, prep: Rivalry, select: list[str]) -> list[dict[str, Any]]:
-    """One ``gh pr list --state open`` read, or Stop: unread, or a full page (never taken as all)."""
-    done = proc.run_tool("gh", ["pr", "list", "--repo", prep.repository, "--state", "open", *select, "--limit",
-                                str(PR_PAGE), "--json", "number,title,body,headRefName"], timeout=gh_timeout(cfg))
+def read_rival_prs(cfg: Config, prep: Rivalry, args: list[str], selection: str) -> list[dict[str, Any]]:
+    done = proc.run_tool("gh", args, timeout=gh_timeout(cfg))
     try:
         prs: Any = json.loads(done.stdout) if done.rc == 0 else None
     except ValueError:
         prs = None
-    if not isinstance(prs, list):
+    if not isinstance(prs, list) or not all(isinstance(p, dict) and type(cast(dict[str, Any], p).get("number")) is int
+                                            for p in cast(list[Any], prs)):
         raise Stop(4, f"{prep.verb} UNKNOWN {prep.task}: the open PRs of {prep.repository} could not be read"
-                      f" (gh {' '.join(select)}: exit {done.rc}: {done.stderr.strip()[-200:]}); nothing made")
-    listed = [cast(dict[str, Any], p) for p in cast(list[Any], prs) if isinstance(p, dict)]
+                      f" ({selection}: gh exit {done.rc}: {done.stderr.strip()[-200:]}); nothing made")
+    listed = cast(list[dict[str, Any]], prs)
     if len(listed) >= PR_PAGE:
-        raise Stop(1, f"{prep.verb} REFUSED {prep.task}: {len(listed)} open PRs match {' '.join(select)}, a full page;"
+        raise Stop(1, f"{prep.verb} REFUSED {prep.task}: {len(listed)} open PRs match {selection}, a full page;"
                       " read them by hand")
     return listed
+
+
+def open_prs(cfg: Config, prep: Rivalry, select: list[str]) -> list[dict[str, Any]]:
+    return read_rival_prs(cfg, prep,
+                         ["pr", "list", "--repo", prep.repository, "--state", "open", *select, "--limit",
+                          str(PR_PAGE), "--json", "number,title,body,headRefName"], shlex.join(select))
+
+
+def linked_prs(cfg: Config, prep: Rivalry, issue_repo: str) -> list[dict[str, Any]]:
+    # The inverse of closingIssuesReferences supplies PRs the number search cannot discover.
+    owner, name = issue_repo.split("/", 1)
+    query = ("query($owner: String!, $name: String!, $number: Int!, $limit: Int!) {"
+             " repository(owner: $owner, name: $name) { issue(number: $number) {"
+             " closedByPullRequestsReferences(first: $limit, includeClosedPrs: false) {"
+             " nodes { number title state repository { nameWithOwner } } } } } }")
+    prs = read_rival_prs(cfg, prep,
+                        ["api", "graphql", "-f", f"query={query}", "-f", f"owner={owner}", "-f", f"name={name}",
+                         "-F", f"number={prep.number}", "-F", f"limit={PR_PAGE}",
+                         "--jq", ".data.repository.issue.closedByPullRequestsReferences.nodes"],
+                        f"closing links for {shlex.quote(prep.issue_ref)}")
+    repo = prep.repository.casefold()
+    linked: list[dict[str, Any]] = []
+    for pr in prs:
+        # GitHub can return MERGED rows even with includeClosedPrs: false.
+        state = pr.get("state")
+        if state in ("CLOSED", "MERGED"):
+            continue
+        if state != "OPEN":
+            raise Stop(4, f"{prep.verb} UNKNOWN {prep.task}: a closing link for {shlex.quote(prep.issue_ref)}"
+                          " lacks its PR state; nothing made")
+        link_repo = json_path(pr, "repository", "nameWithOwner")
+        if not isinstance(link_repo, str) or not link_repo:
+            raise Stop(4, f"{prep.verb} UNKNOWN {prep.task}: a closing link for {shlex.quote(prep.issue_ref)}"
+                          " lacks its PR repository; nothing made")
+        if link_repo.casefold() == repo:
+            linked.append(pr)
+    return linked
 
 
 def check_rivals(cfg: Config, prep: Rivalry) -> None:
     # The head read always, since a search for the number does not find a PR whose head is the
     # branch and whose text names no number; an issue task's number search beside it.
     listed = open_prs(cfg, prep, ["--head", prep.branch])
+    linked: list[dict[str, Any]] = []
+    wanted = ""
     if prep.issue_ref:
-        seen = {str(p.get("number")) for p in listed}
-        listed += [p for p in open_prs(cfg, prep, ["--search", prep.number]) if str(p.get("number")) not in seen]
-    rivals = rivals_of(listed, prep)
+        issue_repo = prep.issue_ref.rpartition("#")[0]
+        wanted = f"#{prep.number}" if issue_repo.casefold() == prep.repository.casefold() else prep.issue_ref.casefold()
+        listed += open_prs(cfg, prep, ["--search", prep.number])
+        linked = linked_prs(cfg, prep, issue_repo)
+    token = rival_token(prep.number)
+    linked_numbers = {p["number"] for p in linked}
+    seen = set(prep.allow_rival)
+    rivals: list[str] = []
+    for pr in [*listed, *linked]:
+        number = str(pr["number"])
+        if number in seen:
+            continue
+        seen.add(number)
+        title = str(pr.get("title") or "")
+        body = str(pr.get("body") or "")
+        if (pr["number"] in linked_numbers or pr.get("headRefName") == prep.branch
+                or (prep.issue_ref and any(ref.casefold() == wanted
+                                           for text in (title, body) for ref in closing_refs(text, prep.repository)))):
+            rivals.append(f"#{number} {shell_quote(title[:80])}")
+        elif prep.issue_ref and token.search(f"{title}\n{body}"):
+            cli.say(f"{prep.verb} NOTE {prep.task}: open PR #{number} mentions issue number #{prep.number}")
     if rivals:
         raise Stop(1, f"{prep.verb} REFUSED {prep.task}: open rival PR(s) {'; '.join(rivals)} -- adopt one instead of"
                       " a competitor, or pass --allow-rival <pr> for one that is no rival")

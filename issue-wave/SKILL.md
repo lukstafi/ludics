@@ -1199,7 +1199,7 @@ native tasks it cues (*Launch*), and stopping it (*Close out*).
   other, but user-driven sessions, the CI-red triage routine (`ci-fix/*`), and a previous
   wave's stragglers still open PRs, and the pre-wave `gh pr list` goes stale within hours.
   Before each launch, search open PRs for the issue's topic: `wave prep`, the driver's included,
-  refuses on an open PR naming the number or the branch, so the topic search stays yours - before
+  refuses on an open PR on the task branch or with a closing keyword or link for the issue, so the topic search stays yours - before
   you queue a task, and again right before a launch prepped earlier; on a hit,
   rebrief the worker to *adopt* the existing PR (take over the branch, answer its review,
   coordinate in PR comments if the original session resumes - merge ownership goes to
