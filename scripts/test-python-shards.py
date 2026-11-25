@@ -99,15 +99,25 @@ class Shards(unittest.TestCase):
         self.assertIn("headroom 29.2s < 30.0s", message)
 
     def test_old_four_shard_plan_fails_headroom(self):
-        # Negative control: the pre-#1336 4-shard cut list puts both prompt-CLI halves in shard 0.
-        all_modules = shards.modules(ROOT / "lib")
+        # Frozen pre-#1336 snapshot so this historical regression stays independent of live
+        # module renames or future speedups while still pinning the exact failure mode.
+        snapshot_timings = {
+            "ludics.tests.test_bash_fragments": 0.8,
+            "ludics.tests.test_bgrun": 1.3,
+            "ludics.tests.test_checkprompts_cli": 164.1,
+            "ludics.tests.test_fleetworker_board": 0.8,
+            "ludics.tests.test_fleetworker_execution": 82.7,
+            "ludics.tests.test_fleetworker_wave": 116.7,
+            "ludics.tests.test_prreview_gate": 112.1,
+        }
+        snapshot_modules = sorted(snapshot_timings)
         old_cuts = [
             "ludics.tests.test_fleetworker_execution",
             "ludics.tests.test_fleetworker_wave",
             "ludics.tests.test_prreview_gate",
         ]
         with self.assertRaises(ValueError) as error:
-            shards.check_headroom(all_modules, old_cuts, 200.0)
+            shards.check_headroom(snapshot_modules, old_cuts, 200.0, snapshot_timings)
         message = str(error.exception)
         self.assertIn("shard 0/4", message)
         self.assertIn("ludics.tests.test_checkprompts_cli", message)
@@ -172,18 +182,21 @@ class Shards(unittest.TestCase):
                 shards.check_headroom(["a"], [], timings={"a": 1.0}, **kwargs)
 
     def test_cli_check_headroom_exit_codes(self):
-        _rows, cuts, watchdog = _workflow_python_unit()
+        rows, cuts, watchdog = _workflow_python_unit()
         env = {"PYTHON_TEST_CUTS": "|".join(cuts), "LUDICS_TEST_WATCHDOG": str(int(watchdog))}
         stdout, stderr = io.StringIO(), io.StringIO()
         with mock.patch.dict(os.environ, env, clear=False), \
                 contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             rc = shards.main(["--check-headroom"])
         self.assertEqual(rc, 0, stderr.getvalue())
-        self.assertIn("shard 0/5:", stdout.getvalue())
+        self.assertIn(f"shard 0/{len(rows)}:", stdout.getvalue())
 
+        # Watchdog barely above MIN_HEADROOM_SECONDS is insufficient by construction for any
+        # non-trivial shard plan, without hardcoding historical cut names.
+        tight_watchdog = shards.MIN_HEADROOM_SECONDS + 1.0
         bad_env = {
-            "PYTHON_TEST_CUTS": "ludics.tests.test_fleetworker_execution|ludics.tests.test_fleetworker_wave|ludics.tests.test_prreview_gate",
-            "LUDICS_TEST_WATCHDOG": "200",
+            "PYTHON_TEST_CUTS": "|".join(cuts),
+            "LUDICS_TEST_WATCHDOG": f"{tight_watchdog:g}",
         }
         stdout, stderr = io.StringIO(), io.StringIO()
         with mock.patch.dict(os.environ, bad_env, clear=False), \

@@ -1202,6 +1202,8 @@ if gtree guards_clean && grep -q -- '^  --base [^ ]* --regenerable ' "$T/ship-pr
   printf '# edited\n' >>"$T/lib/ludics/checkprompts/tree.py"
   expect "a change to the checker's code runs the prompt guard, though no Markdown changed" \
     0 'ran-prompt-fixtures' -- "$PF" --root "$T" --guards changed --base main syntax
+  expect "...and its split companion prompt guard" \
+    0 'ran-prompt-checks-fixtures' -- "$PF" --root "$T" --guards changed --base main syntax
   expect "...and the routines guard, whose suite runs the same checker" \
     0 'ran-routines-fixtures' -- "$PF" --root "$T" --guards changed --base main syntax
   git -C "$T" checkout -q -- lib/ludics/checkprompts/tree.py
@@ -1210,6 +1212,8 @@ if gtree guards_clean && grep -q -- '^  --base [^ ]* --regenerable ' "$T/ship-pr
     0 'ran-routines-fixtures' -- "$PF" --root "$T" --guards changed --base main syntax
   expect "...and the prompt guard, whose suite reads its LOCAL_ROUTINES" \
     0 'ran-prompt-fixtures' -- "$PF" --root "$T" --guards changed --base main syntax
+  expect "...and its split companion prompt guard" \
+    0 'ran-prompt-checks-fixtures' -- "$PF" --root "$T" --guards changed --base main syntax
   git -C "$T" checkout -q -- scripts/sync-routines.sh
   expect "...and with both reverted, neither runs" \
     0 'routines-fixtures: not run' -- "$PF" --root "$T" --guards changed --base main syntax

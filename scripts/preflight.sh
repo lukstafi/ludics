@@ -47,7 +47,7 @@
 #              step and CI's lint job, which names its steps, runs none).
 # A GUARD named on the command line runs whatever the mode. The table (`preflight.sh guards`):
 #   - prompt-fixtures      lib/ludics/tests/test_checkprompts_cli.py, run through scripts/py, on any
-#   - prompt-fixtures-checks lib/ludics/tests/test_checkprompts_cli_checks.py, the second half (#1336)
+#   - prompt-checks-fixtures lib/ludics/tests/test_checkprompts_cli_checks.py, the second half (#1336)
 #                          *.md: check-prompts.sh reads every SKILL.md, both index READMEs and
 #                          (its slot count) every *.md, and its suite reads the live
 #                          ship-pr/SKILL.md's shape -- wider than the
@@ -156,7 +156,7 @@ STEPS=(
 CHECKER='scripts/check-prompts.sh scripts/py lib/ludics/__init__.py lib/ludics/cli.py lib/ludics/proc.py lib/ludics/checkprompts/*'
 GUARDS=(
   "prompt-fixtures:lib/ludics/tests/test_checkprompts_cli.py:*.md lib/ludics/tests/test_checkprompts_cli.py lib/ludics/tests/checkprompts_cli_harness.py lib/ludics/tests/__init__.py $CHECKER issue-wave/scripts/fleet-worker.sh scripts/sync-routines.sh ship-pr/scripts/post-merge-cleanup.sh lib/ludics/postmergecleanup/*"
-  "prompt-fixtures-checks:lib/ludics/tests/test_checkprompts_cli_checks.py:*.md lib/ludics/tests/test_checkprompts_cli_checks.py lib/ludics/tests/checkprompts_cli_harness.py lib/ludics/tests/__init__.py $CHECKER issue-wave/scripts/fleet-worker.sh scripts/sync-routines.sh ship-pr/scripts/post-merge-cleanup.sh lib/ludics/postmergecleanup/*"
+  "prompt-checks-fixtures:lib/ludics/tests/test_checkprompts_cli_checks.py:*.md lib/ludics/tests/test_checkprompts_cli_checks.py lib/ludics/tests/checkprompts_cli_harness.py lib/ludics/tests/__init__.py $CHECKER issue-wave/scripts/fleet-worker.sh scripts/sync-routines.sh ship-pr/scripts/post-merge-cleanup.sh lib/ludics/postmergecleanup/*"
   "routines-fixtures:scripts/test-sync-routines.sh:routines/*.md scripts/test-sync-routines.sh scripts/sync-routines.sh $CHECKER"
   'reporters:scripts/test-workflow-reporters.py:'
   'nudge-fixtures:ship-pr/hooks/test-ship-pr-nudge.py:'
