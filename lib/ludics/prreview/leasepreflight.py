@@ -10,20 +10,22 @@ host/path/device/inode record. The repository argument labels the report. This r
 repository config, PR, registry, process environment or lease records, runs no build, tests no
 writes, and acquires nothing.
 
-RECOGNIZED MERGE PROCESSES (closed allowlist) AND SNAPSHOT LIMIT. The process parser requires at
-least one well-formed ``pid stat [args]`` row (fail-closed on empty or malformed output), skips
-zombie/dead states (``Z*``, ``X*``), and splits the ``args`` column on ASCII whitespace. After
-optionally peeling one leading ``env`` wrapper (``-i``, ``-0``, ``-S``, ``-``, ``-u``, ``-C``,
-``--``, and ``NAME=VALUE`` assignments), an argv is recognized as an in-flight ship-pr merge iff
-it matches one of three forms:
+RECOGNIZED MERGE PROCESSES (closed allowlist) AND SNAPSHOT LIMIT. The process parser requires
+well-formed ``pid stat [args]`` rows with recognized POSIX/BSD/Linux state tokens and at least
+one live (non-``Z*``/``X*``) row carrying readable arguments (fail-closed on empty, missing-state,
+argumentless, or malformed listings), skips zombie/dead states (``Z*``, ``X*``), and splits the
+``args`` column on ASCII whitespace. After optionally peeling one leading ``env`` wrapper
+(``-i``, ``-0``, ``-S``, ``-``, ``-u``, ``-C``, ``--``, and ``NAME=VALUE`` assignments), an argv
+is recognized as an in-flight ship-pr merge iff it matches one of three forms:
   1. ``[shell [non--c/-s flags]] <.../pr-review.sh> [--repo <v>|--repo=<v>] merge ...``
   2. ``[shell [non--c/-s flags]] <.../scripts/py> [python flags] -m ludics.prreview [--repo <v>|--repo=<v>] merge ...``
   3. ``<.../python[3[.N]]|.../Python[3[.N]]> [python flags] -m ludics.prreview [--repo <v>|--repo=<v>] merge ...``
-All matching ship-pr merge processes on every checked box are reported and refuse readiness
-regardless of ``<owner/repo>``, because ``pr-review.sh --repo <repo> merge <n>`` and ``REPO=``
-remove the repository from the exec'd Python argv. Deliberately unread: shell command strings
-(``sh -c``, ``bash -c``, ``python -c``), wrappers that do not exec into one of the three forms,
-renamed scripts/interpreters, paths or values containing whitespace before ``merge`` across
+Reported commands omit any peeled leading ``env`` wrapper so inline environment assignments are
+never copied into preflight output. All matching ship-pr merge processes on every checked box are
+reported and refuse readiness regardless of ``<owner/repo>``, because ``pr-review.sh --repo <repo> merge <n>``
+and ``REPO=`` remove the repository from the exec'd Python argv. Deliberately unread: shell command
+strings (``sh -c``, ``bash -c``, ``python -c``), wrappers that do not exec into one of the three
+forms, renamed scripts/interpreters, paths or values containing whitespace before ``merge`` across
 ``ps``'s unquoted spacing, process environments, unexamined hosts, web/API merges, direct pushes,
 and merges started after each box's snapshot.
 """
@@ -62,6 +64,8 @@ _REPO_PREFIX = "--repo="
 _MODULE_FLAG = "-m"
 _PRREVIEW_MODULE = "ludics.prreview"
 _PS_LINE = re.compile(r"^\s*([0-9]+)\s+(\S+)(?:\s+(.*))?$")
+# POSIX/BSD/Linux state codes, including BSD/macOS transient `?` (`?`, `?+`, `?E`) during fork/exit.
+_PS_STAT = re.compile(r"[DIRSTUZtWX?][+<>AELNSVWXls]*")
 _PROCESS_PROBE = b"LC_ALL=C ps -Aww -o pid=,stat=,args=\n"
 
 SNAPSHOT_LIMIT = (
@@ -227,8 +231,6 @@ def _match_merge_subcommand(tokens: Sequence[str], i: int) -> bool:
             return False
         i += 2
     elif tokens[i].startswith(_REPO_PREFIX):
-        if not tokens[i][len(_REPO_PREFIX) :]:
-            return False
         i += 1
     return i < len(tokens) and tokens[i] == "merge"
 
@@ -267,22 +269,27 @@ def _match_python_prreview_merge(tokens: Sequence[str], i: int) -> bool:
     return False
 
 
-def is_merge_argv(tokens: Sequence[str]) -> bool:
-    """Return True iff ``tokens`` matches the closed allowlist of ship-pr merge argv forms."""
+def _merge_command_start(tokens: Sequence[str]) -> int | None:
+    """Return the token index after any peeled ``env`` wrapper if ``tokens`` is a merge argv, else None."""
     start = _peel_env(tokens)
     if start is None or start >= len(tokens):
-        return False
+        return None
     if _PYTHON_BIN.fullmatch(_basename(tokens[start])):
-        return _match_python_prreview_merge(tokens, start + 1)
+        return start if _match_python_prreview_merge(tokens, start + 1) else None
     idx = _peel_shell(tokens, start)
     if idx is None or idx >= len(tokens):
-        return False
+        return None
     prog = tokens[idx]
     if _basename(prog) == "pr-review.sh":
-        return _match_merge_subcommand(tokens, idx + 1)
+        return start if _match_merge_subcommand(tokens, idx + 1) else None
     if prog == "scripts/py" or prog.endswith("/scripts/py"):
-        return _match_python_prreview_merge(tokens, idx + 1)
-    return False
+        return start if _match_python_prreview_merge(tokens, idx + 1) else None
+    return None
+
+
+def is_merge_argv(tokens: Sequence[str]) -> bool:
+    """Return True iff ``tokens`` matches the closed allowlist of ship-pr merge argv forms."""
+    return _merge_command_start(tokens) is not None
 
 
 def _sanitize_command(text: str) -> str:
@@ -291,22 +298,27 @@ def _sanitize_command(text: str) -> str:
 
 def parse_merge_processes(ps_output: str) -> list[MergeProcess] | None:
     """Parse ``ps -Aww -o pid=,stat=,args=`` output fail-closed; None means unreadable listing."""
-    rows = 0
+    live_with_args = 0
     found: list[MergeProcess] = []
-    for line in ps_output.splitlines():
+    for line in ps_output.split("\n"):
         if not line.strip():
             continue
         match = _PS_LINE.match(line)
         if match is None:
             return None
-        rows += 1
         pid_s, state, args_text = match.group(1), match.group(2), match.group(3) or ""
+        if not _PS_STAT.fullmatch(state):
+            return None
         if state.startswith(("Z", "X")):
             continue
         tokens = args_text.split()
-        if is_merge_argv(tokens):
-            found.append(MergeProcess(int(pid_s), _sanitize_command(args_text)))
-    if rows == 0:
+        if tokens:
+            live_with_args += 1
+        start = _merge_command_start(tokens)
+        if start is not None:
+            reported = " ".join(tokens[start:])
+            found.append(MergeProcess(int(pid_s), _sanitize_command(reported)))
+    if live_with_args == 0:
         return None
     found.sort(key=lambda item: item.pid)
     return found
@@ -318,8 +330,10 @@ def _probe_reader(cfg: Config, box: str, cross_timeout: int) -> ReaderProbe:
         done = proc.run_tool(argv[0], argv[1:], stdin=_READER, timeout=2 * cross_timeout)
     except OSError:
         return ReaderProbe(False, "unreachable (could not start probe)", None)
-    if done.rc in (UNREACHABLE, 124):
+    if done.rc == UNREACHABLE:
         return ReaderProbe(False, f"unreachable (exit {done.rc})", None)
+    if done.rc == 124:
+        return ReaderProbe(True, f"reader probe timed out (exit {done.rc})", None)
     if done.rc:
         return ReaderProbe(True, f"reader probe failed (exit {done.rc})", None)
     match _record(done.stdout):
@@ -394,10 +408,10 @@ def run(args: list[str]) -> int:
         cli.say(f"{quoted}: {reader.report}; {merges.summary}")
         for item in merges.processes:
             cli.say(f"  {quoted} pid={item.pid}: {item.command}")
+        if reader.anchor is not None:
+            identities.add(reader.anchor)
         if reader.anchor is None or not merges.ok:
             incomplete = True
-        else:
-            identities.add(reader.anchor)
         if merges.processes:
             in_flight = True
     cli.say(SNAPSHOT_LIMIT)

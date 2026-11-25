@@ -119,14 +119,43 @@ class LeasePreflight(unittest.TestCase):
         for call in calls.call_args_list:
             self.assertNotIn("merge-leases", str(call.kwargs.get("stdin", b"")))
 
-    def test_broken_reader_still_reports_in_flight_merges_on_reachable_box(self) -> None:
+    def test_broken_or_timed_out_reader_still_reports_in_flight_merges_on_reachable_box(self) -> None:
         busy_ps = self.ps_answer("  812 S    /home/u/.claude/skills/ship-pr/scripts/pr-review.sh merge owner/name#9")
-        rc, out, err, _ = self.report(proc.Completed(1, "", ""), busy_ps, boxes="old-box")
+        cases = (
+            (proc.Completed(1, "", ""), "old-box: reader probe failed (exit 1); in-flight merges: 1"),
+            (proc.Completed(124, "", ""), "old-box: reader probe timed out (exit 124); in-flight merges: 1"),
+        )
+        for reader_reply, expected in cases:
+            with self.subTest(expected=expected):
+                rc, out, err, _ = self.report(reader_reply, busy_ps, boxes="old-box")
+                self.assertEqual(rc, 1)
+                self.assertIn(expected, out)
+                self.assertIn("  old-box pid=812: /home/u/.claude/skills/ship-pr/scripts/pr-review.sh merge owner/name#9", out)
+                self.assertIn("one or more recognizable ship-pr merge processes are in flight", err)
+                self.assertIn("one or more boxes could not verify all prerequisites", err)
+
+    def test_anchor_mismatch_is_still_reported_when_one_process_probe_fails(self) -> None:
+        rc, out, err, _ = self.report(
+            self.answer(inode=42), self.ps_answer(),
+            self.answer(inode=43), proc.Completed(1, "", ""),
+        )
         self.assertEqual(rc, 1)
-        self.assertIn("old-box: reader probe failed (exit 1); in-flight merges: 1", out)
-        self.assertIn("  old-box pid=812: /home/u/.claude/skills/ship-pr/scripts/pr-review.sh merge owner/name#9", out)
-        self.assertIn("one or more recognizable ship-pr merge processes are in flight", err)
+        self.assertIn("second: reader accepts lease fleet", out)
+        self.assertIn("process probe failed (exit 1)", out)
+        self.assertIn("boxes resolve different anchor directories", err)
         self.assertIn("one or more boxes could not verify all prerequisites", err)
+
+    def test_env_assignments_are_omitted_from_reported_merge_command(self) -> None:
+        secret_ps = self.ps_answer(
+            "    1 Ss   /sbin/init",
+            " 5100 S    env GH_TOKEN=ghp_supersecret123 REPO=owner/name /home/u/pr-review.sh merge 7 --wait",
+        )
+        rc, out, err, _ = self.report(self.answer(), secret_ps, boxes="first")
+        self.assertEqual(rc, 1)
+        self.assertIn("  first pid=5100: /home/u/pr-review.sh merge 7 --wait", out)
+        self.assertNotIn("ghp_supersecret123", out)
+        self.assertNotIn("GH_TOKEN", out)
+        self.assertNotIn("ghp_supersecret123", err)
 
     def test_process_probe_failures_and_unreadable_listings_refuse_fail_closed(self) -> None:
         cases = (
@@ -134,6 +163,9 @@ class LeasePreflight(unittest.TestCase):
             (proc.Completed(124, "", ""), "process probe unreachable (exit 124)"),
             (proc.Completed(0, "", ""), "unrecognized process listing"),
             (proc.Completed(0, "not a ps row\n", ""), "unrecognized process listing"),
+            (proc.Completed(0, " 4102 /usr/bin/python3 -m ludics.prreview merge owner/name#7\n", ""), "unrecognized process listing"),
+            (proc.Completed(0, "    1 Ss\n    2 S\n", ""), "unrecognized process listing"),
+            (proc.Completed(0, "  101 Z+   <defunct>\n", ""), "unrecognized process listing"),
         )
         for ps_reply, expected in cases:
             with self.subTest(expected=expected):
@@ -149,11 +181,13 @@ class LeasePreflight(unittest.TestCase):
             "/Users/u/.claude/skills/ship-pr/scripts/pr-review.sh merge owner/name#7 --wait",
             "/Users/u/ludics/ship-pr/scripts/pr-review.sh --repo owner/name merge 7",
             "/Users/u/ludics/ship-pr/scripts/pr-review.sh --repo=owner/name merge 7",
+            "/Users/u/ludics/ship-pr/scripts/pr-review.sh --repo= merge owner/name#7",
             "/bin/bash /Users/u/ludics/ship-pr/scripts/pr-review.sh merge owner/name#7",
             "bash -euo pipefail /Users/u/ludics/ship-pr/scripts/pr-review.sh --repo owner/name merge 7",
             "/usr/bin/env bash /Users/u/ludics/ship-pr/scripts/pr-review.sh merge owner/name#7",
             "env REPO=owner/name -u DEBUG /Users/u/ludics/ship-pr/scripts/pr-review.sh merge 7",
             "/Users/u/ludics/scripts/py -m ludics.prreview merge owner/name#7 --wait",
+            "/Users/u/ludics/scripts/py -m ludics.prreview --repo= merge owner/name#7 --wait",
             "bash /Users/u/ludics/scripts/py -m ludics.prreview --repo owner/name merge 7",
             "/opt/homebrew/Cellar/python@3.15/3.15.2/Frameworks/Python.framework/Versions/3.15/Resources/Python.app/Contents/MacOS/Python -B -X utf8 -P -m ludics.prreview merge owner/name#7 --wait",
             "/usr/bin/python3.12 -B -X utf8 -P -m ludics.prreview --repo=owner/name merge 7",
@@ -169,7 +203,6 @@ class LeasePreflight(unittest.TestCase):
             "pr-review.sh lease-preflight owner/name",
             "pr-review.sh comment owner/name#1 pr-review.sh merge",
             "pr-review.sh --repo merge",
-            "pr-review.sh --repo= merge",
             "python3 -m ludics.prreview status owner/name#7",
             "python3 -m ludics.prreview merge-build --base a --head b",
             "python3 -c ludics.prreview merge",
@@ -184,13 +217,19 @@ class LeasePreflight(unittest.TestCase):
             with self.subTest(near_miss=cmd):
                 self.assertFalse(leasepreflight.is_merge_argv(cmd.split()))
 
-        # Zombies and dead processes are not in flight.
+        # Zombies and dead processes are not in flight; macOS transient `?`/`?+`/`?E` states are valid rows.
         parsed = leasepreflight.parse_merge_processes(
             "  101 Z+   /bin/bash /u/pr-review.sh merge owner/name#7\n"
-            "  102 X    /usr/bin/python3 -m ludics.prreview merge owner/name#8\n"
-            "  103 S    /sbin/init\n"
+            "  102 X\n"
+            "  103 ?+   (bash)\n"
+            "  104 ?E   (sh)\n"
+            "  105 S    /sbin/init\n"
         )
         self.assertEqual(parsed, [])
+        transient_merge = leasepreflight.parse_merge_processes(
+            "  106 ?+   /bin/bash /u/pr-review.sh merge owner/name#8\n"
+        )
+        self.assertEqual(transient_merge, [leasepreflight.MergeProcess(106, "/bin/bash /u/pr-review.sh merge owner/name#8")])
 
     def test_cross_timeout_validation_and_forwarding(self) -> None:
         for bad in ("0", "-5", "abc"):
@@ -217,7 +256,7 @@ class LeasePreflight(unittest.TestCase):
         self.assertIn("usage:", err)
 
     def local_report(
-        self, home: Path, state_path: str, *, isolate_ps: bool = True, **overrides: str,
+        self, home: Path, state_path: str, *, isolate_ps: bool = True, overrides: dict[str, str] | None = None,
     ) -> tuple[int, str, str]:
         skills = home / ".claude" / "skills"
         skills.mkdir(parents=True, exist_ok=True)
@@ -242,7 +281,8 @@ class LeasePreflight(unittest.TestCase):
             contextlib.redirect_stderr(io.StringIO()) as err,
         ):
             os.environ.pop("FLEET_REGISTRY_PIN", None)
-            os.environ.update(overrides)
+            if overrides:
+                os.environ.update(overrides)
             rc = cli.main_guard("pr-review.sh", leasepreflight.run, ["owner/name", "--boxes", "caller"])
         return rc, out.getvalue(), err.getvalue()
 
@@ -268,17 +308,25 @@ class LeasePreflight(unittest.TestCase):
             state = home / "state"
             state.mkdir()
             dummy = home / "pr-review.sh"
-            dummy.write_text("#!/bin/sh\nsleep 30\n", encoding="utf-8")
+            dummy.write_text("#!/bin/sh\nread _\n", encoding="utf-8")
             dummy.chmod(stat.S_IRWXU)
-            child = subprocess.Popen(["/bin/sh", str(dummy), "merge", "owner/name#2305", "--wait"])
+            child = subprocess.Popen(
+                ["/bin/sh", "./pr-review.sh", "merge", "owner/name#2305", "--wait"],
+                cwd=home,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
             try:
                 rc, out, err = self.local_report(home, str(state), isolate_ps=False)
             finally:
+                if child.stdin is not None:
+                    child.stdin.close()
                 child.terminate()
                 child.wait(timeout=5)
             self.assertEqual(rc, 1)
             self.assertIn(f"caller pid={child.pid}:", out)
-            self.assertIn("pr-review.sh merge owner/name#2305 --wait", out)
+            self.assertIn("./pr-review.sh merge owner/name#2305 --wait", out)
             self.assertIn(leasepreflight.SNAPSHOT_LIMIT, out)
             self.assertIn("one or more recognizable ship-pr merge processes are in flight", err)
             self.assertEqual(list(state.iterdir()), [])
@@ -299,7 +347,7 @@ class LeasePreflight(unittest.TestCase):
         for env, diagnostic in cases:
             with self.subTest(env=env), tempfile.TemporaryDirectory() as directory:
                 home = Path(directory)
-                rc, out, _ = self.local_report(home, str(home), **env)
+                rc, out, _ = self.local_report(home, str(home), overrides=env)
                 self.assertEqual(rc, 1)
                 self.assertIn(f"reader accepts lease fleet, {diagnostic}", out)
 
