@@ -15,6 +15,7 @@ import sys
 import tempfile
 import time
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 from typing import Any
@@ -516,6 +517,146 @@ class SlotsReport(unittest.TestCase):
         out, err = report({"FLEET_BOXES": "a b", "FLEET_BOX_GPU_TOKENS": "stale=1"})
         self.assertEqual(out, "")
         self.assertEqual(err, "PREFLIGHT SLOTS WARNING: FLEET_BOX_GPU_TOKENS names stale, which is not in FLEET_BOXES; every `execution slot` refuses\n")
+
+
+class GeminiTokenReport(unittest.TestCase):
+    NOW = datetime(2026, 11, 25, 16, 0, 0, tzinfo=timezone.utc)
+
+    def run_probe(self, home: Path, *, shell: str = "/bin/bash", path: str | None = None) -> subprocess.CompletedProcess[str]:
+        env = {**os.environ, "HOME": str(home)}
+        if path is not None:
+            env["PATH"] = path
+        return subprocess.run(
+            [shell, "-s"],
+            input=preflight.GEMINI_TOKEN_PROBE,
+            text=True,
+            capture_output=True,
+            env=env,
+            check=False,
+        )
+
+    def test_remaining_and_expired_lifetimes_format_from_rfc3339_and_nanoseconds(self) -> None:
+        self.assertEqual(preflight.format_duration(0), "0s")
+        self.assertEqual(preflight.format_duration(45), "45s")
+        self.assertEqual(preflight.format_duration(2520), "42m")
+        self.assertEqual(preflight.format_duration(3600), "1h")
+        self.assertEqual(preflight.format_duration(4500), "1h 15m")
+        self.assertEqual(preflight.format_duration(90000), "1d 1h")
+        # +01:00 with Go RFC3339Nano fractional seconds: 17:42:00+01:00 == 16:42:00Z (42m ahead of NOW).
+        self.assertEqual(
+            preflight.gemini_token_line("rog", "expiry 2026-11-25T17:42:00.350265123+01:00\n", now=self.NOW),
+            "PREFLIGHT GEMINI TOKEN rog: 42m remaining (expires 2026-11-25T16:42:00Z, file ~/.gemini/antigravity-cli/antigravity-oauth-token)",
+        )
+        self.assertEqual(
+            preflight.gemini_token_line("rog", "expiry 2026-11-25T15:48:00Z\n", now=self.NOW),
+            "PREFLIGHT GEMINI TOKEN rog: expired 12m ago (expired 2026-11-25T15:48:00Z, file ~/.gemini/antigravity-cli/antigravity-oauth-token)",
+        )
+
+    def test_missing_or_unusable_token_file_reports_lifetime_unknown(self) -> None:
+        self.assertIsNone(preflight.parse_gemini_expiry("0001-01-01T00:00:00Z"))
+        self.assertIsNone(preflight.parse_gemini_expiry("2026-02-30T00:00:00Z"))
+        self.assertIsNone(preflight.parse_gemini_expiry("9999-12-31T23:59:59-01:00"))
+        self.assertIsNone(preflight.parse_gemini_expiry("not-a-timestamp"))
+        for probe_out, needle in (
+            ("absent\n", "no SSH token file"),
+            ("unreadable\n", "cannot read"),
+            ("no-jq\n", "jq absent on rog"),
+            ("invalid\n", "not a JSON object"),
+            ("no-expiry\n", "states no expiry"),
+            ("expiry 0001-01-01T00:00:00Z\n", "states no valid expiry"),
+            ("expiry 2026-02-30T00:00:00Z\n", "states no valid expiry"),
+            ("expiry 9999-12-31T23:59:59-01:00\n", "states no valid expiry"),
+            ("unexpected\n", "could not inspect"),
+            ("", "could not inspect"),
+        ):
+            with self.subTest(probe_out=probe_out):
+                line = preflight.gemini_token_line("rog", probe_out, now=self.NOW)
+                self.assertIn("PREFLIGHT GEMINI TOKEN rog: lifetime unknown", line)
+                self.assertIn(needle, line)
+
+    def test_probe_extracts_expiry_for_both_agy_shapes_and_never_leaks_secrets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            token = home / ".gemini/antigravity-cli/antigravity-oauth-token"
+            res = self.run_probe(home)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(res.stdout.strip(), "absent")
+
+            token.parent.mkdir(parents=True)
+            token.write_text("{}\n")
+            res = self.run_probe(home, path=tmp)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(res.stdout.strip(), "no-jq")
+
+            if shutil.which("jq") is None:
+                self.skipTest("jq not on PATH")
+
+            token.write_text(
+                json.dumps({
+                    "token": {
+                        "access_token": "SECRET-ACCESS-TOKEN",
+                        "refresh_token": "SECRET-REFRESH-TOKEN",
+                        "expiry": "2026-11-25T17:42:00.350265+01:00",
+                    },
+                    "auth_method": "consumer",
+                })
+            )
+            res = self.run_probe(home)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(res.stdout.strip(), "expiry 2026-11-25T17:42:00.350265+01:00")
+            self.assertNotIn("SECRET", res.stdout + res.stderr)
+
+            token.write_text(json.dumps({"access_token": "SECRET-BARE", "expiry": "2026-11-25T18:00:00Z"}))
+            res = self.run_probe(home)
+            self.assertEqual(res.stdout.strip(), "expiry 2026-11-25T18:00:00Z")
+            self.assertNotIn("SECRET", res.stdout + res.stderr)
+
+            token.write_text(
+                json.dumps({"token": {"expiry": "2026-11-25T18:00:00Z"}})
+                + "\n"
+                + json.dumps({"token": {"expiry": "2026-11-25T19:00:00Z"}})
+            )
+            res = self.run_probe(home)
+            self.assertEqual(res.stdout.strip(), "invalid")
+
+            token.write_text(json.dumps({"token": {"access_token": "SECRET-NOEXP", "expiry": "SECRET-NOT-A-DATE"}}))
+            res = self.run_probe(home)
+            self.assertEqual(res.stdout.strip(), "no-expiry")
+            self.assertNotIn("SECRET", res.stdout + res.stderr)
+
+            token.write_text("not-json SECRET-CORRUPT")
+            res = self.run_probe(home)
+            self.assertEqual(res.stdout.strip(), "invalid")
+            self.assertNotIn("SECRET", res.stdout + res.stderr)
+
+            token.unlink()
+            token.mkdir()
+            res = self.run_probe(home)
+            self.assertEqual(res.stdout.strip(), "unreadable")
+
+    def test_cmd_preflight_emits_gemini_token_line_only_for_gemini_when_reachable(self) -> None:
+        cfg = load_config(SCRIPT, {"FLEET_BOXES": "local", "FLEET_LOCAL_BOX": "local"}, host="h")
+        for mode, far_rc, probe_out, expect_pattern in (
+            (["local", "--gemini", "--no-probe", "--no-cross"], 0, "expiry 2099-01-01T00:00:00Z\n", r"PREFLIGHT GEMINI TOKEN local: .+ remaining \(expires 2099-01-01T00:00:00Z"),
+            (["local", "--gemini", "--no-probe", "--no-cross"], 1, "absent\n", r"PREFLIGHT GEMINI TOKEN local: lifetime unknown \(no SSH token file"),
+            (["local", "--gemini", "--no-probe", "--no-cross"], 255, "absent\n", None),
+            (["local", "--codex", "--no-probe", "--no-cross"], 0, "absent\n", None),
+        ):
+            with self.subTest(mode=mode, far_rc=far_rc):
+                out = io.StringIO()
+                with (
+                    patch.object(preflight, "run_preflight", return_value=Done(far_rc, "")),
+                    patch.object(preflight, "run_on", return_value=Done(0, probe_out)) as token_call,
+                    contextlib.redirect_stdout(out),
+                ):
+                    rc = preflight.cmd_preflight(cfg, mode)
+                self.assertEqual(rc, 4 if far_rc == 255 else far_rc)
+                if expect_pattern is None:
+                    self.assertNotIn("PREFLIGHT GEMINI TOKEN", out.getvalue())
+                    token_call.assert_not_called()
+                else:
+                    self.assertRegex(out.getvalue(), expect_pattern)
+                    token_call.assert_called_once()
 
 
 class Prs(unittest.TestCase):

@@ -22,6 +22,19 @@ CLAUDE AUTH BOUNDARY. After an unsuccessful turn, read stderr and the error resu
 login and credential diagnostics get the auth repair. A successful answer, other JSON fields, and
 unrecognized errors are outside that classification. Raw provider output is never printed.
 
+GEMINI TOKEN BOUNDARY. On ``preflight <box> --gemini`` (after a reachable far-side preflight), read
+only the regular file ``$HOME/.gemini/antigravity-cli/antigravity-oauth-token`` on the target box
+(``agy`` CLI's SSH file-based token store, ``NewCLITokenStorage`` with ``product=antigravity``).
+Extract on the target box only a single RFC 3339 timestamp string from ``.token.expiry`` (``agy``'s
+``StoredToken`` envelope) or top-level ``.expiry`` (bare ``oauth2.Token``), filtered by a closed
+timestamp pattern before leaving the box and validated again in Python (rejecting invalid dates and
+Go's zero/pre-epoch sentinel ``year <= 1970``); no secret token field is ever transmitted or printed.
+Report remaining lifetime (or elapsed time since expiry) when present, and a plain ``lifetime unknown``
+line when the file is absent, unreadable, non-JSON, lacks a valid non-zero timestamp, ``jq`` is absent,
+or the probe fails. Deliberately does not inspect macOS Keychain, Linux secret-service keyrings,
+``ANTIGRAVITY_APP_DATA_DIR`` overrides, or standalone server token files, and never changes preflight's
+exit status.
+
 The bounds, each a wall-clock limit read as the shell read it (``${X:-default}``):
 FLEET_PROBE_TIMEOUT (the live headless turn, 120), FLEET_FETCH_TIMEOUT (the skills fetch, 300),
 FLEET_CROSS_TIMEOUT (each cross-box reach probe, 20), FLEET_GH_TIMEOUT (each GitHub call, 30) and
@@ -33,6 +46,7 @@ import json
 import re
 import shlex
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
 
@@ -251,8 +265,111 @@ def cmd_preflight(cfg: Config, args: list[str]) -> int:
         cli.say(f"PREFLIGHT UNREACHABLE {box}")
         slots_report(cfg)
         return 4
+    if codex == "gemini":
+        gemini_token_report(cfg, box)
     slots_report(cfg)
     return done.rc
+
+
+GEMINI_TOKEN_PATH = "~/.gemini/antigravity-cli/antigravity-oauth-token"
+_GEMINI_EXPIRY_RE = re.compile(
+    r"^([0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-9]{2})(?:\.[0-9]+)?([Zz]|[+-][0-9]{2}:[0-9]{2})$"
+)
+
+# Read-only far-side inspection of agy's SSH token file: only a status keyword or a validated
+# RFC 3339 timestamp string ever leaves the box (never access_token, refresh_token or raw JSON).
+GEMINI_TOKEN_PROBE = r"""[ -n "${HOME:-}" ] || { printf '%s\n' absent; exit 0; }
+f="$HOME/.gemini/antigravity-cli/antigravity-oauth-token"
+if [ ! -e "$f" ] && [ ! -L "$f" ]; then
+  printf '%s\n' absent
+elif [ ! -f "$f" ] || [ ! -r "$f" ]; then
+  printf '%s\n' unreadable
+elif ! command -v jq >/dev/null 2>&1; then
+  printf '%s\n' no-jq
+else
+  jq -sr '
+    if length != 1 or (.[0] | type) != "object" then "invalid"
+    else
+      .[0]
+      | ((if (.token | type) == "object" then .token.expiry else null end) // .expiry)
+      | if type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?([Zz]|[+-][0-9]{2}:[0-9]{2})$")
+        then "expiry " + .
+        else "no-expiry"
+        end
+    end
+  ' "$f" 2>/dev/null || printf '%s\n' invalid
+fi
+"""
+
+
+def parse_gemini_expiry(raw: str) -> datetime | None:
+    """Parse an RFC 3339 timestamp from agy's SSH token file into UTC, or None if invalid/zero."""
+    match = _GEMINI_EXPIRY_RE.fullmatch(raw.strip())
+    if match is None:
+        return None
+    base, tz = match.groups()
+    if tz in ("Z", "z"):
+        tz = "+00:00"
+    try:
+        dt = datetime.fromisoformat(f"{base}{tz}")
+        if dt.tzinfo is None or dt.year <= 1970:
+            return None
+        return dt.astimezone(timezone.utc)
+    except (ValueError, OverflowError):
+        return None
+
+
+def format_duration(seconds: int) -> str:
+    """Compact non-negative duration: days+hours, hours+minutes, minutes, or seconds."""
+    secs = max(0, seconds)
+    days, rem = divmod(secs, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, rem = divmod(rem, 60)
+    if days:
+        return f"{days}d {hours}h" if hours else f"{days}d"
+    if hours:
+        return f"{hours}h {minutes}m" if minutes else f"{hours}h"
+    if minutes:
+        return f"{minutes}m"
+    return f"{rem}s"
+
+
+def gemini_token_line(box: str, probe_out: str, *, now: datetime | None = None) -> str:
+    """Format the PREFLIGHT GEMINI TOKEN line from the far-side probe's stdout."""
+    line = next((ln.strip() for ln in probe_out.splitlines() if ln.strip()), "")
+    prefix = f"PREFLIGHT GEMINI TOKEN {box}:"
+    match line:
+        case "absent":
+            return f"{prefix} lifetime unknown (no SSH token file at {GEMINI_TOKEN_PATH})"
+        case "unreadable":
+            return f"{prefix} lifetime unknown (cannot read {GEMINI_TOKEN_PATH})"
+        case "no-jq":
+            return f"{prefix} lifetime unknown (jq absent on {box})"
+        case "invalid":
+            return f"{prefix} lifetime unknown (token file at {GEMINI_TOKEN_PATH} is not a JSON object)"
+        case "no-expiry":
+            return f"{prefix} lifetime unknown (token file at {GEMINI_TOKEN_PATH} states no expiry)"
+        case _:
+            if not line.startswith("expiry "):
+                return f"{prefix} lifetime unknown (could not inspect {GEMINI_TOKEN_PATH})"
+            exp = parse_gemini_expiry(line.removeprefix("expiry "))
+            if exp is None:
+                return f"{prefix} lifetime unknown (token file at {GEMINI_TOKEN_PATH} states no valid expiry)"
+            cur = (now if now is not None else datetime.now(timezone.utc)).astimezone(timezone.utc)
+            delta = int((exp - cur).total_seconds())
+            iso = exp.strftime("%Y-%m-%dT%H:%M:%SZ")
+            if delta > 0:
+                return f"{prefix} {format_duration(delta)} remaining (expires {iso}, file {GEMINI_TOKEN_PATH})"
+            return f"{prefix} expired {format_duration(-delta)} ago (expired {iso}, file {GEMINI_TOKEN_PATH})"
+
+
+def gemini_token_report(cfg: Config, box: str) -> None:
+    """Report the remaining lifetime of agy's SSH token file on ``box`` without affecting exit status."""
+    done = run_on(cfg, box, GEMINI_TOKEN_PROBE, [], capture=True)
+    if done.unreachable or done.rc != 0:
+        cli.say(f"PREFLIGHT GEMINI TOKEN {box}: lifetime unknown (could not inspect {GEMINI_TOKEN_PATH})")
+        return
+    cli.say(gemini_token_line(box, done.out))
 
 
 def slots_report(cfg: Config) -> None:

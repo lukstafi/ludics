@@ -145,7 +145,11 @@ sets its row. A Codex CLI worker's brief is the shipped one (`cli-codex/` with `
 a Gemini one's (`cli-gemini/`; the agy slug carries the effort, so the profile names none). A
 Gemini worker's box needs agy signed
 in for SSH sessions, whose token agy keeps apart from the desktop's: `ssh -t <box> agy` once;
-`preflight <box> --gemini` probes a headless turn in a tmux session there.
+`preflight <box> --gemini` probes a headless turn in a tmux session there and reports the SSH token
+file's remaining lifetime (or `lifetime unknown`). Keep SSH-launched Gemini workers off `mac-studio`
+(observed on `agy` 1.5.16/1.5.17, local runs purge that file on their hourly Keychain refresh; local
+launches on `mac-studio` under a desktop tmux server not started from an SSH session use Keychain
+directly, ludics#1358).
 
 ## Templates
 

@@ -106,7 +106,10 @@ script; they are what the coordinator tells its workers.
   copy; it turns over fast. It supplies difficulty classes (D1/D2/D3), a dependency graph,
   a parallelism analysis, machine placement, and a ready-now wavefront. If it has a design
   questions section (see Decision gate), that too.
-- **The fleet**: `mac-studio` (Metal + cc, the reference dev box), `macbook-pro` (Metal, M4 Pro;
+- **The fleet**: `mac-studio` (Metal + cc, the reference dev box; keep SSH-launched Gemini workers
+  off it — observed on `agy` 1.5.16/1.5.17, local Keychain refreshes purge the SSH token file;
+  local launches on a desktop tmux server not started from an SSH session use Keychain directly,
+  ludics#1358), `macbook-pro` (Metal, M4 Pro;
   wakes over Wi-Fi), `rog-nv-linux` (CUDA, 24
   cores), `minix-amd-linux` (HIP, 32 cores; Radeon 8060S `gfx1151`, unified memory), and
   `tuf-amd-linux` (HIP, 16 threads; discrete RX 7700S `gfx1102`; cabled but no Wake-on-LAN, manual wake).
@@ -464,7 +467,8 @@ not queue is yours to watch for.
 
 Per launch, on the launching box (ludics-lite#3): `launch` runs it itself before every worker,
 and `fleet-worker.sh preflight <box>` runs it alone: `--codex` for a Codex CLI host and
-`--gemini` for a Gemini one, as the early check before its first launch, and `--native-codex` or `--native-claude` once per box for native
+`--gemini` for a Gemini one (which also prints the SSH token file's remaining lifetime, or `lifetime
+unknown`), as the early check before its first launch, and `--native-codex` or `--native-claude` once per box for native
 workers, which take the same freshness, skill-link and cross-box checks without CLI login, a
 headless model probe, or tmux. Every mode brings that box's `~/ludics` to upstream main. The
 freshness check removes a directory Git lists as ignored under the worktree root when it is
