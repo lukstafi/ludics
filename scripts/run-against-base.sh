@@ -159,9 +159,9 @@
 #     `ludics.tests.test_x.Class.test`). A path under lib/ that discovery never runs (not an
 #     importable name, not `test_*.py`, or below a directory with no `__init__.py`) is refused.
 #     When scripts/py finds no Python >= 3.12 (or does not find one inside --timeout) the suite
-#     never runs, and that is this helper's 125, not the base's result. When unittest exits 5
-#     (`NO TESTS RAN`, e.g. a `-k` filter matched nothing), that is refused as 125 too with the
-#     corrected command, never reported as a base failure (#1338);
+#     never runs, and that is this helper's 125, not the base's result. When the scripts/py
+#     unittest runner exits 5 (`NO TESTS RAN`, e.g. a `-k` filter matched nothing), that is refused
+#     as 125 too with the corrected command, never reported as a base failure (#1338);
 #   - a base older than scripts/py (before 2026-10-05) has none: the file then runs under plain
 #     `python3 <file>`, as it did before, and the run says so;
 #   - a `*.py` file outside lib/ (issue-wave/scripts/test-fleet-execution.py, say) runs under plain
@@ -196,6 +196,11 @@ shell_join() {
   s=$(printf '%q ' "$@")
   printf '%s' "${s% }"
 }
+
+# Display name of this helper for corrected-command hints: a --mutants batch executes a scratch
+# copy of $0, passing the original path here so printed retries remain reusable after cleanup.
+SELF=${RUN_AGAINST_BASE_SELF:-$0}
+unset RUN_AGAINST_BASE_SELF
 
 [ $# -ge 1 ] || die "usage: run-against-base.sh <suite-path> [--base <ref>] [--also <path>]... [--mutate <file> <sed-expr>]... [--revert <commit> <path>]... [--timeout <s>] [--tally <ERE>] [--mutants <file> [--red <ERE>]] [suite args...]
        run-against-base.sh --command [the same options] -- <program> [args...]"
@@ -506,11 +511,11 @@ refuse_external_abs() {
   case "$prog" in
   *=*)
     # shellcheck disable=SC2016 # literal command shown to the caller
-    fixed=("$0" --command ${OPTS[@]+"${OPTS[@]}"} -- sh -c 'exec "$@"' sh "$prog" ${@+"$@"})
+    fixed=("$SELF" --command ${OPTS[@]+"${OPTS[@]}"} -- sh -c 'exec "$@"' sh "$prog" ${@+"$@"})
     how="through sh (env would read '=' as an assignment)"
     ;;
   *)
-    fixed=("$0" --command ${OPTS[@]+"${OPTS[@]}"} -- env "$prog" ${@+"$@"})
+    fixed=("$SELF" --command ${OPTS[@]+"${OPTS[@]}"} -- env "$prog" ${@+"$@"})
     how="through env (or by bare name on PATH)"
     ;;
   esac
@@ -633,13 +638,17 @@ else
     --base | --also | --mutate | --revert | --timeout | --tally | --mutants | --red)
       # Dropping `--` would let the helper consume the suite's own leading option; use --command
       # to pass it verbatim (with $TOP/scripts/py so lib/ commands work from any subdirectory).
-      fixed=("$0" --command ${OPTS[@]+"${OPTS[@]}"} --also "$suite_arg" -- "${cmd_run[@]}" ${@+"$@"})
+      fixed=("$SELF" --command ${OPTS[@]+"${OPTS[@]}"} --also "$suite_arg" -- "${cmd_run[@]}" ${@+"$@"})
+      if [ -z "$module" ]; then
+        verbatim=("$SELF" --command ${OPTS[@]+"${OPTS[@]}"} --also "$suite_arg" -- "${cmd_run[@]}" "${orig_args[@]}")
+        die "in the suite form, there is no \`--\` before a suite's arguments (\`--\` belongs in \`--command [options] -- <program> [args...]\`), and $(printf '%q' "$1") is a helper option name -- use --command to pass it to $(printf '%q' "$rel") verbatim (or place helper options directly after the suite path): $(shell_join "${fixed[@]}") (or with the literal \`--\` preserved: $(shell_join "${verbatim[@]}"))"
+      fi
       die "in the suite form, there is no \`--\` before a suite's arguments (\`--\` belongs in \`--command [options] -- <program> [args...]\`), and $(printf '%q' "$1") is a helper option name -- use --command to pass it to $(printf '%q' "$rel") verbatim (or place helper options directly after the suite path): $(shell_join "${fixed[@]}")"
       ;;
     *)
-      fixed=("$0" "$suite_arg" ${OPTS[@]+"${OPTS[@]}"} ${@+"$@"})
+      fixed=("$SELF" "$suite_arg" ${OPTS[@]+"${OPTS[@]}"} ${@+"$@"})
       if [ -z "$module" ]; then
-        verbatim=("$0" --command ${OPTS[@]+"${OPTS[@]}"} --also "$suite_arg" -- "${cmd_run[@]}" "${orig_args[@]}")
+        verbatim=("$SELF" --command ${OPTS[@]+"${OPTS[@]}"} --also "$suite_arg" -- "${cmd_run[@]}" "${orig_args[@]}")
         die "in the suite form, there is no \`--\` before a suite's arguments (\`--\` belongs in \`--command [options] -- <program> [args...]\`; the first non-option word ends the helper's options, so \`--\` would go straight to $(printf '%q' "$rel")); drop the \`--\`: $(shell_join "${fixed[@]}") (or to pass a literal \`--\` to $(printf '%q' "$rel") verbatim: $(shell_join "${verbatim[@]}"))"
       fi
       die "in the suite form, there is no \`--\` before a suite's arguments (\`--\` belongs in \`--command [options] -- <program> [args...]\`; the first non-option word ends the helper's options, so \`--\` would go straight to $(printf '%q' "$rel")); drop the \`--\`: $(shell_join "${fixed[@]}")"
@@ -1006,7 +1015,7 @@ if [ -n "$MUTANTS_FILE" ]; then
     # would run its suite with INT ignored -- and a case that signals a child of its own would go
     # red on every mutant alike, hiding the survivors (it did, in this helper's own batch).
     set -m
-    "$BASH" "$SCRATCH/helper" "${run[@]}" >"$SCRATCH/fifo" 2>&1 </dev/null &
+    RUN_AGAINST_BASE_SELF="$SELF" "$BASH" "$SCRATCH/helper" "${run[@]}" >"$SCRATCH/fifo" 2>&1 </dev/null &
     inner_pid=$!
     set +m
     trap 'exit 130' INT
@@ -1387,7 +1396,8 @@ refuse_unittest_no_tests() {
       esac
       rest=${arg#*k}
       if [ -n "$rest" ]; then
-        pat=$rest
+        # argparse strips one leading `=` on attached short-option values (`-k=PAT`, `-vk=PAT`).
+        pat=${rest#=}
       elif [ $# -gt 0 ]; then
         pat=$1
         shift
@@ -1417,7 +1427,7 @@ refuse_unittest_no_tests() {
     esac
   done
   if [ -n "$rewrote_or" ]; then
-    fixed=("$0" "$suite_arg" ${OPTS[@]+"${OPTS[@]}"} ${rewritten[@]+"${rewritten[@]}"})
+    fixed=("$SELF" "$suite_arg" ${OPTS[@]+"${OPTS[@]}"} ${rewritten[@]+"${rewritten[@]}"})
     die "unittest exited 5 (NO TESTS RAN) for $(printf '%q' "$rel") on $base: 0 tests ran, so this is not a negative control -- unittest -k takes literal substrings/globs (repeat -k for OR, not pytest's \"a or b\"); run: $(shell_join "${fixed[@]}")"
   fi
   if [ -n "$saw_k" ]; then
@@ -1426,16 +1436,18 @@ refuse_unittest_no_tests() {
       dropped=()
       ;;
     esac
-    fixed=("$0" "$suite_arg" ${OPTS[@]+"${OPTS[@]}"} ${dropped[@]+"${dropped[@]}"})
+    fixed=("$SELF" "$suite_arg" ${OPTS[@]+"${OPTS[@]}"} ${dropped[@]+"${dropped[@]}"})
     die "unittest exited 5 (NO TESTS RAN) for $(printf '%q' "$rel") on $base: 0 tests ran, so this is not a negative control -- the -k filter matched nothing (unittest takes literal substrings/globs and repeats -k <p1> -k <p2>, not pytest expressions); run the module without -k: $(shell_join "${fixed[@]}")"
   fi
-  fixed=("$0" "$suite_arg" ${OPTS[@]+"${OPTS[@]}"})
+  fixed=("$SELF" "$suite_arg" ${OPTS[@]+"${OPTS[@]}"})
   if [ "${#rewritten[@]}" -gt 0 ]; then
     die "unittest exited 5 (NO TESTS RAN) for $(printf '%q' "$rel") on $base: 0 tests ran, so this is not a negative control -- check the suite arguments or run the whole module: $(shell_join "${fixed[@]}")"
   fi
   die "unittest exited 5 (NO TESTS RAN) for $(printf '%q' "$rel") on $base: 0 tests ran, so this is not a negative control -- check that $(printf '%q' "$rel") defines unittest.TestCase test_* methods, then re-run: $(shell_join "${fixed[@]}")"
 }
-if [ -n "$module" ] && [ -z "$timed_out" ] && [ "$rc" -eq 5 ]; then
+# Gate on `started` (the `scripts/py -m unittest` runner), not just `module`, so an old base
+# falling back to plain `python3 ./<file>` keeps its own exit 5.
+if [ -n "$started" ] && [ -z "$timed_out" ] && [ "$rc" -eq 5 ]; then
   refuse_unittest_no_tests "$@"
 fi
 

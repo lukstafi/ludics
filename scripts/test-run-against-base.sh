@@ -363,8 +363,9 @@ fi
 run_rab test-toy.sh -- --base fixed
 if [ "$rc" -eq 125 ] \
   && grep -qF -- '--command --also test-toy.sh -- ./test-toy.sh --base fixed' <<<"$out" \
+  && grep -qF -- '--command --also test-toy.sh -- ./test-toy.sh -- --base fixed' <<<"$out" \
   && ! grep -qE 'ARGS=\[|passed,' <<<"$out"; then
-  ok "...and when a helper option name follows \`--\` on a shell suite, the correction uses --command"
+  ok "...and when a helper option name follows \`--\` on a shell suite, the correction shows both --command forms (stripped and literal \`--\`)"
 else
   ko "shell suite -- --base: rc=$rc -- $out"
 fi
@@ -1140,6 +1141,7 @@ if __name__ == "__main__":
 EOF
 cp -p "$P/lib/toy/tests/test_calc.py" "$P/lib/toy/tests/test-dash.py"
 printf '%s\n' 'import unittest' >"$P/lib/toy/tests/test_empty.py"
+printf '%s\n' 'import sys' 'sys.exit(5)' >"$P/lib/toy/tests/test_exit5.py"
 mkdir -p "$P/lib/toy/loose"
 cp -p "$P/lib/toy/tests/test_calc.py" "$P/lib/toy/loose/test_loose.py"
 printf '#!/bin/sh\nexec sleep 60\n' >"$TMP/interp-bin/rab-hanging-python"
@@ -1210,6 +1212,15 @@ if [ "$rc" -eq 125 ] \
 else
   ko "lib/ unittest exit 5 -vk: rc=$rc -- $out"
 fi
+run_py lib/toy/tests/test_calc.py -k="test_add_zero or test_add_nonzero"
+if [ "$rc" -eq 125 ] \
+  && grep -qF -- 'lib/toy/tests/test_calc.py -k test_add_zero -k test_add_nonzero' <<<"$out" \
+  && ! grep -qF -- '-k =test_add_zero' <<<"$out" \
+  && ! grep -qF 'run-against-base: exit 5 on' <<<"$out"; then
+  ok "...and stripping argparse's \`=\` separator on \`-k=...\` before splitting OR"
+else
+  ko "lib/ unittest exit 5 -k=: rc=$rc -- $out"
+fi
 run_py lib/toy/tests/test_calc.py -k "*_zero or *_nonzero"
 if [ "$rc" -eq 125 ] \
   && grep -qF -- '-k \*_zero -k \*_nonzero' <<<"$out" \
@@ -1253,6 +1264,27 @@ if [ "$rc" -eq 125 ] \
   ok "lib/ unittest exit 5 from a module with 0 test methods exits 125 too"
 else
   ko "lib/ unittest exit 5 empty module: rc=$rc -- $out"
+fi
+# On an older base without scripts/py, plain `python3 ./<file>` is not the unittest runner, so its
+# own exit 5 stays exit 5 rather than being refused as NO TESTS RAN.
+run_py lib/toy/tests/test_exit5.py --base old
+if [ "$rc" -eq 5 ] && grep -qF 'run-against-base: exit 5 on old:' <<<"$out" \
+  && ! grep -qF 'NO TESTS RAN' <<<"$out"; then
+  ok "...while a base without scripts/py (plain python3 fallback) keeps its own exit 5"
+else
+  ko "lib/ plain python3 exit 5: rc=$rc -- $out"
+fi
+# Inside --mutants, the child's exit-5 refusal names the caller's helper path, not $SCRATCH/helper.
+printf '%s\n' 'lib/toy/calc.py s/+/-/' >"$TMP/py.mutants"
+q_rab=$(printf '%q' "$RAB")
+run_py lib/toy/tests/test_calc.py --mutants "$TMP/py.mutants" -k "test_add_zero or test_add_nonzero"
+if [ "$rc" -eq 125 ] \
+  && grep -qF 'refused, exit 125: unittest exited 5 (NO TESTS RAN)' <<<"$out" \
+  && grep -qF -- "$q_rab " <<<"$out" \
+  && ! grep -qF '/helper ' <<<"$out"; then
+  ok "...and in --mutants, the exit-5 correction prints the caller's helper path, not \$SCRATCH/helper"
+else
+  ko "lib/ unittest exit 5 in --mutants: rc=$rc -- $out"
 fi
 # scripts/py that finds no Python >= 3.12 runs nothing: the suite never ran, which is not a result.
 PY_EXTRA=LUDICS_PY_CANDIDATES=/nonexistent/run-against-base-python3
