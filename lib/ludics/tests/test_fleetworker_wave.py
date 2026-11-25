@@ -2148,6 +2148,16 @@ class AgyResult(unittest.TestCase):
                 self.assertEqual(agy.result(agy_stream(response, steps=(agy_step(2, "DONE", step),))),
                                  (response, "c1", ""))
 
+    def test_last_done_step_preserves_a_checkpoint_heading_in_the_prefix(self) -> None:
+        verdict = "VERDICT: blocking (1 blocking, 0 suggestions)"
+        for heading in ("### Review checkpoint (at-open): head 1234abcd",
+                        " \t### Review checkpoint (confirm): head 1234abcd\r"):
+            with self.subTest(heading=heading):
+                earlier = f"Waiting for CI.\n{heading}\nA blocking finding.\n"
+                steps = (agy_step(1, "DONE", earlier), agy_step(2, "DONE", verdict))
+                response = earlier + verdict
+                self.assertEqual(agy.result(agy_stream(response, steps=steps)), (response, "c1", ""))
+
     def test_last_done_step_cannot_cross_a_turn_boundary(self) -> None:
         steps = (agy_step(1, "DONE", "Done."),)
         response = "Different turn.\nDone."
@@ -2229,6 +2239,17 @@ class GeminiReview(WaveDirCase):
         with self.gworld(agy_answer(wait + review, steps=steps)):
             rc, out, err = self.review(sha=self.head)
         self.assertEqual(rc, 0, out + err)
+        self.assertEqual(self.read(self.stem() + ".md").rstrip("\n"), review)
+
+    def test_review_keeps_findings_when_the_verdict_is_a_separate_step(self) -> None:
+        verdict = "VERDICT: blocking (1 blocking, 0 suggestions)"
+        review = self.said(verdict)
+        findings = review.removesuffix(verdict)
+        steps = (agy_step(1, "DONE", findings), agy_step(2, "DONE", verdict))
+        with self.gworld(agy_answer(review, steps=steps)):
+            rc, out, err = self.review(sha=self.head)
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("verdict=blocking blocking=1 suggestions=0 decision=confirm", out)
         self.assertEqual(self.read(self.stem() + ".md").rstrip("\n"), review)
 
     def test_the_clone_is_at_the_head_with_origin_main_and_no_remote(self) -> None:

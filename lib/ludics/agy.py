@@ -32,12 +32,16 @@ agy keeps about the first 191 KB of one message (a 400 KB message kept 191,391 b
 ``conversation_id`` resumes the conversation (``--conversation``), and a resumed turn runs in the
 same directory, since agy scopes conversations to their workspace.
 
-RESPONSE TRIMMING follows farside.LOG_LAST_RESULT (#1308). An ``init`` or ``result`` clears the
-step state. Only string ``text_delta`` fields on ``agent_response`` step updates with finite numeric
-indices contribute to step text. The last nonblank step observed reaching ``DONE`` can replace the
-full response only if it is an exact LF-boundary suffix. If a removed line would start with ``PLAN_READY`` or
-``END_PLAN_READY`` after optional spaces or tabs, keep the whole response so a plan can span steps.
-Other event types, other marker words and the meaning of prose play no part in trimming.
+RESPONSE TRIMMING shares the turn resets, delta assembly, completion order and exact LF-boundary
+suffix check of farside.LOG_LAST_RESULT (#1308). An ``init`` or ``result`` clears the step state.
+Only string ``text_delta`` fields on ``agent_response`` updates with finite numeric indices contribute
+to the last nonblank step seen reaching ``DONE``. In Python the finite check excludes non-JSON
+numbers accepted by the decoder. Preserve the whole response if the removed prefix starts a
+plan or a checkpoint review on any LF-delimited line. After optional spaces or tabs, the only
+protected lines are those starting with ``PLAN_READY`` or ``END_PLAN_READY``, and whole checkpoint
+headings as defined by ``prreview.checkpoint.HEADING``, with trailing whitespace allowed.
+This protects the envelopes these callers save. The jq reader protects wave driver markers for
+CLI worker handoffs. Other event types, marker words and prose play no part in this selection.
 """
 
 import json
@@ -49,6 +53,7 @@ from typing import Any, cast
 
 from ludics import proc
 from ludics.peerplan.transcript import CLOSE as PLAN_CLOSE, OPEN as PLAN_OPEN
+from ludics.prreview.checkpoint import HEADING as CHECKPOINT_HEADING
 
 MARK = "ludics-clone"
 NO_HOOKS = ["-c", f"core.hooksPath={os.devnull}", "-c", "advice.detachedHead=false"]
@@ -79,8 +84,10 @@ def _response_text(response: str, step: str) -> str:
     prefix = response[:-len(step)]
     if prefix and not (prefix.endswith("\n") or step.startswith("\n")):
         return response
-    if any(line.lstrip(" \t").startswith((PLAN_OPEN, PLAN_CLOSE)) for line in prefix.split("\n")):
-        return response
+    for line in prefix.split("\n"):
+        start = line.lstrip(" \t")
+        if start.startswith((PLAN_OPEN, PLAN_CLOSE)) or CHECKPOINT_HEADING.fullmatch(start.rstrip()):
+            return response
     return step
 
 
