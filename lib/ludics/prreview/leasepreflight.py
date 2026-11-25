@@ -40,13 +40,13 @@ from dataclasses import dataclass
 from ludics import cli, proc
 from ludics.fleetworker.config import Config, load_config, roster_words
 from ludics.fleetworker.farside import FLEET_PYTHON
+from ludics.fleetworker.preflight import knob
 from ludics.fleetworker.transport import UNREACHABLE, far_argv, fleet_name
 from ludics.prreview.core import die, fail, parse_ref
 from ludics.prreview.mergebuild import fleet_worker_path
 
 _BOX = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 _POSITIVE_INT = re.compile(r"[1-9][0-9]*")
-_DEFAULT_CROSS_TIMEOUT = "20"
 
 _ENV_ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
 _ENV_SINGLE_FLAGS = frozenset({"-i", "-0", "-S", "-"})
@@ -64,8 +64,8 @@ _REPO_PREFIX = "--repo="
 _MODULE_FLAG = "-m"
 _PRREVIEW_MODULE = "ludics.prreview"
 _PS_LINE = re.compile(r"^\s*([0-9]+)\s+(\S+)(?:\s+(.*))?$")
-# POSIX/BSD/Linux state codes, including BSD/macOS transient `?` (`?`, `?+`, `?E`) during fork/exit.
-_PS_STAT = re.compile(r"[DIRSTUZtWX?][+<>AELNSVWXls]*")
+# POSIX/BSD/Linux state codes, including Linux `P` (parked) and BSD/macOS transient `?` (`?`, `?+`, `?E`).
+_PS_STAT = re.compile(r"[DIPRSTUZtWX?][+<>AELNSVWXls]*")
 _PROCESS_PROBE = b"LC_ALL=C ps -Aww -o pid=,stat=,args=\n"
 
 SNAPSHOT_LIMIT = (
@@ -110,7 +110,7 @@ fixture = parse_config("command true\\ntrigger always\\nlease fleet\\n", "lease 
 accepted = fixture is not None and getattr(fixture, "fleet_lease", False) is True
 cfg = load_config(os.path.join(sys.argv[1], "issue-wave", "scripts", "fleet-worker.sh"), os.environ)
 endpoint = anchor_name(cfg)
-anchor_timeout = int(sys.argv[4]) if len(sys.argv) > 4 else 20
+anchor_timeout = int(sys.argv[4])
 if pin_refusal(cfg):
     print(json.dumps([accepted, endpoint, 2, ""]))
 elif not all(re.fullmatch(sys.argv[3], name) for name in (cfg.anchor, endpoint)):
@@ -164,7 +164,7 @@ def _record(text: str) -> object:
 
 
 def _cross_timeout(cfg: Config) -> int:
-    raw = cfg.env.get("FLEET_CROSS_TIMEOUT") or _DEFAULT_CROSS_TIMEOUT
+    raw = knob(cfg, "FLEET_CROSS_TIMEOUT", "20")
     if not _POSITIVE_INT.fullmatch(raw):
         die(f"FLEET_CROSS_TIMEOUT must be a positive whole number of seconds, not {shlex.quote(raw)}")
     return int(raw)

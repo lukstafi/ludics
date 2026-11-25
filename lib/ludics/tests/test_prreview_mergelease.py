@@ -94,18 +94,26 @@ class LeasePreflight(unittest.TestCase):
         self.assertIn("could not verify all prerequisites", err)
 
     def test_fake_boxes_report_in_flight_merge_and_unreachable_box_without_acquiring(self) -> None:
+        from ludics.fleetworker import mergelease as anchor_lease
+
         busy_ps = self.ps_answer(
             "    1 Ss   /sbin/init",
             " 4201 S    /bin/bash /home/u/ludics/ship-pr/scripts/pr-review.sh merge owner/name#2305 --wait",
             " 4202 S    /usr/bin/python3 -B -X utf8 -P -m ludics.prreview merge owner/name#2305 --wait",
         )
-        rc, out, err, calls = self.report(
-            self.answer(), busy_ps,
-            self.answer(), self.ps_answer(),
-            proc.Completed(255, "", ""),
-            boxes="down-box busy-box clean-box",
-        )
+        with (
+            mock.patch.object(mergelease, "MergeLease", side_effect=AssertionError("lease must not be acquired")) as client_lease,
+            mock.patch.object(anchor_lease, "change", side_effect=AssertionError("anchor lease must not be mutated")) as anchor_mut,
+        ):
+            rc, out, err, _ = self.report(
+                self.answer(), busy_ps,
+                self.answer(), self.ps_answer(),
+                proc.Completed(255, "", ""),
+                boxes="down-box busy-box clean-box",
+            )
         self.assertEqual(rc, 1)
+        self.assertEqual(client_lease.call_count, 0)
+        self.assertEqual(anchor_mut.call_count, 0)
         self.assertIn("busy-box: reader accepts lease fleet", out)
         self.assertIn("in-flight merges: 2", out)
         self.assertIn("  busy-box pid=4201: /bin/bash /home/u/ludics/ship-pr/scripts/pr-review.sh merge owner/name#2305 --wait", out)
@@ -116,8 +124,6 @@ class LeasePreflight(unittest.TestCase):
         self.assertIn(leasepreflight.SNAPSHOT_LIMIT, out)
         self.assertIn("one or more recognizable ship-pr merge processes are in flight", err)
         self.assertIn("one or more boxes could not verify all prerequisites", err)
-        for call in calls.call_args_list:
-            self.assertNotIn("merge-leases", str(call.kwargs.get("stdin", b"")))
 
     def test_broken_or_timed_out_reader_still_reports_in_flight_merges_on_reachable_box(self) -> None:
         busy_ps = self.ps_answer("  812 S    /home/u/.claude/skills/ship-pr/scripts/pr-review.sh merge owner/name#9")
@@ -217,19 +223,20 @@ class LeasePreflight(unittest.TestCase):
             with self.subTest(near_miss=cmd):
                 self.assertFalse(leasepreflight.is_merge_argv(cmd.split()))
 
-        # Zombies and dead processes are not in flight; macOS transient `?`/`?+`/`?E` states are valid rows.
+        # Zombies/dead are not in flight; Linux `P` (parked) and macOS transient `?`/`?+`/`?E` states are valid rows.
         parsed = leasepreflight.parse_merge_processes(
             "  101 Z+   /bin/bash /u/pr-review.sh merge owner/name#7\n"
             "  102 X\n"
             "  103 ?+   (bash)\n"
             "  104 ?E   (sh)\n"
-            "  105 S    /sbin/init\n"
+            "  105 P    [cpuhp/1]\n"
+            "  106 S    /sbin/init\n"
         )
         self.assertEqual(parsed, [])
         transient_merge = leasepreflight.parse_merge_processes(
-            "  106 ?+   /bin/bash /u/pr-review.sh merge owner/name#8\n"
+            "  107 ?+   /bin/bash /u/pr-review.sh merge owner/name#8\n"
         )
-        self.assertEqual(transient_merge, [leasepreflight.MergeProcess(106, "/bin/bash /u/pr-review.sh merge owner/name#8")])
+        self.assertEqual(transient_merge, [leasepreflight.MergeProcess(107, "/bin/bash /u/pr-review.sh merge owner/name#8")])
 
     def test_cross_timeout_validation_and_forwarding(self) -> None:
         for bad in ("0", "-5", "abc"):
