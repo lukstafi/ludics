@@ -18,9 +18,8 @@ shaped; this is the same filter, rule for rule, in the same order:
     right after it (``negated``, ludics#815): GitHub's parser does not read negation, so "The PR
     does not close #1647:" in ocannl-staging#1463's body closed ahrefs/ocannl#1647.
 
-Wave rivalry uses the same Markdown and reference rules, with a narrower trigger: a keyword
-must be followed by a reference after its delimiter, optional colon and blanks. References
-elsewhere in a sentence count only after that trigger.
+Wave rivalry uses the same Markdown and reference rules. Each keyword binds just the first
+reference immediately after its delimiter, optional colon and blanks.
 
 The negated reading is the README's ludics-lite#75 line-shaped scan, and its boundary is a
 fail-closed allowlist (``_NEGATION``): within ONE sentence unit of ONE line, a negation word --
@@ -62,7 +61,7 @@ _URL_HOST = re.compile(
 _REF = re.compile(r"(^|[ \t(\[{<\"'`*_,;])([a-zA-Z0-9][-a-zA-Z0-9]*/[-a-zA-Z0-9._]+)?#[1-9][0-9]*")
 _KEYWORD = re.compile(
     r"(^|[ \t(\[{<\"'`*,;:>])(close[sd]?|fix(e[sd])?|resolve[sd]?)"
-    r"([ \t)\]}>\"'`*,;:!?]|\.[^a-z0-9_]|\.$|$)"
+    r"(?P<after>[ \t)\]}>\"'`*,;:!?]|\.[^a-z0-9_]|\.$|$)"
 )
 # The negations a closing keyword may follow (the module docstring states the boundary), matched
 # on the ASCII-lowercased unit, ending where the reference must begin.
@@ -171,13 +170,6 @@ def _scan_unit(unit: str, quoted: bool, repo: str) -> list[Finding]:
 
 
 def _keyword_finding(unit: str, quoted: bool, repo: str) -> Finding | None:
-    refs = _keyword_refs(unit, repo)
-    if not refs or (len(refs) < 2 and not quoted):
-        return None
-    return Finding("quoted" if quoted else "sentence", len(refs), " ".join(refs), _shown(unit))
-
-
-def _keyword_refs(unit: str, repo: str) -> list[str]:
     # URLs go BEFORE the keyword is located, so the keyword and the references are read off the
     # same text: a keyword in a URL path was a directive until round 16. The keyword's boundaries
     # are whitelists on both sides: `close-out` and `closed/tracker#10` bind nothing (round 6), a
@@ -186,7 +178,14 @@ def _keyword_refs(unit: str, repo: str) -> list[str]:
     # (`fixes.md`, `fix._config`, rounds 14 and 15). The references are read FORWARD from the
     # keyword: GitHub's syntax is the keyword followed by the reference (round 15).
     m = _KEYWORD.search(_lower(unit))
-    return refs_of(unit[m.end() :], repo) if m is not None else []
+    if m is None:
+        return None
+    refs = refs_of(unit[m.end() :], repo)
+    if not refs:
+        return None
+    if len(refs) < 2 and not quoted:
+        return None
+    return Finding("quoted" if quoted else "sentence", len(refs), " ".join(refs), _shown(unit))
 
 
 def _columns(text: str) -> int:
@@ -276,13 +275,16 @@ def closing_refs(text: str, repo: str) -> set[str]:
     refs: set[str] = set()
     for unit, _ in _units(text, plain=False):
         scrubbed = scrub_urls(unit)
-        for keyword in _KEYWORD.finditer(_lower(scrubbed)):
+        lower = _lower(scrubbed)
+        pos = 0
+        while (keyword := _KEYWORD.search(lower, pos)) is not None:
+            # The delimiter after a noun like "fix" may introduce the real keyword.
+            pos = keyword.start("after")
             rest = scrubbed[keyword.end() :].lstrip(" \t")
             rest = rest.removeprefix(":").lstrip(" \t")
             first = _REF.match(rest)
             if first is not None and not _IDENT_CHAR.fullmatch(rest[first.end() : first.end() + 1]):
-                refs.update(refs_of(rest, repo))
-                break
+                refs.update(refs_of(rest[: first.end()], repo))
     return refs
 
 

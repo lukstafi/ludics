@@ -477,7 +477,7 @@ def linked_prs(cfg: Config, prep: Rivalry, issue_repo: str) -> list[dict[str, An
     query = ("query($owner: String!, $name: String!, $number: Int!, $limit: Int!) {"
              " repository(owner: $owner, name: $name) { issue(number: $number) {"
              " closedByPullRequestsReferences(first: $limit, includeClosedPrs: false) {"
-             " nodes { number title repository { nameWithOwner } } } } } }")
+             " nodes { number title state repository { nameWithOwner } } } } } }")
     prs = read_rival_prs(cfg, prep,
                         ["api", "graphql", "-f", f"query={query}", "-f", f"owner={owner}", "-f", f"name={name}",
                          "-F", f"number={prep.number}", "-F", f"limit={PR_PAGE}",
@@ -486,6 +486,13 @@ def linked_prs(cfg: Config, prep: Rivalry, issue_repo: str) -> list[dict[str, An
     repo = prep.repository.casefold()
     linked: list[dict[str, Any]] = []
     for pr in prs:
+        # GitHub can return MERGED rows even with includeClosedPrs: false.
+        state = pr.get("state")
+        if state in ("CLOSED", "MERGED"):
+            continue
+        if state != "OPEN":
+            raise Stop(4, f"{prep.verb} UNKNOWN {prep.task}: a closing link for {shlex.quote(prep.issue_ref)}"
+                          " lacks its PR state; nothing made")
         link_repo = json_path(pr, "repository", "nameWithOwner")
         if not isinstance(link_repo, str) or not link_repo:
             raise Stop(4, f"{prep.verb} UNKNOWN {prep.task}: a closing link for {shlex.quote(prep.issue_ref)}"
@@ -500,9 +507,10 @@ def check_rivals(cfg: Config, prep: Rivalry) -> None:
     # branch and whose text names no number; an issue task's number search beside it.
     listed = open_prs(cfg, prep, ["--head", prep.branch])
     linked: list[dict[str, Any]] = []
-    issue_repo = prep.issue_ref.rpartition("#")[0]
-    wanted = f"#{prep.number}" if issue_repo.casefold() == prep.repository.casefold() else prep.issue_ref.casefold()
+    wanted = ""
     if prep.issue_ref:
+        issue_repo = prep.issue_ref.rpartition("#")[0]
+        wanted = f"#{prep.number}" if issue_repo.casefold() == prep.repository.casefold() else prep.issue_ref.casefold()
         listed += open_prs(cfg, prep, ["--search", prep.number])
         linked = linked_prs(cfg, prep, issue_repo)
     token = rival_token(prep.number)

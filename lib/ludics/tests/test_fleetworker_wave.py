@@ -302,6 +302,7 @@ class Prep(WaveDirCase):
                          [["--head", "claude/w1-42"], ["--search", "42"]])
         self.assertEqual(pr_calls[-1][:2], ["api", "graphql"])
         self.assertIn("number=42", pr_calls[-1])
+        self.assertTrue(any("nodes { number title state repository" in arg for arg in pr_calls[-1]))
         verbs = [c[:2] for c in self.shim_calls]
         self.assertEqual(verbs, [["execution", "run"], ["execution", "run"], ["board", "set"]])
         with open(self.shim_calls[0][2]) as f:
@@ -403,7 +404,7 @@ class Prep(WaveDirCase):
         prs = [{"number": 7, "title": "Sibling work", "body": "Issue #42 may change shared arguments."},
                {"number": 8, "title": "Changes near o/up#42", "body": "Closes elsewhere/project#42"},
                {"number": 10, "title": "Independent fix", "body": "The fix is independent of o/up#42."}]
-        links = [{"number": 11, "title": "Another repo", "repository": {"nameWithOwner": "elsewhere/project"}}]
+        links = [{"number": 11, "title": "Another repo", "state": "OPEN", "repository": {"nameWithOwner": "elsewhere/project"}}]
         with self.world(prs=prs, linked=links):
             rc, out, err = self.prep("t42", "--base", "main")
         self.assertEqual(rc, 0, out + err)
@@ -411,16 +412,50 @@ class Prep(WaveDirCase):
             self.assertIn(f"WAVE PREP NOTE t42: open PR #{pr} mentions issue number #42", out)
         self.assertIn("WAVE PREP t42: ready:", out)
 
+    def test_same_sentence_prose_mention_does_not_compete(self) -> None:
+        prs = [{"number": 7, "title": "Sibling", "body": "Closes o/up#99 (sibling o/up#42 shares argv)"},
+               {"number": 8, "title": "Other sibling", "body": "Fixes o/up#98; the change in o/up#42 lands separately"}]
+        with self.world(prs=prs):
+            rc, out, err = self.prep("t42", "--base", "main")
+        self.assertEqual(rc, 0, out + err)
+        for pr in (7, 8):
+            self.assertIn(f"WAVE PREP NOTE t42: open PR #{pr} mentions issue number #42", out)
+        self.assertIn("WAVE PREP t42: ready:", out)
+
+    def test_each_closing_keyword_binds_its_own_reference(self) -> None:
+        for body in ("Fixes o/up#99 and closes o/up#42", "This fix closes o/up#42"):
+            prs = [{"number": 7, "title": "Fix", "body": body}]
+            with self.subTest(body=body), self.world(prs=prs):
+                rc, out, err = self.prep("t42", "--base", "main")
+                self.assertEqual(rc, 1, out + err)
+                self.assertIn("WAVE PREP REFUSED t42: open rival PR(s) #7 ", out)
+                self.assert_made_nothing(out)
+
     def test_linked_pr_without_a_search_hit_refuses(self) -> None:
-        links = [{"number": 9, "title": "Independent title", "repository": {"nameWithOwner": "O/STAGING"}}]
+        links = [{"number": 9, "title": "Independent title", "state": "OPEN", "repository": {"nameWithOwner": "O/STAGING"}}]
         with self.world(linked=links):
             rc, out, err = self.prep("t42", "--base", "main")
         self.assertEqual(rc, 1, out + err)
         self.assertIn("WAVE PREP REFUSED t42: open rival PR(s) #9 ", out)
         self.assert_made_nothing(out)
 
+    def test_merged_closing_link_leaves_prep_ready(self) -> None:
+        link = {"number": 9, "title": "Old fix", "state": "MERGED", "repository": {"nameWithOwner": "o/staging"}}
+        with self.world(linked=[link]):
+            rc, out, err = self.prep("t42", "--base", "main")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("WAVE PREP t42: ready:", out)
+
+    def test_linked_pr_without_a_state_is_unknown(self) -> None:
+        links = [{"number": 9, "title": "Independent title", "repository": {"nameWithOwner": "o/staging"}}]
+        with self.world(linked=links):
+            rc, out, err = self.prep("t42", "--base", "main")
+        self.assertEqual(rc, 4, out + err)
+        self.assertIn("lacks its PR state", out)
+        self.assert_made_nothing(out)
+
     def test_linked_pr_without_a_repository_is_unknown(self) -> None:
-        with self.world(linked=[{"number": 9, "title": "Independent title", "repository": None}]):
+        with self.world(linked=[{"number": 9, "title": "Independent title", "state": "OPEN", "repository": None}]):
             rc, out, err = self.prep("t42", "--base", "main")
         self.assertEqual(rc, 4, out + err)
         self.assertIn("lacks its PR repository", out)

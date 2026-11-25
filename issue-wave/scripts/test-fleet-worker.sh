@@ -7174,8 +7174,10 @@ expect "prep refuses a PR with a closing keyword" 1 "^WAVE PREP REFUSED t78: ope
 [ ! -e "$proj-worktrees/wk-78" ] && ok "...before the worktree" || ko "a refused prep made the worktree"
 grep -q -- "--head claude/wk-78 " "$SHIM_GH_PR_LIST.calls" && grep -q -- "--search 78 " "$SHIM_GH_PR_LIST.calls" &&
   ok "...after reading the open PRs by head branch and by number" || ko "pr list calls: $(cat "$SHIM_GH_PR_LIST.calls")"
-printf '%s\n' '[{"number":6,"title":"Rival","body":"","headRefName":"claude/wk-78"}]' > "$SHIM_GH_PR_LIST"
+printf '%s\n' '[{"number":6,"title":"Rival work","body":"","headRefName":"claude/wk-78"}]' > "$SHIM_GH_PR_LIST"
 expect "prep refuses a PR on the task branch" 1 "^WAVE PREP REFUSED t78: open rival PR(s) #6 Rival" -- "${FWK[@]}" wave prep "$K/wave.json" t78 --base master
+grep -Fq "open rival PR(s) #6 $(printf '%q' 'Rival work') -- " <<<"$out" &&
+  ok "...with the title shell-quoted" || ko "unquoted rival title: $out"
 printf '%s\n' '[{"number":7,"title":"Sibling","body":"Issue #78 may change shared arguments.","headRefName":"sibling"}]' > "$SHIM_GH_PR_LIST"
 expect "prep notes a sibling PR that mentions the issue in prose" 0 "^WAVE PREP NOTE t78: open PR #7 mentions " -- "${FWK[@]}" wave prep "$K/wave.json" t78 --base master
 grep -q "^WAVE PREP t78: ready:" <<<"$out" && ok "...and prep goes on" || ko "prep did not make t78 ready: $out"
