@@ -42,6 +42,10 @@
 # The destination is $CLAUDE_SCHEDULED_TASKS_DIR when set, which is what the fixture suite
 # scripts/test-sync-routines.sh points at scratch trees; otherwise ~/.claude/scheduled-tasks.
 #
+# Only status allows a missing final LF in the top-level SKILL.md on either side, provided
+# all other bytes and paths agree. Additional blank lines and companion files compare exactly,
+# as do both copying modes. Prompt validation still runs before the comparison.
+#
 # Registration is separate: the desktop app's registry (cron, working directory, model) is
 # not a file in this repository. Register a task with the `schedule` tool first -- it writes
 # a placeholder SKILL.md -- then `sync-routines.sh push` over it.
@@ -348,6 +352,16 @@ publish_checked() {
   return 0
 }
 
+# A line terminator can be restored by appending one byte. If the shorter file already ends
+# in LF, appending another would add a blank line instead. Keep pipefail on the comparison
+# so a failed read cannot pass as a truncated prompt.
+equals_with_final_lf() {
+  local last_byte
+  { cat "$1" && printf '\n'; } | cmp -s - "$2" || return 1
+  last_byte=$(tail -c 1 "$1" | od -An -tu1) || return 1
+  [ "$last_byte" -ne 10 ]
+}
+
 # is_under <child> <parent>: is <child> strictly inside <parent>? The filesystem root is the case
 # that makes a naive prefix test wrong -- "/" plus "/" is "//", which matches no ordinary path, so
 # a destination of "/" read as disjoint from everything and the guard below let it through.
@@ -574,6 +588,16 @@ for r in $LOCAL_ROUTINES; do
 
   case "$mode" in
     status)
+      # Accept only the complete report reproduced by comparing the two top-level prompts.
+      # Let diff format the paths in both reports, including names containing newlines.
+      prompt_diff_rc=0
+      prompt_report=$(diff -q "$src/SKILL.md" "$dst/SKILL.md" 2>&1) || prompt_diff_rc=$?
+      if [ "$prompt_diff_rc" -eq 1 ] && [ -n "$prompt_report" ] && [ "$diff_report" = "$prompt_report" ] \
+        && { equals_with_final_lf "$src/SKILL.md" "$dst/SKILL.md" \
+          || equals_with_final_lf "$dst/SKILL.md" "$src/SKILL.md"; }; then
+        say "$r: in sync (final newline differs)"
+        continue
+      fi
       say "$r: DRIFT"
       diff -r -u "$src" "$dst" 2>&1 | sed 's/^/    /' || true
       drift=1
