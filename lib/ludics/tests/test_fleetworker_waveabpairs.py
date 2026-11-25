@@ -341,6 +341,67 @@ class TestScrubAndSides(unittest.TestCase):
         self.assertIn("[this-pr]", payload.task_md)
         self.assertIn("/999", payload.task_md)
 
+    def test_self_ref_right_boundary_preserves_hex_and_identifiers(self) -> None:
+        cand = waveabpairs.Candidate(
+            wave="w-1",
+            task="t10",
+            tier="D2",
+            group="D2",
+            arm_label="cli/codex gpt-6.2-sol/high",
+            arm_kind="codex",
+            arm_model="gpt-6.2-sol/high",
+            agent_host="mac-studio",
+            repository="fork/proj",
+            pr=20,
+            merge=None,
+            issue_ref="upstream/proj#10",
+            issue_repo="upstream/proj",
+            issue_number=10,
+            launched_at="2026-11-24T10:00:00Z",
+            task_dict={},
+        )
+        diff_hunk = (
+            "diff --git a/ui/theme.css b/ui/theme.css\n"
+            "@@ -1,4 +1,12 @@\n"
+            "+/* Fix #10 (#10) see #10. note #10: follow-up #20 (#20) #20. #20: */\n"
+            "+.a { color: #10abc; border-color: #20def; }\n"
+            "+/* keep #10_flag #20_flag #100 #200 */\n"
+            "+/* keep upstream/proj#10abc fork/proj#20abc proj#10_sec proj#20_sec */\n"
+            "+/* keep https://github.com/upstream/proj/issues/10abc https://github.com/fork/proj/pull/20_wip */\n"
+            "+/* redact upstream/proj#10, fork/proj#20: proj#10. (proj#20) */\n"
+            "+/* redact https://github.com/upstream/proj/issues/10. https://github.com/upstream/proj/issues/10#issuecomment-7 and https://github.com/fork/proj/pull/20/files */\n"
+        )
+        expected = (
+            "diff --git a/ui/theme.css b/ui/theme.css\n"
+            "@@ -1,4 +1,12 @@\n"
+            "+/* Fix [this-issue] ([this-issue]) see [this-issue]. note [this-issue]: follow-up [this-pr] ([this-pr]) [this-pr]. [this-pr]: */\n"
+            "+.a { color: #10abc; border-color: #20def; }\n"
+            "+/* keep #10_flag #20_flag #100 #200 */\n"
+            "+/* keep upstream/proj#10abc fork/proj#20abc proj#10_sec proj#20_sec */\n"
+            "+/* keep https://github.com/upstream/proj/issues/10abc https://github.com/fork/proj/pull/20_wip */\n"
+            "+/* redact [this-issue], [this-pr]: [this-issue]. ([this-pr]) */\n"
+            "+/* redact [this-issue]. [this-issue] and [this-pr] */\n"
+        )
+        scrubbed, hits = waveabpairs.scrub_self_references(diff_hunk, cand)
+        self.assertEqual(scrubbed, expected)
+        self.assertEqual(hits, 15)
+
+        # Markdown closing emphasis delimiters (_..._, __...__) still redact while
+        # identifier continuations (#10_flag, #10__foo) stay untouched.
+        prose = (
+            "_tracked in #10_ and __see #20__.\n"
+            "_ref proj#10_ and _see upstream/proj#10_ and _link https://github.com/upstream/proj/issues/10_.\n"
+            "keep #10_flag and #10__foo intact.\n"
+        )
+        expected_prose = (
+            "_tracked in [this-issue]_ and __see [this-pr]__.\n"
+            "_ref [this-issue]_ and _see [this-issue]_ and _link [this-issue]_.\n"
+            "keep #10_flag and #10__foo intact.\n"
+        )
+        scrubbed_prose, prose_hits = waveabpairs.scrub_self_references(prose, cand)
+        self.assertEqual(scrubbed_prose, expected_prose)
+        self.assertEqual(prose_hits, 5)
+
     def test_balanced_sides_and_seed_determinism(self) -> None:
         o1, f1 = waveabpairs.assign_sides(15, 20261125)
         o2, f2 = waveabpairs.assign_sides(15, 20261125)
