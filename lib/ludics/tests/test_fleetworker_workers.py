@@ -522,13 +522,16 @@ class SlotsReport(unittest.TestCase):
 class GeminiTokenReport(unittest.TestCase):
     NOW = datetime(2026, 11, 25, 16, 0, 0, tzinfo=timezone.utc)
 
-    def run_probe(self, home: Path, *, shell: str = "/bin/bash") -> subprocess.CompletedProcess[str]:
+    def run_probe(self, home: Path, *, shell: str = "/bin/bash", path: str | None = None) -> subprocess.CompletedProcess[str]:
+        env = {**os.environ, "HOME": str(home)}
+        if path is not None:
+            env["PATH"] = path
         return subprocess.run(
             [shell, "-s"],
             input=preflight.GEMINI_TOKEN_PROBE,
             text=True,
             capture_output=True,
-            env={**os.environ, "HOME": str(home)},
+            env=env,
             check=False,
         )
 
@@ -552,6 +555,7 @@ class GeminiTokenReport(unittest.TestCase):
     def test_missing_or_unusable_token_file_reports_lifetime_unknown(self) -> None:
         self.assertIsNone(preflight.parse_gemini_expiry("0001-01-01T00:00:00Z"))
         self.assertIsNone(preflight.parse_gemini_expiry("2026-02-30T00:00:00Z"))
+        self.assertIsNone(preflight.parse_gemini_expiry("9999-12-31T23:59:59-01:00"))
         self.assertIsNone(preflight.parse_gemini_expiry("not-a-timestamp"))
         for probe_out, needle in (
             ("absent\n", "no SSH token file"),
@@ -561,6 +565,7 @@ class GeminiTokenReport(unittest.TestCase):
             ("no-expiry\n", "states no expiry"),
             ("expiry 0001-01-01T00:00:00Z\n", "states no valid expiry"),
             ("expiry 2026-02-30T00:00:00Z\n", "states no valid expiry"),
+            ("expiry 9999-12-31T23:59:59-01:00\n", "states no valid expiry"),
             ("unexpected\n", "could not inspect"),
             ("", "could not inspect"),
         ):
@@ -578,6 +583,14 @@ class GeminiTokenReport(unittest.TestCase):
             self.assertEqual(res.stdout.strip(), "absent")
 
             token.parent.mkdir(parents=True)
+            token.write_text("{}\n")
+            res = self.run_probe(home, path=tmp)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(res.stdout.strip(), "no-jq")
+
+            if shutil.which("jq") is None:
+                self.skipTest("jq not on PATH")
+
             token.write_text(
                 json.dumps({
                     "token": {
@@ -597,6 +610,14 @@ class GeminiTokenReport(unittest.TestCase):
             res = self.run_probe(home)
             self.assertEqual(res.stdout.strip(), "expiry 2026-11-25T18:00:00Z")
             self.assertNotIn("SECRET", res.stdout + res.stderr)
+
+            token.write_text(
+                json.dumps({"token": {"expiry": "2026-11-25T18:00:00Z"}})
+                + "\n"
+                + json.dumps({"token": {"expiry": "2026-11-25T19:00:00Z"}})
+            )
+            res = self.run_probe(home)
+            self.assertEqual(res.stdout.strip(), "invalid")
 
             token.write_text(json.dumps({"token": {"access_token": "SECRET-NOEXP", "expiry": "SECRET-NOT-A-DATE"}}))
             res = self.run_probe(home)

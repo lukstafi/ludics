@@ -286,15 +286,18 @@ elif [ ! -f "$f" ] || [ ! -r "$f" ]; then
   printf '%s\n' unreadable
 elif ! command -v jq >/dev/null 2>&1; then
   printf '%s\n' no-jq
-elif ! jq -e 'type == "object"' "$f" >/dev/null 2>&1; then
-  printf '%s\n' invalid
 else
-  exp=$(jq -er '((if (.token | type) == "object" then .token.expiry else null end) // .expiry) | select(type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?([Zz]|[+-][0-9]{2}:[0-9]{2})$"))' "$f" 2>/dev/null)
-  if [ -n "$exp" ]; then
-    printf 'expiry %s\n' "$exp"
-  else
-    printf '%s\n' no-expiry
-  fi
+  jq -sr '
+    if length != 1 or (.[0] | type) != "object" then "invalid"
+    else
+      .[0]
+      | ((if (.token | type) == "object" then .token.expiry else null end) // .expiry)
+      | if type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?([Zz]|[+-][0-9]{2}:[0-9]{2})$")
+        then "expiry " + .
+        else "no-expiry"
+        end
+    end
+  ' "$f" 2>/dev/null || printf '%s\n' invalid
 fi
 """
 
@@ -309,11 +312,11 @@ def parse_gemini_expiry(raw: str) -> datetime | None:
         tz = "+00:00"
     try:
         dt = datetime.fromisoformat(f"{base}{tz}")
-    except ValueError:
+        if dt.tzinfo is None or dt.year <= 1970:
+            return None
+        return dt.astimezone(timezone.utc)
+    except (ValueError, OverflowError):
         return None
-    if dt.tzinfo is None or dt.year <= 1970:
-        return None
-    return dt.astimezone(timezone.utc)
 
 
 def format_duration(seconds: int) -> str:
