@@ -26,12 +26,28 @@ review round:
   passed; then the call, bound to the gated head (``--match-head-commit``), and the merged state confirmed
   over REST, with the head it merged at (``confirm``, ludics#823).
 
-After a merge write, a gate refusal during the shared pre-merge reads checks REST's ``merged``
-field. This also covers a build that went stale before a gateway resend. A confirmed landing goes
-to the same head check without another write, using the original gated SHA even if an ABSENT
-re-gate read a successor. On ``merged: false`` the gate's refusal stands. An unanswered probe leaves
-the landing unknown (exit 3): another caller could have merged, or a forwarded
-``--delete-branch`` could have failed its cleanup with the gateway's text after landing.
+POST-WRITE LANDING CONFIRMATION -- the recovery boundary (#1289, #1340). Once a first ``gh pr merge``
+write has been sent (an outer retry or a gateway-backoff resend), any pre-write exit with status in
+(1, 3, 4, 5) probes REST's ``.merged`` field before refusing:
+  - any refusal during ``pre_merge_reads`` (including a stale build before a gateway resend);
+  - the ABSENT retry limit (``attempt >= 3`` after a moved base re-gates);
+  - a build refresh failure or refresh-limit refusal (``refresh_build``, ``refuse_stale_build``);
+  - a dispatch-time lease refusal (``lease.require_current`` before announcing or in
+    ``before_dispatch`` after the polling budget gate, on either an outer retry or a resend).
+On ``merged: true``, control goes to ``confirm`` without another merge write, judging the original
+gated head frozen after ``judge()`` (even if an ABSENT re-gate read a successor). On
+``merged: false``, the original refusal stands unchanged. An unanswered or non-boolean probe leaves
+the landing unknown (exit 3), quoting the refusal: another caller could have merged, or a forwarded
+``--delete-branch`` could have failed its cleanup with a gateway's text after landing.
+
+Exits outside this boundary NEVER probe REST ``.merged``:
+  - any refusal before the first merge write is dispatched (initial gate, initial build, lease
+    acquisition, first-attempt pre-merge reads, initial refreshes, and first-attempt dispatch);
+  - usage/configuration errors (exit 2) and signal terminations (128+n);
+  - direct answers of ``gh pr merge`` itself (recognized ``_MERGE_REFUSALS`` such as base/head moves
+    and ``recheck-mergeable`` exits, or ambiguous/quota failures which already exit 3 asking the
+    caller to confirm over REST);
+  - ``confirm`` itself and post-call lease release.
 
 MERGE LEASE (#1269). ``lease fleet`` with ``trigger always`` in the default-branch merge-build
 config makes upgraded callers sharing the same fleet anchor and state directory serialize per
@@ -1321,49 +1337,65 @@ class Merge:
         attempt = 1
         refreshes = 0
         override_base = build.base_sha if build is not None and opts.override else None
-        before_dispatch = lease.require_current if lease is not None else None
         sent_build: BuildVerdict | None = None
         write_attempted = False
         while True:
             try:
                 base_holds, tip = self.pre_merge_reads(build, lease, resend=False)
+                if not base_holds:
+                    if attempt >= 3:
+                        fail(
+                            1,
+                            f"NOT merged: {repo}#{pr}'s base kept moving under its ABSENT",
+                            f"verdict ({attempt} gate reads). Re-run merge.",
+                        )
+                    attempt += 1
+                    continue
+                if tip is not None:
+                    assert build is not None
+                    if refreshes >= _MAX_BUILD_REFRESHES:
+                        self.refuse_stale_build(
+                            build, tip, f"after refreshing the merge build {_MAX_BUILD_REFRESHES} times (refresh limit)"
+                        )
+                    warn(f"{repo}#{pr}'s base moved since its merge build ({build.base_sha} -> {tip}); rebuilding")
+                    build = refresh_build(
+                        repo, pr, build, tip, checkout=opts.checkout, ceiling=ceiling, prior_override_base=override_base,
+                        require_disjoint=refreshes > 0,
+                    )
+                    refreshes += 1
+                    continue
+                if lease is not None:
+                    lease.require_current()
             except cli.Exit as refusal:
                 if write_attempted:
                     self.check_landing_after_refusal(refusal, resend=False)
                 raise
-            if not base_holds:
-                if attempt >= 3:
-                    fail(
-                        1,
-                        f"NOT merged: {repo}#{pr}'s base kept moving under its ABSENT",
-                        f"verdict ({attempt} gate reads). Re-run merge.",
-                    )
-                attempt += 1
-                continue
-            if tip is not None:
-                assert build is not None
-                if refreshes >= _MAX_BUILD_REFRESHES:
-                    self.refuse_stale_build(build, tip, f"after refreshing the merge build {_MAX_BUILD_REFRESHES} times (refresh limit)")
-                warn(f"{repo}#{pr}'s base moved since its merge build ({build.base_sha} -> {tip}); rebuilding")
-                build = refresh_build(
-                    repo, pr, build, tip, checkout=opts.checkout, ceiling=ceiling, prior_override_base=override_base,
-                    require_disjoint=refreshes > 0,
-                )
-                refreshes += 1
-                continue
-            if lease is not None:
-                lease.require_current()
             self.announce(build.shared_failure if build is not None and build is not sent_build else None)
             sent_build = build
-            before_retry = partial(self.before_resend, build, lease)
+            resending = False
+
+            def before_retry(active_build: BuildVerdict | None = build) -> None:
+                nonlocal resending
+                resending = True
+                self.before_resend(active_build, lease)
+
+            def before_dispatch(active_lease: MergeLease) -> None:
+                try:
+                    active_lease.require_current()
+                except cli.Exit as refusal:
+                    if write_attempted or resending:
+                        self.check_landing_after_refusal(refusal, resend=resending)
+                    raise
+
+            dispatch_check = partial(before_dispatch, lease) if lease is not None else None
             args = ["pr", "merge", pr, "--repo", repo, "--match-head-commit", gate.check_sha, *opts.gh_args]
             if opts.forwarded:
                 # Still this script's own call, so the polling budget gates it.
                 result = self.session.retry_caller(
-                    "write", args, listed=False, budgeted=True, before_retry=before_retry, before_dispatch=before_dispatch,
+                    "write", args, listed=False, budgeted=True, before_retry=before_retry, before_dispatch=dispatch_check,
                 )
             else:
-                result = self.session.retry("write", args, before_retry=before_retry, before_dispatch=before_dispatch)
+                result = self.session.retry("write", args, before_retry=before_retry, before_dispatch=dispatch_check)
             write_attempted = True
             match result:
                 case GhOk(stdout=out):
