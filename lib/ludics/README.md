@@ -935,6 +935,13 @@ dispatch inheritance and the not-launched exception. The new Drive and registry 
 
 Agent notes (wave-20261125-ludics, t1345): Driver startup retries busy non-blocking flocks for 50 ms. Plain heartbeat carries forward any saved loop liveness sample. Until-attention checks loops last seen stopped before its first sleep. The wave fixtures hold the real shared probe across startup and verify that the original code refuses both verbs.
 
+Agent notes (wave-20261125-ludics, t1357): `wavedrive.py`'s THE MARKERS defines the fenced and
+quoted forms excluded from the driver. The Gemini re-prompt spends one attempt per worker session
+before unstick. An interrupted attempt on the same returned turn goes to coordinator attention.
+The worker's request block supplies its own `purpose`. The wave and assign fixtures exercise
+these paths, and removing the Gemini first-line sentence alone exercises its own prompt pin.
+All six regression tests fail with the production code at base `82b50835`.
+
 Agent notes (wave-20261117-ludics, t1190): `wavedrive.py`'s exact
 `WINDOWS_WITNESS_REQUEST` marker goes directly to attention without parsing its payload or
 calling assign. `test_fleetworker_wave.py` drives the first tick and repeat ticks, rejects mixed

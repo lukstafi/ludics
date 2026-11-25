@@ -4156,7 +4156,7 @@ as_base() { # <transport> -> the coordinator's completion of every request
 }
 as_block() { # <id> <host> <kind> <revision> [jq object merged in] -> one request block's JSON
   jq -c -n --arg id "$1" --arg host "$2" --arg kind "$3" --arg rev "$4" --argjson more "${5:-"{}"}" \
-    '{request_id:$id, execution_host:$host, kind:$kind, requested_revision:$rev, log:"-"} + $more'
+    '{request_id:$id, execution_host:$host, kind:$kind, requested_revision:$rev, purpose:"assign block fixture", log:"-"} + $more'
 }
 as_msg() { # <name> <block JSON>... -> a worker's final message carrying the blocks, as a file
   local f="$TMP/as-$1.txt" b; shift
@@ -4262,6 +4262,8 @@ as_run "$(as_base subagent)" "$(as_msg full "$(as_block as-fill other correctnes
   [ -z "$(state_as as-busy)" ] && ok "a full box retains the retryable refusal status" ||
   ko "capacity outcome (rc=$rc): $msg -- $said"
 # The boundary: a malformed block refuses the whole call before the registry is asked.
+expect "an assignment needs the worker's purpose even if the base has one" 2 'block 1 (as-no-purpose) must give purpose, a nonempty string' -- \
+  "${FWA[@]}" execution assign "$(as_base subagent)" "$(as_msg no-purpose "$(as_block as-no-purpose testbox correctness "$asha" '{"command":"true"}' | jq -c 'del(.purpose)')")"
 expect "a block naming a field outside the allowlist refuses the call, nothing assigned" 2 "block 2 (as-8) names standing" -- \
   "${FWA[@]}" execution assign "$(as_base subagent)" "$(as_msg bad "$(as_block as-7 testbox correctness "$asha" '{"command":"true"}')" \
     "$(as_block as-8 testbox correctness "$asha" '{"command":"true","standing":true}')")"
@@ -5027,7 +5029,7 @@ lassign() { # <id> <JSON argv> <extra request fields>
     printf '%s\n' EXECUTION_REQUEST
     jq -cn --arg id "$1" --argjson runner "$2" --argjson extra "$3" --arg clone "$lco" \
       --arg checkout "$TMP/$1" --arg rev "$lpin" '{request_id:$id, execution_host:"testbox",
-        kind:"correctness", requested_revision:$rev, clone:$clone, checkout:$checkout, runner:$runner} + $extra'
+        kind:"correctness", requested_revision:$rev, purpose:"leg options fixture", clone:$clone, checkout:$checkout, runner:$runner} + $extra'
     printf '%s\n' END_EXECUTION_REQUEST
   } > "$TMP/leg-assign-request.txt"
   "${FWL[@]}" execution assign "$TMP/leg-assign-base.json" "$TMP/leg-assign-request.txt"
@@ -7345,14 +7347,15 @@ jq '.profiles.neon = {transport:"cli", kind:"gemini"}' "$K/wave.json" > "$K/wave
 printf '# Task @@T@@\n' > "$K/tasks/t88.md"
 printf '# Task @@T@@\n' > "$K/tasks/t89.md"
 printf 'Waiting for `dune fmt` (`task-360`) to finish.\nCodex approved PR #2266 (`8ef3a0f9b`). Waiting for CI.\n' > "$K/agy-progress"
-printf 'HANDBACK t88\nMerged https://github.com/example/project/pull/16. Nothing to propose.\n' > "$K/agy-say"
+printf '%s\n' 'HANDBACK t88' '```text' 'EXECUTION_RESULT {"request_id":"old"}' '```' \
+  '> EXECUTION_REQUEST' 'Merged https://github.com/example/project/pull/16. Nothing to propose.' > "$K/agy-say"
 export SHIM_AGY_PROGRESS="$K/agy-progress" SHIM_AGY_SAY="$K/agy-say"
 jq -n '{capacity:{testbox:1}, tasks:[{task:"t88", profile:"neon", host:"testbox"}]}' > "$K/queue.json"
 expect "wave drive launches a queued gemini task" 0 "^DRIVE t88 launch: launch answered: WAVE LAUNCH t88: launched testbox/wk-88 " -- \
   "${FWD[@]}" wave drive "$K/wave.json" --once
 "$FW" attach testbox wk-88 --interval 1 >/dev/null 2>&1
 jq -n --arg m "$(printf 'd%.0s' $(seq 40))" '{number:16, state:"MERGED", headRefName:"gemini/wk-88", mergeCommit:{oid:$m}}' > "$K/pr-view.json"
-expect "a gemini hand-back after reactive-wakeup progress steps is closed by wave drive" 0 \
+expect "a gemini hand-back with quoted markers after reactive-wakeup progress steps closes" 0 \
   '^DRIVE t88 turn 0: handback answered: BOARD CLOSE wkv: "t88" merged example/project#16 at dddddddddddd; 1 standing concluded, 0 already; row set' -- \
   "${FWD[@]}" wave drive "$K/wave.json" --once
 [ "$(head -n 1 "$K/handbacks/t88.md")" = "HANDBACK t88" ] && ! grep -q "Waiting for" "$K/handbacks/t88.md" &&
@@ -7382,6 +7385,16 @@ setup_step "could not resume wk-89 for earlier EXECUTION_RESULT (setup)" "$FW" u
 "$FW" attach testbox wk-89 --interval 1 >/dev/null 2>&1
 expect "an EXECUTION_RESULT in an earlier gemini step before HANDBACK stays attention" 0 \
   "^DRIVE ATTENTION t89 turn 3: a final message with more than one marker: result, handback" -- "${FWD[@]}" wave drive "$K/wave.json" --once
+printf 'Waiting for the assigned checks.\n' > "$K/agy-progress"
+printf 'Checks completed and the PR merged.\n' > "$K/agy-say"
+setup_step "could not resume wk-89 for the marker-less final (setup)" "$FW" unstick testbox wk-89 --message "$K/retry-msg.md"
+"$FW" attach testbox wk-89 --interval 1 >/dev/null 2>&1
+expect "a marker-less Gemini final is re-prompted once" 0 \
+  '^DRIVE t89 turn 4: reprompt answered: asked for the same final message with a marker first' -- "${FWD[@]}" wave drive "$K/wave.json" --once
+"$FW" attach testbox wk-89 --interval 1 >/dev/null 2>&1
+expect "a fresh driver leaves the second marker-less Gemini final to the coordinator" 0 \
+  '^DRIVE ATTENTION t89 turn 5: no marker this driver answers;' -- "${FWD[@]}" wave drive "$K/wave.json" --once
+expect "another fresh driver leaves the attended final alone" 0 '^$' -- "${FWD[@]}" wave drive "$K/wave.json" --once
 setup_step "could not close t89's row (setup)" "${FWK[@]}" board set wkv t89 state=dropped
 "$FW" close testbox wk-89 >/dev/null 2>&1
 fixture_done wkv-t89-testbox-iterate

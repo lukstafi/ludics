@@ -34,7 +34,8 @@ BASE = {"wave": "w", "worker": "/root/w", "transport": "subagent", "agent_host":
 
 
 def block(request_id: str, host: str = "rog", kind: str = "correctness", **fields: Any) -> dict[str, Any]:
-    out: dict[str, Any] = {"request_id": request_id, "execution_host": host, "kind": kind, "requested_revision": SHA}
+    out: dict[str, Any] = {"request_id": request_id, "execution_host": host, "kind": kind, "requested_revision": SHA,
+                           "purpose": "fixture request"}
     if "runner" not in fields and "command" not in fields:
         out["command"] = "tools/test-run.sh run"
     out.update(fields)
@@ -746,10 +747,16 @@ sys.exit(rc)
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(cli.Exit) as caught:
             self.assign([self.base, requests, "--request", "nope"], {})
         self.assertIn("--request nope names no block", caught.exception.message)
-        aimless = self.write("aimless.json", json.dumps({k: v for k, v in BASE.items() if k != "purpose"}))
+        self.assertEqual(self.calls, [])
+
+    def test_t1357_assign_requires_a_worker_purpose_even_with_a_base_purpose(self) -> None:
+        request = block("a")
+        del request["purpose"]
+        requests = self.write("aimless.txt", message(request))
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(cli.Exit) as caught:
-            self.assign([aimless, requests], {})
-        self.assertIn("a has no purpose, and the base gives none", caught.exception.message)
+            self.assign([self.base, requests], {"a": StepResult(0, "{}")})
+        self.assertEqual(caught.exception.rc, 2)
+        self.assertIn("block 1 (a) must give purpose, a nonempty string", caught.exception.message)
         self.assertEqual(self.calls, [])
 
     def test_an_unreadable_registry_asks_nothing(self) -> None:

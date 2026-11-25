@@ -61,8 +61,14 @@ terminal event, a failed turn), the states ``ORPHANED``, ``VANISHED`` and ``UNKN
 with no final message are attention. A box that does not answer, and a status line this driver cannot read, are tried again
 next tick and recorded nowhere: only a state the worker is really in ends a turn's reading.
 
-THE MARKERS, a fail-closed allowlist over the final message's non-blank lines. Exactly one of these
-holds, or the turn is attention:
+THE MARKERS, a fail-closed allowlist over the final message's non-blank lines. The closed list
+of block forms excluded from marker reading is: explicit `>`-prefixed lines, backtick fences and
+tilde fences, each with up to three leading spaces. A fence opens with at least three matching
+characters and optional info (without backticks for a backtick fence), and ends at a fence of
+the same character and at least the opening length with only trailing whitespace, or at EOF.
+List-relative and indented code, lazy quote continuations, inline spans and HTML get no special
+handling. The first and last positions still refer to the original message. Exactly one of these
+forms holds, or the turn goes to the re-prompt or attention path:
   windows   a line that is exactly ``WINDOWS_WITNESS_REQUEST`` (coordinator attention,
             never assigned; its payload is kept verbatim, not parsed or executed)
   request   a line that is exactly ``EXECUTION_REQUEST``
@@ -73,17 +79,25 @@ holds, or the turn is attention:
   confirm   the last line is ``CONFIRM_REQUEST <pr> <40-hex sha>``
   handback  the first line starts with ``HANDBACK``
 Two of them in one message (including a later ``HANDBACK`` line beside another marker or an earlier
-``REVIEW_REQUEST``/``CONFIRM_REQUEST``), or none (``NEEDS_DESIGN``, ``PLAN_READY``, a question, a
-status), is attention, named by the last line's first word. A paired worker's PLAN ENVELOPE is read first: a
+``REVIEW_REQUEST``/``CONFIRM_REQUEST``) is attention. Unrecognised messages are named by the last
+line's first word. A paired worker's PLAN ENVELOPE is read first: a
 message with a line that is exactly ``PLAN_READY`` and a later one exactly ``END_PLAN_READY`` is
 attention as a plan, whatever lines it holds, since a plan's Verification section may quote a
 marker (an ``EXECUTION_REQUEST`` example) that is no request.
+
+  re-prompt a Gemini final with no recognised or misplaced marker gets one automatic request
+            to resend, per worker session. Explicit coordinator handoffs (``NEEDS_DESIGN``,
+            ``PENDING``, ``EXECUTION_REBIND``) and malformed markers still go to attention. The driver
+            persists the attempt before calling unstick. If interrupted before it records an
+            outcome and the same turn is still returned, it raises attention for reconciliation.
+            A later marker-less final in that session goes to attention.
 
 THE ANSWERS:
   windows   attention immediately, once per returned turn, naming the saved request. The
             coordinator follows executions.md, Bounded native Windows verification.
   request   ``execution assign <reserve/<task>-base.json> <message> --message <file> --unstick <box>
             <worker> --status <file>``: it reserves, dispatches and resumes in one call, and its
+            input omits the excluded blocks above while the saved final remains whole. Its
             status file (assign.py, THE STATUS; removed before the call, unread when that removal
             fails, and read only when its ``exit`` is the call's) says what its unstick did.
             Exit ``LEASE_LOST_STATUS`` (6) ends the driver. All lease-gated verbs now report loss
@@ -146,7 +160,7 @@ THE ANSWERS:
             if already posted. Every other unsuccessful end is attention. ``--again`` is passed
             when the ledger holds an answered review of the same PR, kind and head in an earlier
             turn: a new request from the worker is a new round (wavereview.py).
-  handback  the PR is the row's ``pr``, else the first ``/pull/<n>`` in the message. The message
+  handback  the PR is the row's ``pr``, else the first ``/pull/<n>`` outside the excluded blocks. The message
             is saved as ``handbacks/<task>.md`` and the task closed with ``board close``, which
             verifies the merge on GitHub itself. Without a PR, each exact ``RUN /absolute/path``
             line supplies a repeated ``--run`` to ``board close --no-pr``; no such line is attention.
@@ -315,7 +329,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, cast
 
@@ -377,6 +391,9 @@ MARKER_TOKENS = (
     "PLAN_READY", "END_PLAN_READY", "WINDOWS_WITNESS_REQUEST",
     "EXECUTION_REQUEST", "EXECUTION_RESULT", "REVIEW_REQUEST", "CONFIRM_REQUEST", "HANDBACK",
 )
+COORDINATOR_TOKENS = ("NEEDS_DESIGN", "PENDING", "EXECUTION_REBIND")
+MARKER_FENCE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)")
+MARKER_QUOTE = re.compile(r" {0,3}>")
 PULL = re.compile(r"/pull/([1-9][0-9]*)")
 SHA40 = re.compile(r"[0-9a-f]{40}")
 REF = re.compile(r"[^#\s]+#([1-9][0-9]*)")
@@ -557,20 +574,45 @@ class Turn:
     pr: str = ""
     sha: str = ""
     results: tuple[str, ...] = ()
+    markerless: bool = False
+    request_text: str = ""  # the assign input when it differs from the saved final
+
+
+def marker_lines(message: str) -> Iterator[str | None]:
+    """THE MARKERS (the header). Keep line positions when excluding a block."""
+    fence = ""
+    for line in message.split("\n"):
+        boundary = MARKER_FENCE.fullmatch(line)
+        if fence:
+            if boundary and boundary[1].startswith(fence) and not boundary[2].strip(" \t\r"):
+                fence = ""
+            yield None
+        elif boundary and (boundary[1][0] == "~" or "`" not in boundary[2]):
+            fence = boundary[1]
+            yield None
+        elif MARKER_QUOTE.match(line):
+            yield None
+        else:
+            yield line
 
 
 def classify(message: str) -> Turn:
     """THE MARKERS (the header)."""
-    lines = [line.strip() for line in message.split("\n") if line.strip()]
-    if not lines:
+    original = [line for line in message.split("\n") if line.strip()]
+    if not original:
         return Turn("other", "an empty final message")
+    marked = list(marker_lines(message))
+    positioned = [line.strip() if line is not None else None for line in marked]
+    positioned = [line for line in positioned if line != ""]
+    lines = [line for line in positioned if line is not None]
     if "PLAN_READY" in lines and "END_PLAN_READY" in lines[lines.index("PLAN_READY"):]:
         return Turn("other", "a PLAN_READY plan, the coordinator's (paired-planning.md)")
     found: list[Turn] = []
     if "WINDOWS_WITNESS_REQUEST" in lines:
         found.append(Turn("windows"))
     if "EXECUTION_REQUEST" in lines:
-        found.append(Turn("request"))
+        request_text = "\n".join(line or "" for line in marked) if None in marked else ""
+        found.append(Turn("request", request_text=request_text))
     claimed = [line for line in lines if line.startswith("EXECUTION_RESULT")]
     results = tuple(m.group(1) for m in (RESULT.fullmatch(line) for line in claimed) if m)
     if len(results) != len(claimed):
@@ -581,19 +623,19 @@ def classify(message: str) -> Turn:
         )
     if results:
         found.append(Turn("result", results=results))
-    ask = ASK.fullmatch(lines[-1])
+    ask = ASK.fullmatch(positioned[-1] or "")
     if ask:
         found.append(Turn("review" if ask.group(1) == "REVIEW" else "confirm", pr=ask.group(2), sha=ask.group(3)))
-    if lines[0].startswith("HANDBACK"):
-        pull = PULL.search(message)
+    if (positioned[0] or "").startswith("HANDBACK"):
+        pull = PULL.search("\n".join(lines))
         found.append(Turn("handback", pr=pull.group(1) if pull else ""))
-    elif any(line.startswith("HANDBACK") for line in lines[1:]):
+    elif any(line.startswith("HANDBACK") for line in lines):
         # A later HANDBACK beside another marker (including an earlier REVIEW/CONFIRM_REQUEST)
         # must never let the other marker execute alone (#1308).
         earlier = list(dict.fromkeys([
             *(t.kind for t in found),
             *("review" if m.group(1) == "REVIEW" else "confirm"
-              for m in (ASK.fullmatch(line) for line in lines[:-1]) if m),
+              for m in (ASK.fullmatch(line or "") for line in positioned[:-1]) if m),
         ]))
         if earlier:
             return Turn("other", "a final message with more than one marker: " + ", ".join([*earlier, "handback"]))
@@ -601,7 +643,8 @@ def classify(message: str) -> Turn:
         return found[0]
     if found:
         return Turn("other", "a final message with more than one marker: " + ", ".join(t.kind for t in found))
-    return Turn("other", f"no marker this driver answers; the last line starts {lines[-1].split()[0][:40]!r}")
+    return Turn("other", f"no marker this driver answers; the last line starts {original[-1].split()[0][:40]!r}",
+                markerless=not any(line.startswith(MARKER_TOKENS + COORDINATOR_TOKENS) for line in lines))
 
 
 def rows_of(doc: dict[str, Any]) -> list[tuple[str, dict[str, str]]]:
@@ -819,7 +862,11 @@ class Driver:
             case "windows":
                 self.attention(worker, turn, "windows", "Windows witness needs the coordinator; no execution assign attempted", message)
             case "request":
-                self.assign(worker, turn, message, last)
+                requests = message
+                if what.request_text:
+                    requests = self.turn_file(worker, turn, "request.md")
+                    write_atomically(requests, what.request_text)
+                self.assign(worker, turn, message, last, requests=requests)
             case "result":
                 self.conclude(worker, turn, message, what)
             case "review" | "confirm":
@@ -827,7 +874,10 @@ class Driver:
             case "handback":
                 self.handback(worker, turn, message, what)
             case _:
-                self.attention(worker, turn, "turn", what.why, message)
+                if what.markerless and worker.fields.get("kind") == "gemini":
+                    self.reprompt(worker, turn, message, what.why, last)
+                else:
+                    self.attention(worker, turn, "turn", what.why, message)
 
     def open_review(self, worker: Worker, turn: int) -> dict[str, Any] | None:
         """A Claude worker's earlier turn whose review still runs: its count moved past it (a turn the
@@ -871,7 +921,24 @@ class Driver:
         self.note(worker, turn, kind, "answered", text + said(self.err), **more)
         return True
 
-    def assign(self, worker: Worker, turn: int, message: str, last: dict[str, Any] | None) -> None:
+    def reprompt(self, worker: Worker, turn: int, message: str, why: str, last: dict[str, Any] | None) -> None:
+        if last is not None and last.get("status") == "reprompting":
+            self.attention(worker, turn, "reprompt", "the re-prompt may have been sent before the driver stopped;"
+                                                   " check the worker before resuming it", message)
+            return
+        if any(e.get("task") == worker.task and e.get("worker") == worker.name and e.get("session") == worker.session
+               and e.get("status") == "reprompting" for e in self.ledger):
+            self.attention(worker, turn, "turn", why, message)
+            return
+        reply = self.turn_file(worker, turn, "reprompt.md")
+        markers = ", ".join(token for token in MARKER_TOKENS if token not in ("PLAN_READY", "END_PLAN_READY"))
+        write_atomically(reply, f"Please resend the same final message with its handoff marker on the first line."
+                                f" The driver reads {markers}. For REVIEW_REQUEST and CONFIRM_REQUEST,"
+                                " send the marker line by itself so it is also the last line.\n")
+        self.note(worker, turn, "reprompt", "reprompting", why, file=message, reply=reply)
+        self.resume(worker, turn, "reprompt", reply, f"asked for the same final message with a marker first ({reply})")
+
+    def assign(self, worker: Worker, turn: int, message: str, last: dict[str, Any] | None, *, requests: str) -> None:
         out = self.turn_file(worker, turn, "assigned.md")
         status_file = self.turn_file(worker, turn, "assign-status.json")
         stale = False  # a file left by an earlier try of this turn, which this call cannot be told from
@@ -881,7 +948,7 @@ class Driver:
             pass
         except OSError:
             stale = True
-        done = self.call("execution", "assign", self.path("reserve", f"{worker.task}-base.json"), message,
+        done = self.call("execution", "assign", self.path("reserve", f"{worker.task}-base.json"), requests,
                          "--message", out, "--unstick", worker.box, worker.name, "--status", status_file)
         status = None if stale else assign_status(status_file, done.rc)
         if done.rc == LEASE_LOST_STATUS:
