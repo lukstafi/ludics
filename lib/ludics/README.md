@@ -922,6 +922,8 @@ completed command, then relay the run-record guidance to the worker. Hand conclu
 all required nonempty fields together after identity and immutability checks, retaining
 dispatch inheritance and the not-launched exception. The new Drive and registry cases both failed against unchanged base production code.
 
+Agent notes (wave-20261125-ludics, t1345): Driver startup retries busy non-blocking flocks for 50 ms. Plain heartbeat carries forward any saved loop liveness sample. Until-attention checks loops last seen stopped before its first sleep. The wave fixtures hold the real shared probe across startup and verify that the original code refuses both verbs.
+
 Agent notes (wave-20261117-ludics, t1190): `wavedrive.py`'s exact
 `WINDOWS_WITNESS_REQUEST` marker goes directly to attention without parsing its payload or
 calling assign. `test_fleetworker_wave.py` drives the first tick and repeat ticks, rejects mixed

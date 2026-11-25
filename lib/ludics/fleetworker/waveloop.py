@@ -111,7 +111,6 @@ Exit: 0 stopped by a stop file (``--release``: released); 1 red, cancelled, refu
 reservation refused, or another driver holds the loop; 2 usage; 4 unknown.
 """
 
-import fcntl
 import json
 import os
 import re
@@ -127,7 +126,7 @@ from ludics.fleetworker.execution import field, gh_timeout, listing, records_of
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.tiprun import LOOP as GPU_LOOP, next_id, started_run
 from ludics.fleetworker.transport import Done, run
-from ludics.fleetworker.wave import USAGE, Loop, Wave, load_wave, loop_log, shim
+from ludics.fleetworker.wave import USAGE, Loop, Wave, acquire_startup_lock, load_wave, loop_lock, loop_log, shim
 from ludics.fleetworker.wavebrief import write_atomically
 
 JUDGED = ("pass", "fail", "timeout")
@@ -455,12 +454,12 @@ def cmd_loop(cfg: Config, args: list[str]) -> int:
     logs = os.path.join(wave.directory, "logs")
     try:
         os.makedirs(logs, exist_ok=True)
-        lock = open(os.path.join(logs, f"loop-{loop.name}.lock"), "a", encoding="utf-8")
+        lock = open(loop_lock(wave, loop.name), "a", encoding="utf-8")
     except OSError as exc:
         die(f"wave loop: cannot open the loop's lock in {logs} ({exc.strerror})")
     with lock:
         try:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquire_startup_lock(lock.fileno())
         except OSError:
             cli.say(f"LOOP {loop.name} REFUSED: another driver holds {lock.name}")
             return 1

@@ -4699,6 +4699,101 @@ class Queue(DriveCase):
 
 
 class Heartbeat(unittest.TestCase):
+    def test_both_drivers_start_under_a_shared_probe(self) -> None:
+        flock = fcntl.flock
+        for name, verb, args, stop, started in (
+            ("drive", wavedrive.cmd_drive, ["--once"], "drive.stop", "DRIVE STOPPED"),
+            ("loop-cc", waveloop.cmd_loop, ["cc"], "loops.stop", "LOOP cc STOPPED"),
+        ):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as d:
+                path = os.path.join(d, "wave.json")
+                with open(path, "w") as f:
+                    json.dump(wave_data(d), f)
+                cfg = load_config(SCRIPT, {"HOME": d})
+                logs = os.path.join(d, "logs")
+                os.makedirs(logs)
+                lock_path = os.path.join(logs, f"{name}.lock")
+                open(lock_path, "a").close()
+                open(os.path.join(d, stop), "a").close()
+                with (mock.patch.object(wave, "time", wraps=time) as retry_time,
+                      mock.patch.object(waveloop, "listing", return_value=Done(0, "[]"))):
+                    retry_time.monotonic.return_value = 0
+
+                    def start_under_probe(fd: int, mode: int) -> None:
+                        flock(fd, mode)
+                        if mode == fcntl.LOCK_SH | fcntl.LOCK_NB:
+                            def release_probe(_: float) -> None:
+                                flock(fd, fcntl.LOCK_UN)
+
+                            retry_time.sleep.side_effect = release_probe
+                            rc, out, err = captured(verb, cfg, [path, *args])
+                            self.assertEqual(rc, 0, out + err)
+                            self.assertIn(started, out)
+
+                    with mock.patch.object(fcntl, "flock", side_effect=start_under_probe):
+                        self.assertIs(wave.lock_held(lock_path), False)
+                    retry_time.sleep.assert_called_once()
+
+    def test_plain_tick_skips_loop_probes_and_preserves_the_previous_sample(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "wave.json")
+            with open(path, "w") as f:
+                json.dump(wave_data(d), f)
+            cfg = load_config(SCRIPT, {"HOME": d})
+            loaded = wave.load_wave(path, "heartbeat")
+            logs = os.path.join(d, "logs")
+            os.makedirs(logs)
+            open(wave.loop_lock(loaded, "cc"), "a").close()
+            state_path = os.path.join(logs, "heartbeat.last")
+            with (mock.patch.object(wave, "run", return_value=Done(0, "")),
+                  mock.patch.object(wave, "board_rows", return_value=[]),
+                  mock.patch.object(wave, "lock_held", wraps=wave.lock_held) as probe):
+                rc, out, _ = captured(wave.cmd_heartbeat, cfg, [path, "--sleep", "0"])
+                self.assertEqual(rc, 0, out)
+                probe.assert_called_once_with(os.path.join(logs, "drive.lock"))
+                with open(state_path) as f:
+                    state = json.load(f)
+                self.assertNotIn("loop_running", state)
+                state["loop_running"] = {"cc": True}
+                with open(state_path, "w") as f:
+                    json.dump(state, f)
+                with open(wave.loop_log(loaded, "cc"), "w") as f:
+                    f.write("LOOP cc STOPPED (stop file)\n")
+                probe.reset_mock()
+                rc, out, _ = captured(wave.cmd_heartbeat, cfg, [path, "--sleep", "0"])
+                self.assertEqual(rc, 0, out)
+                self.assertIn("LOOP cc STOPPED", out)
+                probe.assert_called_once_with(os.path.join(logs, "drive.lock"))
+                self.assertEqual(wave.saved_loop_running(wave.saved_read(state_path)), {"cc": True})
+
+    def test_until_attention_catches_a_stop_after_a_saved_unlocked_sample(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "wave.json")
+            with open(path, "w") as f:
+                json.dump(wave_data(d), f)
+            cfg = load_config(SCRIPT, {"HOME": d})
+            logs = os.path.join(d, "logs")
+            stamp = "2026-11-23T12:00:00Z"
+            wave.save_heartbeat_state(
+                os.path.join(logs, "heartbeat.last"), at=stamp, checked_at=stamp, read=[],
+                parts={"board rows": [], "prs": ["exit=0"], "halted": ["exit=0"],
+                       "loops": ["HEARTBEAT loop cc: no log yet"], "driver": []},
+                loop_running={"cc": False},
+            )
+            with open(os.path.join(logs, "loop-cc.lock"), "a") as held:
+                fcntl.flock(held.fileno(), fcntl.LOCK_EX)
+
+                def drop_loop(_: wave.Wave, _seconds: float) -> None:
+                    fcntl.flock(held.fileno(), fcntl.LOCK_UN)
+
+                with (mock.patch.object(wave, "run", return_value=Done(0, "")),
+                      mock.patch.object(wave, "board_rows", return_value=[]),
+                      mock.patch.object(wave, "clock", side_effect=[0.0, 0.0, 1.0]),
+                      mock.patch.object(wave, "nap", side_effect=drop_loop)):
+                    rc, out, _ = captured(wave.cmd_heartbeat, cfg, [path, "--sleep", "1", "--until-attention", "--max-quiet", "1"])
+            self.assertEqual(rc, 0, out)
+            self.assertTrue(out.startswith("HEARTBEAT wake wv: loop cc stopped\n"), out)
+
     def test_the_drivers_state_and_each_new_attention_line_are_printed_once(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "wave.json")
