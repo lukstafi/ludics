@@ -14,7 +14,7 @@ from ludics import cli
 from ludics.fleetworker import closeout, execution as ex
 from ludics.fleetworker.config import load_config
 from ludics.fleetworker.transport import Done
-from ludics.tests.test_fleetworker_execution import run_record
+from ludics.tests.test_fleetworker_execution import bg_text, run_record
 
 CHECKOUT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 CFG = load_config(os.path.join(CHECKOUT, "issue-wave", "scripts", "fleet-worker.sh"), {"FLEET_ANCHOR": "local"}, host="testbox")
@@ -182,35 +182,36 @@ class NoPR(Refusing):
 
     def test_bg_run_needs_its_own_request_binding(self) -> None:
         for binding in ("a", "other", ""):
-            self.setUp()
-            with (mock.patch.object(ex, "read_run", return_value=ex.Refusal("absent", 1)),
-                  mock.patch.object(ex, "read_bg_run", return_value={"request": binding}),
-                  mock.patch.object(ex, "run_request", return_value=("id", binding) if binding else ("none", "")),
-                  mock.patch.object(ex, "observed_sha_of", return_value=OID),
-                  mock.patch.object(ex, "conclude_from_bg_run", return_value=ex.Payload('{"verdict":"fail","remote_checkout":"/wt"}')) as read,
-                  contextlib.redirect_stdout(io.StringIO())):
+            with (self.subTest(binding=binding),
+                  mock.patch.object(ex, "read_run", return_value=ex.Refusal("absent", 1)),
+                  mock.patch.object(ex, "read_bg_run", return_value=ex.bg_run_facts(bg_text(request=f":{binding}" if binding else ""))),
+                  mock.patch.object(ex, "observed_sha_of", return_value=OID)):
                 if binding == "a":
                     payloads = closeout.no_pr_payloads(CFG, "w", "t", self.records, ["a"], ["/bg"], "evidence")
-                    self.assertEqual(json.loads(payloads["a"])["verdict"], "fail")
-                    self.assertEqual(read.call_args.args[3:7], ("box", "box", OID, "/wt"))
+                    data = json.loads(payloads["a"])
+                    self.assertEqual((data["verdict"], data["remote_checkout"], data["handle"]), ("pass", "/wt", "bg-run:box:/bg"))
                 else:
-                    with self.assertRaises(cli.Exit):
-                        closeout.no_pr_payloads(CFG, "w", "t", self.records, ["a"], ["/bg"], "evidence")
-                    read.assert_not_called()
+                    self.refuses(1, "matches 0 standing records", closeout.no_pr_payloads,
+                                 CFG, "w", "t", self.records, ["a"], ["/bg"], "evidence")
 
     def test_request_bound_admission_refusal_and_its_retry_need_no_checkout_in_the_payload(self) -> None:
-        data = {"request_id": "a", "verdict": "not-launched", "log": "box:/bg/log", "evidence": "slot refused"}
+        self.records[0]["request"]["agent_host"] = "testbox"
+        facts = ex.bg_run_facts(bg_text(said="rc=1", request=":a", refusal="EXECUTION SLOT REFUSED box: busy"))
+        cfg = load_config(CFG.script, {"FLEET_BOXES": "box testbox", "FLEET_LOCAL_BOX": "testbox"}, host="testbox")
         with (mock.patch.object(ex, "read_run", return_value=ex.Refusal("absent", 1)) as read,
-              mock.patch.object(ex, "read_bg_run", return_value={"request": ":a"}),
-              mock.patch.object(ex, "observed_sha_of", return_value=OID) as head,
-              mock.patch.object(ex, "conclude_from_bg_run", return_value=ex.Payload(json.dumps(data)))):
-            payloads = closeout.no_pr_payloads(CFG, "w", "t", self.records, ["a"], ["/bg"], "evidence")
-            self.assertEqual(json.loads(payloads["a"]), data)
+              mock.patch.object(ex, "read_bg_run", side_effect=[{"dir": "0"}, facts]) as bg_read,
+              mock.patch.object(ex, "observed_sha_of", return_value=OID) as head):
+            payloads = closeout.no_pr_payloads(cfg, "w", "t", self.records, ["a"], ["/bg"], "evidence")
+            data = json.loads(payloads["a"])
+            self.assertEqual((data["verdict"], data["log"]), ("not-launched", "testbox:/bg/log"))
+            self.assertNotIn("remote_checkout", data)
             self.records[0].update(state="concluded", history=[{"data": data}])
             read.reset_mock()
+            bg_read.reset_mock()
             head.reset_mock()
-            self.assertEqual(json.loads(closeout.no_pr_payloads(CFG, "w", "t", self.records, ["a"], ["/bg"], "evidence")["a"]), data)
+            self.assertEqual(json.loads(closeout.no_pr_payloads(cfg, "w", "t", self.records, ["a"], ["/bg"], "evidence")["a"]), data)
             read.assert_not_called()
+            bg_read.assert_not_called()
             head.assert_not_called()
 
     def test_matching_keeps_each_records_read_refusal_and_exit_code(self) -> None:
@@ -233,6 +234,26 @@ class NoPR(Refusing):
             closeout.no_pr_payloads(CFG, "w", "t", self.records, ["a"], ["/run"], "evidence")
         self.assertEqual(caught.exception.rc, 4)
         self.assertIn("record a: bg-run host unreachable", output.getvalue())
+
+    def test_unreachable_test_run_read_stays_exit_four_with_an_ambiguous_bg_run(self) -> None:
+        self.records[0]["request"]["agent_host"] = "testbox"
+        facts = ex.bg_run_facts(bg_text(request=":a"))
+        cfg = load_config(CFG.script, {"FLEET_BOXES": "box testbox", "FLEET_LOCAL_BOX": "testbox"}, host="testbox")
+        with (mock.patch.object(ex, "observed_sha_of", return_value=OID),
+              mock.patch.object(ex, "read_run", return_value=ex.Refusal("test-run host unreachable", 4)),
+              mock.patch.object(ex, "read_bg_run", return_value=facts)):
+            self.refuses(4, "test-run host unreachable; FROM-BG-RUN REFUSED: a run directory /bg is on both",
+                         closeout.no_pr_payloads, cfg, "w", "t", self.records, ["a"], ["/bg"], "evidence")
+
+    def test_two_bg_run_copies_refuse_even_when_only_one_binds_the_record(self) -> None:
+        self.records[0]["request"]["agent_host"] = "testbox"
+        cfg = load_config(CFG.script, {"FLEET_BOXES": "box testbox", "FLEET_LOCAL_BOX": "testbox"}, host="testbox")
+        facts = [ex.bg_run_facts(bg_text(request=binding)) for binding in ("", ":a")]
+        with (mock.patch.object(ex, "observed_sha_of", return_value=OID),
+              mock.patch.object(ex, "read_run", return_value=ex.Refusal("absent", 1)),
+              mock.patch.object(ex, "read_bg_run", side_effect=facts)):
+            self.refuses(1, "then retry board close", closeout.no_pr_payloads,
+                         cfg, "w", "t", self.records, ["a"], ["/bg"], "evidence")
 
     def test_one_match_does_not_hide_an_unreachable_second_record(self) -> None:
         other = record("b", checkout="/other")

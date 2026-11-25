@@ -3197,6 +3197,57 @@ expect "no-PR close trims trailing spaces on --run" 0 'done, no PR; 1 standing c
 jq -e --arg id "$npid" --arg co "$npwt" \
   'any(.[]; .request_id == $id and .state == "concluded" and .verdict == "pass" and .remote_checkout == $co)' \
   "$TMP/np-records.json" >/dev/null && ok "...the real registry concludes pass with the trimmed path" || ko "trailing-space no-PR record not concluded pass"
+# #1355: a leg's execution host has the checkout; its agent host has the bg-run.
+# The ssh stand-in shares our filesystem. Hide just the run directory on the execution host.
+cat > "$TMP/np-leg-env" <<'EOF'
+function [ {
+  if [[ "$1" == -d && "$2" == "$NP_LEG_DIR" ]]; then return 1; fi
+  builtin [ "$@"
+}
+export -f '['
+EOF
+BG="$TMP/dispatcher/issue-wave/scripts/bg-run.sh"
+FNPL=(env SHIM_SSH_LOCAL=other "${FNP[@]}")
+for npcase in agent both; do
+  npid="np-r-leg-$npcase"
+  npdir=$(bash "$BG" new "$TMP/no-pr close runs/leg-$npcase") &&
+    bash "$BG" start "$npdir" -- true >/dev/null &&
+    printf '%s\n' "$npid" > "$npdir/request" || ko "could not stage the leg's bound bg-run (setup)"
+  jq -n --arg id "$npid" --arg co "$npwt" --arg rev "$nphead" \
+    '{request_id:$id, wave:"npw", worker:$id, transport:"subagent", issue:"o/r#1355", purpose:"no PR leg fixture",
+      agent_host:"testbox", execution_host:"other", repository:"o/r", requested_revision:$rev,
+      kind:"correctness", standing:true, checkout:$co}' > "$TMP/np-request.json"
+  setup_step "could not reserve no-PR leg (setup)" "${FNPL[@]}" execution run "$TMP/np-request.json"
+  setup_step "could not create no-PR leg row (setup)" "${FNPL[@]}" board set --new-row npw "$npid" \
+    repository=o/r "worker=$npid" "standing=$npid" state=implementing
+  if [ "$npcase" = both ]; then
+    npbefore=$(git hash-object "$ISSUE_WAVE_STATE/boards/npw.json")
+    "${FNPL[@]}" execution list > "$TMP/np-records.before"
+    expect "no-PR close refuses and gives a manual recovery when both boxes hold the bg-run" 1 \
+      'is on both other and testbox.*execution conclude --from-bg-run .*--box <box>.*retry board close.*nothing closed' -- \
+      "${FNPL[@]}" board close npw "$npid" --no-pr --run "$npdir"
+    "${FNPL[@]}" execution list > "$TMP/np-records.json"
+    if [ "$npbefore" = "$(git hash-object "$ISSUE_WAVE_STATE/boards/npw.json")" ] &&
+      cmp -s "$TMP/np-records.before" "$TMP/np-records.json"; then
+      ok "...the ambiguous bg-run changes neither the board nor the registry"
+      fixture_done "$npid"
+    else
+      ko "ambiguous no-PR close wrote state"
+    fi
+  else
+    expect "no-PR close concludes a leg from the agent host's bg-run" 0 'done, no PR; 1 standing concluded' -- \
+      env SHIM_SSH_ENV="$TMP/np-leg-env" NP_LEG_DIR="$npdir" "${FNPL[@]}" board close npw "$npid" --no-pr --run "$npdir"
+    "${FNPL[@]}" execution list > "$TMP/np-records.json"
+    jq -e --arg id "$npid" --arg co "$npwt" --arg head "$nphead" --arg dir "$npdir" \
+      'any(.[]; .request_id == $id and .state == "concluded" and .verdict == "pass"
+         and .request.execution_host == "other" and .remote_checkout == $co and .observed_sha == $head
+         and .log == "testbox:\($dir)/log" and .handle == "bg-run:testbox:\($dir)")' \
+      "$TMP/np-records.json" >/dev/null && ok "...the registry keeps the execution checkout and the agent's log" || ko "no-PR leg not concluded"
+    setup_step "could not move the finished bg-run (setup)" mv "$npdir" "$npdir.removed"
+    expect "...the completed leg close is a no-op once the run is gone" 0 'already closed$' -- \
+      "${FNPL[@]}" board close npw "$npid" --no-pr --run "$npdir"
+  fi
+done
 # board takeover (ludics-lite#731): the stored brief, then the state at takeover from the row's keys and
 # the live sources; a read, so no lease and no identity; a missing key printed missing, never guessed.
 tkwt="$TMP/tk wt"; git init -q -b main "$tkwt" && git -C "$tkwt" -c user.name=t -c user.email=t@t commit -q --allow-empty -m tk

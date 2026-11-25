@@ -440,6 +440,10 @@ class Refusal:
     rc: int
 
 
+class AmbiguousBgRun(Refusal):
+    """Both boxes hold this path and the lookup has no unique source."""
+
+
 type Conclusion = Payload | Refusal
 
 SHA40 = revision.SHA40
@@ -751,19 +755,21 @@ def read_bg_run(cfg: Config, run_dir: str, box: str, bgrun_path: str) -> dict[st
 
 
 def locate_bg_run(
-    cfg: Config, run_dir: str, boxes: Sequence[str], bgrun_path: str, request: str = ""
+    cfg: Config, run_dir: str, boxes: Sequence[str], bgrun_path: str, request: str = "", *, require_unique: bool = False
 ) -> tuple[str, dict[str, str], str] | Refusal:
     """The one box of ``boxes`` (``bg_run_boxes``') that holds the directory, its facts, and the
     other box that holds the same path, when THE RUN'S REQUEST settled it (else empty). Every box
     is read, so a path present on two is refused, never concluded from either -- unless exactly one
-    of the two is bound to ``request`` by its ``request`` file, which concludes from that one. A
+    of the two is bound to ``request`` by its ``request`` file and ``require_unique`` is false. A
     box that does not answer or reads unreadable refuses, so the other's directory is never taken
     alone."""
     found: list[tuple[str, dict[str, str]]] = []
     for box in boxes:
         facts = read_bg_run(cfg, run_dir, box, bgrun_path)
         if isinstance(facts, Refusal):
-            if len(boxes) > 1:
+            if len(boxes) > 1 and require_unique:
+                facts = Refusal(f"{facts.text} (looked for {shown(run_dir)} on {' and '.join(boxes)})", facts.rc)
+            elif len(boxes) > 1:
                 facts = Refusal(f"{facts.text} (no --box: {run_dir} is looked for on {' and '.join(boxes)};"
                                 " --box <box> reads that box alone)", facts.rc)
             return facts
@@ -773,14 +779,20 @@ def locate_bg_run(
             found.append((box, facts))
     if len(found) > 1:
         bound = [(box, facts) for box, facts in found if request and run_request(facts) == ("id", request)]
-        if len(bound) == 1:
+        if len(bound) == 1 and not require_unique:
             box, facts = bound[0]
             return box, facts, next(other for other, _ in found if other != box)
         named = ""
         if any(run_request(facts)[0] != "none" for _, facts in found):
             named = " (its request file: " + ", ".join(f"on {box} {request_words(facts)}" for box, facts in found) + ")"
-        return Refusal(f"FROM-BG-RUN REFUSED: a run directory {run_dir} is on both {' and '.join(boxes)}{named};"
-                       " --box <box> names the one whose run it is; nothing concluded", 1)
+        diagnostic = f"FROM-BG-RUN REFUSED: a run directory {shown(run_dir)} is on both {' and '.join(boxes)}{named}"
+        if require_unique:
+            if not bound:
+                return Refusal(f"{diagnostic}; neither copy binds request {shown(request)}", 1)
+            return AmbiguousBgRun(f"{diagnostic}; choose the run's box with execution conclude --from-bg-run"
+                                  f" {shown(run_dir)} --request {shown(request)} --box <box> --observed-from <checkout>,"
+                                  " then retry board close", 1)
+        return Refusal(f"{diagnostic}; --box <box> names the one whose run it is; nothing concluded", 1)
     if not found:
         return Refusal(f"FROM-BG-RUN REFUSED: no run directory {run_dir} on {' or '.join(boxes)}", 1)
     return found[0][0], found[0][1], ""
@@ -799,6 +811,7 @@ def conclude_from_bg_run(
     source: str = REPORTED,
     *,
     also: str = "",
+    require_bound: bool = False,
 ) -> Conclusion:
     """The conclude payload read off a bg-run.sh directory. The verdict mapping:
       - the code is the runner's own sentinel when the log carries one and it is nonzero, else rc --
@@ -813,15 +826,20 @@ def conclude_from_bg_run(
     handle name the box read, ``<box>:<path>``. ``also``, a second box, is looked on too
     (``locate_bg_run``): the conclusion reads the one of the two that holds the directory, or, where
     both do, the one THE RUN'S REQUEST binds to ``request``. A directory whose ``request`` file is
-    malformed or names another request is refused (``request_refusal``) before its verdict is read."""
+    malformed or names another request is refused (``request_refusal``) before its verdict is read.
+    Board close sets ``require_bound`` to require both a unique location and a request file naming
+    its standing record. The binding and verdict come from the same reading."""
     boxes = (box, also) if also and also != box else (box,)
-    located = locate_bg_run(cfg, run_dir, boxes, bgrun_path, request)
+    located = locate_bg_run(cfg, run_dir, boxes, bgrun_path, request, require_unique=require_bound)
     if isinstance(located, Refusal):
         return located
     box, facts, beside = located
     unbound = request_refusal(facts, run_dir, box, request)
     if unbound is not None:
         return unbound
+    # Absent directories and scratch failures keep bg_run_verdict's own diagnostics.
+    if require_bound and "request" in facts and run_request(facts)[0] == "none":
+        return Refusal(f"FROM-BG-RUN REFUSED: {shown(run_dir)} on {box} has no request file binding it to {shown(request)}", 1)
     read = bg_run_verdict(facts, run_dir, box)
     if isinstance(read, Refusal):
         return read

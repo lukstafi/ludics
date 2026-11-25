@@ -47,9 +47,15 @@ word. Here ``pass`` is what this verb establishes: a standing record is conclude
 life ending, and this form concludes it only for a task whose PR GitHub says merged.
 
 With ``--no-pr``, each repeated absolute ``--run`` trims trailing whitespace (``str.rstrip()``;
-internal spaces stay, while leading whitespace and relative paths are refused) and is read on
-the standing records' execution hosts, first as test-run, then bg-run. Exactly one record must match its host and checkout; bg-run
-records no checkout, so its request file must bind it to that record. Its own verdict (including
+internal spaces stay, while leading whitespace and relative paths are refused) and is read as
+test-run on each standing record's execution host. The bg-run fallback checks that host and the
+record's eligible agent host (execution.py's ``bg_run_boxes``); copies on both refuse a match for
+that record even if only one copy binds it (#1355). An unreachable eligible agent host makes
+the close refuse with exit 4, even when another standing record matches.
+Exactly one record must match. A test-run must name its checkout; a bg-run requires its one-line
+request file and uses execution.py's verdict reader, which reads wait's result, the last whole
+runner sentinel and the immediate slot refusal. Other log lines supply no verdict. The checkout
+and HEAD are still read on the execution host. The run's verdict (including
 fail or an admission refusal's not-launched) concludes that record. Test-run uses standing-handback
 semantics: dirty edits and a changed HEAD are recorded in evidence, not refused as certification
 of one commit. An unmatched open record requires its own run unless THE UNUSED LEG
@@ -280,12 +286,12 @@ def never_ran(out: str) -> bool:
 
 def no_pr_payloads(cfg: Config, wave: str, task: str, records: list[dict[str, Any]], ids: list[str],
                    runs: list[str], evidence: str) -> dict[str, str]:
-    """Read every source before writing. A bg-run has no checkout: its request file must bind
-    it to the standing record. Unbound bg-runs cannot establish which checkout ran."""
+    """Read every source before writing. A bg-run's request file binds it to the standing record."""
     matched: dict[str, str] = {}
     for directory in runs:
         candidates: list[tuple[str, str]] = []
         failures: list[tuple[str, ex.Refusal]] = []
+        ambiguous = False
         for request in ids:
             record = record_of(records, request)
             assert record is not None  # to_conclude validated the row's ownership
@@ -294,13 +300,17 @@ def no_pr_payloads(cfg: Config, wave: str, task: str, records: list[dict[str, An
             if not host or not checkout:
                 continue
             if record.get("state") == "concluded":
-                handles = ("test-run:" + ex.basename(directory), f"bg-run:{host}:{directory}")
                 landed = ex.retried(record)
                 if landed is not None:
-                    ran = (landed.get("handle") in handles
-                           and landed.get("log") in (directory + "/log", f"{host}:{directory}/log")
-                           and ex.same_checkout(str(landed.get("remote_checkout", "")), checkout))
-                    unlaunched = landed.get("verdict") == "not-launched" and landed.get("log") == f"{host}:{directory}/log"
+                    handle, log = landed.get("handle"), landed.get("log")
+                    test_run = (handle == "test-run:" + ex.basename(directory)
+                                and log in (f"{directory}/log", f"{host}:{directory}/log"))
+                    # A landed receipt remains replayable even if the agent host left the roster.
+                    agent_host = field(record, "request", "agent_host")
+                    log_boxes = [box for box in (host, agent_host) if box and log == f"{box}:{directory}/log"]
+                    bg_run = any(handle == f"bg-run:{box}:{directory}" for box in log_boxes)
+                    ran = (test_run or bg_run) and ex.same_checkout(str(landed.get("remote_checkout", "")), checkout)
+                    unlaunched = landed.get("verdict") == "not-launched" and bool(log_boxes)
                     if ran or unlaunched:
                         candidates.append((request, json.dumps(landed)))
                 continue
@@ -320,15 +330,17 @@ def no_pr_payloads(cfg: Config, wave: str, task: str, records: list[dict[str, An
                     payload = ex.Payload(ex.standing_handback(request, host, checkout, head, evidence,
                                                              clause[0], (directory, clause[1])))
             if isinstance(payload, ex.Refusal):
-                bgrun = ex.bg_run_path(cfg)
-                bg = ex.read_bg_run(cfg, directory, host, bgrun)
-                if isinstance(bg, ex.Refusal):
-                    if bg.rc == 4:
-                        why = bg
-                elif ex.run_request(bg) == ("id", request):
-                    payload = ex.conclude_from_bg_run(cfg, directory, request, host, host, head, checkout, evidence, bgrun)
-                    if isinstance(payload, ex.Refusal):
+                boxes = ex.bg_run_boxes(cfg, record, host, "")
+                payload = ex.conclude_from_bg_run(
+                    cfg, directory, request, host, host, head, checkout, evidence, ex.bg_run_path(cfg),
+                    also=boxes[1] if len(boxes) > 1 else "", require_bound=True,
+                )
+                if isinstance(payload, ex.Refusal):
+                    ambiguous |= isinstance(payload, ex.AmbiguousBgRun)
+                    if payload.rc == 4:
                         why = payload
+                    else:
+                        why = ex.Refusal(f"{why.text}; {payload.text}", why.rc)
             if isinstance(payload, ex.Payload):
                 data = cast(dict[str, Any], json.loads(payload.json))
                 if data.get("verdict") == "not-launched" or ex.same_checkout(str(data.get("remote_checkout", "")), checkout):
@@ -336,7 +348,7 @@ def no_pr_payloads(cfg: Config, wave: str, task: str, records: list[dict[str, An
                     continue
             failures.append((request, why))
         unreachable = any(why.rc == 4 for _, why in failures)
-        if len(candidates) != 1 or unreachable:
+        if len(candidates) != 1 or unreachable or ambiguous:
             detail = "; ".join(f"record {shlex.quote(request)}: {' '.join(why.text.splitlines())}" for request, why in failures)
             raise refused(wave, task, f"run {shlex.quote(directory)} matches {len(candidates)} standing records;"
                           " need exactly one box and checkout (bg-run requires its request file)"
