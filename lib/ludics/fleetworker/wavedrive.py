@@ -306,7 +306,6 @@ it cannot read as this wave's (exit 1; an anchor that does not answer is tried a
 lost lease. ``--once`` runs one tick. Exit 2 is usage.
 """
 
-import fcntl
 import glob
 import json
 import os
@@ -330,7 +329,7 @@ from ludics.fleetworker.registry import ASSIGN_ACTION_REQUIRED
 from ludics.fleetworker.takeover import DONE_STATES, board_document, state_word
 from ludics.fleetworker.tally import said, suffix
 from ludics.fleetworker.transport import Done, substitution
-from ludics.fleetworker.wave import USAGE, WORD, Wave, load_wave, shim, utc_now
+from ludics.fleetworker.wave import USAGE, WORD, Wave, acquire_startup_lock, load_wave, shim, utc_now
 from ludics.fleetworker.wavebrief import write_atomically
 from ludics.fleetworker.wavelaunch import Record, read_manifest, read_wave_launch_status
 from ludics.fleetworker.waveprep import REASSIGNMENT_REASON_PROBLEM, TASK, TIERS, Stop, valid_reassignment_reason
@@ -1351,7 +1350,7 @@ def locked(cfg: Config, wave: Wave, body: Callable[[Driver], int]) -> int:
     os.makedirs(os.path.join(wave.directory, "msgs"), exist_ok=True)
     with open(os.path.join(wave.directory, "logs", "drive.lock"), "a", encoding="utf-8") as lock:
         try:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquire_startup_lock(lock.fileno())
         except OSError:
             cli.say(f"DRIVE REFUSED {wave.wave}: another driver holds {lock.name}")
             return 1

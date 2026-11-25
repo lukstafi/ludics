@@ -139,9 +139,10 @@ UNTIL-ATTENTION MODE (ludics#1312). ``wave heartbeat <wave.json> --until-attenti
 conditions or reaches the stall bound ``--max-quiet <seconds>`` (positive whole seconds; default
 ``HEARTBEAT_MAX_QUIET``, 14400 s / 4 h). Plain ``wave heartbeat`` stays one tick by default;
 ``--max-quiet`` requires ``--until-attention``, and ``--until-attention`` requires a positive
-``--sleep``. When ``logs/heartbeat.last`` exists, the first tick compares against it (and reads live
-loop locks if the saved file predates ``loop_running``); when no saved read exists and no unread
-attention record is pending, a silent baseline read is taken before the first sleep without
+``--sleep``. Only until-attention probes loop locks. A plain tick carries forward the last sampled
+loop state. When ``logs/heartbeat.last`` exists, the first until-attention tick compares against it
+and recognizes a loop held before the first sleep or at the last sample. When no saved read exists
+and no unread attention record is pending, a silent baseline read is taken before the first sleep without
 advancing ``logs/attention.seen``, so transitions during the first sleep are caught and pre-existing
 done rows do not wake immediately.
 
@@ -540,6 +541,20 @@ def loop_lock(wave: Wave, name: str) -> str:
     return os.path.join(wave.directory, "logs", f"loop-{name}.lock")
 
 
+def acquire_startup_lock(fd: int) -> None:
+    """Give a heartbeat probe time to release its shared lock, while bounding startup contention."""
+    deadline = time.monotonic() + 0.05
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise
+            time.sleep(min(0.005, remaining))
+
+
 def lock_held(path: str) -> bool | None:
     """True when another process holds an exclusive flock on ``path``, False when unlocked, None when absent."""
     if not os.path.exists(path):
@@ -550,6 +565,12 @@ def lock_held(path: str) -> bool | None:
         except OSError:
             return True
     return False
+
+
+def probe_loops(wave: Wave, *, previously_running: dict[str, bool] | None = None) -> dict[str, bool]:
+    # A confirmed running loop must still be reported if it stopped before re-arming.
+    previous = previously_running if previously_running is not None else {}
+    return {name: previous.get(name, False) or lock_held(loop_lock(wave, name)) is True for name in wave.loops}
 
 
 def last_line(path: str) -> str | None:
@@ -840,7 +861,7 @@ class HeartbeatTick:
     board_notes: list[str]
 
 
-def take_tick(cfg: Config, wave: Wave, *, consume_attention: bool = True) -> HeartbeatTick:
+def take_tick(cfg: Config, wave: Wave, *, probe_loop_locks: bool = False, consume_attention: bool = True) -> HeartbeatTick:
     """Capture one heartbeat read without printing or writing ``heartbeat.last``."""
     from ludics.fleetworker.supervision import steady_prs_line
 
@@ -850,7 +871,7 @@ def take_tick(cfg: Config, wave: Wave, *, consume_attention: bool = True) -> Hea
     prs = run([script, "prs", wave.repository, "--wave", wave.wave], capture=True)
     halted = run([script, "halted"], capture=True)
     loop_raw = {name: last_line(loop_log(wave, name)) for name in wave.loops}
-    loop_running = {name: lock_held(loop_lock(wave, name)) is True for name in wave.loops}
+    loop_running = probe_loops(wave) if probe_loop_locks else {}
     loops = [f"HEARTBEAT loop {name}: {line if line is not None else 'no log yet'}" for name, line in loop_raw.items()]
     own, attention = driver_lines(wave, consume=consume_attention)
     # Capture stdout emitted by board_rows (e.g. BOARD UNREACHABLE) so quiet ticks print nothing
@@ -903,7 +924,7 @@ def save_heartbeat_state(
     checked_at: str,
     parts: dict[str, Any] | None,
     read: list[str],
-    loop_running: dict[str, bool],
+    loop_running: dict[str, bool] | None,
     alert_state: dict[str, Any] | None = None,
 ) -> None:
     os.makedirs(os.path.dirname(state), exist_ok=True)
@@ -913,8 +934,9 @@ def save_heartbeat_state(
         "checked_at": checked_at,
         "parts": parts,
         "read": read,
-        "loop_running": loop_running,
     }
+    if loop_running is not None:
+        payload["loop_running"] = loop_running
     if alert_state is not None:
         payload["alert_state"] = alert_state
     write_atomically(state, json.dumps(payload, ensure_ascii=False) + "\n")
@@ -1028,8 +1050,9 @@ def cmd_heartbeat(cfg: Config, args: list[str]) -> int:
         emit_full_read(tick, cast(str, saved["at"]) if saved is not None else None,
                        cast(dict[str, Any], saved["parts"]) if saved is not None else None)
         if tick.rows is not None:
+            loop_running = saved_loop_running(saved if saved is not None else saved_alert_state(state))
             save_heartbeat_state(state, at=tick.stamp, checked_at=tick.stamp, parts=tick.parts, read=tick.read,
-                                 loop_running=tick.loop_running)
+                                 loop_running=loop_running)
         return 0
 
     saved = saved_read(state)
@@ -1050,8 +1073,7 @@ def cmd_heartbeat(cfg: Config, args: list[str]) -> int:
         if isinstance(raw_read, list) and all(isinstance(x, str) for x in cast(list[Any], raw_read)):
             saved_read_lines = list(cast(list[str], raw_read))
         prev_loops = _loops_by_name(saved_parts.get("loops"))
-        saved_loops = saved_loop_running(saved)
-        prev_loop_running = saved_loops if saved_loops is not None else {name: lock_held(loop_lock(wave, name)) is True for name in wave.loops}
+        prev_loop_running = saved_loop_running(saved) or {}
         h = halt_state(saved_parts.get("halted"))
         if h is not None and h[0] in (0, 1):
             prev_halted = h
@@ -1065,8 +1087,10 @@ def cmd_heartbeat(cfg: Config, args: list[str]) -> int:
         if h is not None and h[0] in (0, 1):
             prev_halted = h
         prev_driver_running = driver_running(alerts.get("driver"))
-    elif saved is None and not has_unread_attention(wave):
-        base = take_tick(cfg, wave, consume_attention=False)
+    if saved is not None or alerts is not None:
+        prev_loop_running = probe_loops(wave, previously_running=prev_loop_running)
+    elif not has_unread_attention(wave):
+        base = take_tick(cfg, wave, probe_loop_locks=True, consume_attention=False)
         prev_loops = _loops_by_name(base.parts["loops"])
         prev_loop_running = dict(base.loop_running)
         h = halt_state(base.parts["halted"])
@@ -1090,7 +1114,7 @@ def cmd_heartbeat(cfg: Config, args: list[str]) -> int:
         wait = min(float(sleep_seconds), max(0.0, remaining))
         if wait > 0:
             nap(wave, wait)
-        tick = take_tick(cfg, wave)
+        tick = take_tick(cfg, wave, probe_loop_locks=True)
         causes = attention_causes(
             wave,
             saved_parts.get("board rows") if saved_parts is not None else None,
