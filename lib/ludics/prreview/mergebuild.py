@@ -356,7 +356,6 @@ from uuid import uuid4
 
 from ludics import cli, fs, proc
 from ludics.prreview import buildhistory, commentonly
-from ludics.prreview.budget import budget_dir
 from ludics.prreview.branchtip import FULL_SHA
 from ludics.prreview.clock import Clock
 from ludics.prreview.core import GhFailed, GhOk, GhSession, GhUnanswered, fail, warn
@@ -1602,16 +1601,16 @@ def _try_staging_lock(parent: int, leaf: str, *, create: bool = False) -> Genera
         os.close(fd)
 
 
-def _old_staging(directory: int, cutoff: float) -> list[str]:
+def _staging_in_old_command(directory: int, cutoff: float) -> list[str]:
     if os.fstat(directory).st_mtime >= cutoff:
         return []
-    old: list[str] = []
+    staged: list[str] = []
     for leaf in _STAGING_NAMES:
         with contextlib.suppress(FileNotFoundError):
-            staged = os.stat(leaf, dir_fd=directory, follow_symlinks=False)
-            if stat.S_ISDIR(staged.st_mode) and staged.st_mtime < cutoff:
-                old.append(leaf)
-    return old
+            info = os.stat(leaf, dir_fd=directory, follow_symlinks=False)
+            if stat.S_ISDIR(info.st_mode):
+                staged.append(leaf)
+    return staged
 
 
 def _remove_staging(directory: int, leaf: str, pair: set[str], cutoff: float) -> None:
@@ -1633,11 +1632,11 @@ def _remove_staging(directory: int, leaf: str, pair: set[str], cutoff: float) ->
 
 def _reap_staging(directory: int, path: Path, cutoff: float) -> None:
     with contextlib.suppress(OSError):
-        if not _old_staging(directory, cutoff):
+        if not _staging_in_old_command(directory, cutoff):
             return
         with _try_staging_lock(directory, _LOG_LOCK):
             pair = {f"{path.name}.log", f"{path.name}.status"}
-            for leaf in _old_staging(directory, cutoff):
+            for leaf in _staging_in_old_command(directory, cutoff):
                 try:
                     _remove_staging(directory, leaf, pair, cutoff)
                 except OSError as exc:
@@ -1657,10 +1656,10 @@ def _walk_staging(directory: int, path: Path, levels: tuple[re.Pattern[str], ...
 
 def sweep_staging(env: Mapping[str, str]) -> None:
     """Best-effort staging cleanup alongside watch's scratch sweep (LOG RETENTION)."""
-    state = budget_dir(env)
-    if os.name != "posix" or not state:
+    state = buildhistory.state_dir(env)
+    if os.name != "posix" or state is None:
         return
-    root = Path(state) / "merge-builds"
+    root = Path(state)
     with contextlib.suppress(OSError), _open_log_dir(str(root)) as builds, _open_log_dir("logs", builds) as logs:
         with _try_staging_lock(logs, ".staging-sweep", create=True) as lock:
             now = time.time()
@@ -1678,7 +1677,7 @@ def _retain(
     """Publish the pair, then let the caller report it before retiring earlier evidence."""
     import fcntl  # HOSTS AND CLONES: retention runs only on POSIX.
 
-    root = buildhistory.state_root(repo)
+    root = buildhistory.state_dir(os.environ) if repo else None
     if root is None:
         yield None  # fixtures can explicitly disable state; config-only dry runs have no repo
         return

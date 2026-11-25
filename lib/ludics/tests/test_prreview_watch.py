@@ -339,8 +339,12 @@ with mock.patch.object(shutil, 'copyfile', stop_after_copy):
         receipt.write_text(json.dumps({"log_dir": str(published)}) + "\n")
         retired = stage(command, ".retired")
         age(pending / "build.log", pending)
-        fresh = stage(command.parent.with_name("a" * 40) / "build", ".retired")
-        os.utime(fresh.parent)  # A just-retired directory can still carry old pair mtimes.
+        fresh_retirement = stage(command.parent.with_name("a" * 40) / "build", ".retired")
+        os.utime(fresh_retirement.parent)  # A just-retired directory can still carry old pair mtimes.
+        fresh_stage = stage(command.parent.with_name("1" * 40) / "build", ".pending")
+        os.utime(fresh_stage)
+        fresh_log = stage(command.parent.with_name("2" * 40) / "build", ".pending")
+        os.utime(fresh_log / "build.log")
         locked = stage(command.parent.with_name("b" * 40) / "build", ".pending")
         foreign = stage(command.parent.with_name("c" * 40) / "build", ".pending")
         (foreign / "keep").write_text("outside the pair\n")
@@ -363,8 +367,13 @@ with mock.patch.object(shutil, 'copyfile', stop_after_copy):
         self.assertFalse(pending.exists(), "the killed writer's old staging was reaped")
         self.assertFalse(retired.exists(), "the old retirement directory was reaped")
         self.assertTrue((command / ".lock").is_file(), "the lock inode stays available for retries")
-        for kept in (fresh, locked, foreign, linked):
-            self.assertEqual((kept / "build.log").read_text(), "evidence\n")
+        for reason, kept in (
+            ("recent retirement", fresh_retirement), ("fresh directory", fresh_stage),
+            ("fresh file", fresh_log), ("held lock", locked), ("extra file", foreign), ("symlink", linked),
+        ):
+            with self.subTest(reason=reason):
+                self.assertTrue(kept.is_dir(), "the stage survived the sweep")
+                self.assertEqual((kept / "build.log").read_text(), "evidence\n")
         self.assertEqual((published / "build.log").read_text(), "published\n")
         self.assertEqual(legacy.read_text(), "legacy\n")
         self.assertEqual(json.loads(receipt.read_text())["log_dir"], str(published))

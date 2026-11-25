@@ -660,8 +660,9 @@ against pre-fix `e23e7b0a`.
 Agent notes (wave-20261125-ludics, t1341; refs #1341): On POSIX `watch` sweeps reserved staging
 across the box after the daily interval. The walk and deletion use directory descriptors and
 recheck age under the existing command lock. The seven-day bound uses mtime on the command
-directory too, since retirement renames an old pair. The killed-writer fixture checks the lock,
-fresh retirement, the daily interval, and preservation of published and legacy evidence.
+directory too, since retirement renames an old pair. The killed-writer fixture fails on the base
+because its abandoned stage survives. It also checks the lock, fresh command directories,
+staging directories and files, the daily interval, and preservation of published and legacy evidence.
 
 Agent notes (wave-20261119-ludics, t1233; refs #1233): `merge-build --plan-only` uses the dry
 run's local revisions and the same plan reader as `merge`. It stops before the build slot probe.
