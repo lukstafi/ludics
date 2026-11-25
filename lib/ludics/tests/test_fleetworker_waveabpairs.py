@@ -284,6 +284,63 @@ class TestScrubAndSides(unittest.TestCase):
         # Non-word boundary preservation: ordinary words stay intact.
         self.assertIn("Keep solution, console, resolve, neonatal, codexed untouched.", scrubbed)
 
+    def test_self_ref_redaction_runs_before_model_scrub_for_vendor_repo_names(self) -> None:
+        from ludics.prreview import core as prcore
+
+        cand = waveabpairs.Candidate(
+            wave="w-1",
+            task="t101",
+            tier="D2",
+            group="D2",
+            arm_label="cli/codex gpt-6.2-sol/high",
+            arm_kind="codex",
+            arm_model="gpt-6.2-sol/high",
+            agent_host="mac-studio",
+            repository="openai/codex",
+            pr=202,
+            merge=None,
+            issue_ref="openai/codex#101",
+            issue_repo="openai/codex",
+            issue_number=101,
+            launched_at="2026-11-24T10:00:00Z",
+            task_dict={},
+        )
+        meta = waveabpairs.PrMeta("MERGED", "Fix", "2026-11-24T11:00:00Z", "2026-11-24T12:00:00Z", None, ())
+        fixture: dict[str, Any] = {
+            "issues": {
+                "openai/codex#101": {
+                    "title": "Fix https://github.com/openai/codex/issues/101#issuecomment-12345",
+                    "body": (
+                        "PR https://github.com/openai/codex/pull/202/files and codex#101,"
+                        " unrelated https://github.com/openai/codex/issues/999."
+                    ),
+                    "comments": [],
+                }
+            },
+            "diffs": {"openai/codex#202": "diff --git a/a b/a\n+x = 1\n"},
+        }
+        with FakeTool("gh") as gh:
+            _install_gh_fake(gh, fixture)
+            env = {
+                **os.environ,
+                "PATH": f"{gh.dir}{os.pathsep}{os.environ.get('PATH', '')}",
+                "SHIP_PR_API_ATTEMPTS": "1",
+                "SHIP_PR_API_BACKOFF": "0",
+            }
+            with mock.patch.dict(os.environ, env, clear=False):
+                session = prcore.GhSession(prcore.load_config(env))
+                notes: list[str] = []
+                errors: list[dict[str, str]] = []
+                payload = waveabpairs.fetch_side(session, cand, meta, ("gpt-6.2-sol/high", "gpt-6.2-sol"), notes, errors)
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertEqual(errors, [])
+        self.assertNotIn("101", payload.task_md)
+        self.assertNotIn("202", payload.task_md)
+        self.assertIn("[this-issue]", payload.task_md)
+        self.assertIn("[this-pr]", payload.task_md)
+        self.assertIn("/999", payload.task_md)
+
     def test_balanced_sides_and_seed_determinism(self) -> None:
         o1, f1 = waveabpairs.assign_sides(15, 20261125)
         o2, f2 = waveabpairs.assign_sides(15, 20261125)

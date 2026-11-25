@@ -1102,8 +1102,10 @@ def fetch_side(
     for cm_body in included_bodies:
         parts.append(f"\n---\n## Issue comment (before work started)\n\n{cm_body}\n")
     raw_task = "".join(parts)
-    scrubbed_task, hits = scrub_text(raw_task, dynamic_terms)
-    scrubbed_task, self_hits = scrub_self_references(scrubbed_task, cand)
+    # Redact task self-references before model/branch scrubbing so vendor/agent words inside
+    # repository names (e.g. openai/codex) cannot rewrite a URL before it is recognized.
+    scrubbed_task, self_hits = scrub_self_references(raw_task, cand)
+    scrubbed_task, hits = scrub_text(scrubbed_task, dynamic_terms)
     scrubbed_diff, diff_self_hits = scrub_self_references(diff_text, cand)
 
     return SidePayload(
