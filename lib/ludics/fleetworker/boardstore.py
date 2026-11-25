@@ -74,8 +74,8 @@ as ``registry.py``'s header states it for the registry; any other word is the pa
         ``fields["launch_id"]``. An unkeyed ``spawned`` or a legacy ``set`` relaunch behaves as
         before while clearing any stale ``fields["launch_id"]`` and keeping ``row["spawns"]``, and
         an unkeyed ``spawned`` still requires a re-read with ``show`` before retrying.
-  tally {"counter", "why", "wave", "task"} | {"counter", "why", "worker", "hosts": [box, ...], "done": [word, ...]}
-        one more of a row's coordinator turns or relaunches (ludics#1214, ludics#1236; the
+  tally {"counter", "why", "wave", "task", optional "turn_id", optional "message_sha256"} | {"counter", "why", "worker", "hosts": [box, ...], "done": [word, ...]}
+        one more of a row's coordinator turns or relaunches (ludics#1214, ludics#1236, ludics#1342; the
         classifier and its closed list are ``ludics.fleetworker.tally``'s, near side): ``counter``
         is ``interventions``, ``routine_answers`` or ``relaunches``, and its value goes up by one
         under the same lease lock as set, in one publish, so two tallies never read one starting
@@ -87,7 +87,29 @@ as ``registry.py``'s header states it for the registry; any other word is the pa
         instead. An ``interventions`` or ``relaunches`` tally also appends one log line in the same
         replace, ``<task> <counter>=<n>: <why>``; a ``routine_answers`` tally logs nothing. The row is
         named by ``wave`` and ``task`` (no row refuses, with the nearest task, as set does; no board
-        refuses). ``unstick`` and ``launch --replace`` know only a box and a worker, so they name
+        refuses).
+        THE TURN IDENTITY (ludics#1342): an optional caller-chosen opaque identifier matching
+        ``TURN_ID`` (same regex as ``WAVE`` and ``LAUNCH_ID``: ``[A-Za-z0-9][A-Za-z0-9._-]*``,
+        validated by ``turn_id_ok``; CLI flag ``--turn-id <id>``, payload key ``turn_id``). The
+        wave's recipe is ``<wave>-<task-slug>-<n>`` (for example ``w1125-t1342-1``, replacing
+        characters outside ``[A-Za-z0-9._-]`` in task names such as ``ll#1``, where ``<n>`` is the
+        1-based message/turn number chosen before sending and reused on every retry of that turn).
+        When ``turn_id`` is supplied, ``tally`` records the turn's facts (``counter``, ``why``,
+        optional 64-hex ``message_sha256``) and exact acknowledgement ``said`` under
+        ``row["tallies"][turn_id]`` in the same atomic publish. Replaying an ID already in
+        ``row["tallies"]`` with matching facts is a no-op (nothing written, counter, log and
+        ``updated_at`` untouched, any later row state preserved) that prints the original ``said``;
+        replaying it with different facts (including differing ``counter``, ``why``, or
+        ``message_sha256``, or presence/absence of ``message_sha256``) refuses, nothing written. A
+        distinct ``turn_id`` counts one more, and an unkeyed ``tally`` behaves as before while
+        keeping ``row["tallies"]`` and still requires a re-read with ``show`` before retrying.
+        Recovery boundary: ``turn_id`` (and ``message_sha256``, which requires ``turn_id``) is
+        accepted only on explicit ``wave``/``task`` payloads, never on worker-addressed tallies
+        whose row lookup follows the currently active row. ``board tally`` hashes the raw message
+        bytes into ``message_sha256`` when ``--turn-id`` is passed so two different messages
+        sharing a first line cannot silently collide under one ID; direct store callers without
+        ``message_sha256`` match on ``counter`` and ``why`` alone.
+        ``unstick`` and ``launch --replace`` know only a box and a worker, so they name
         ``worker`` and ``hosts`` (every spelling the near side knows: the fleet name and ``local``
         for this box, since a wave file may name either and prep writes it as given). The store
         uses ``scan``'s one listing of ``boards/`` and skips boards that fail to load or are not
@@ -184,6 +206,13 @@ LAUNCH_ID = WAVE
 SPAWN_FACT_KEYS = ("agent", "transport", "model")
 SPAWN_RECORD_REQUIRED = frozenset({"agent", "transport", "said"})
 SPAWN_RECORD_ALLOWED = frozenset({"agent", "transport", "model", "said"})
+# THE TURN IDENTITY (the header): the one turn ID grammar for ``board tally`` (#1342), sharing
+# WAVE's and LAUNCH_ID's token grammar.
+TURN_ID = WAVE
+SHA256 = re.compile(r"[0-9a-f]{64}")
+TALLY_FACT_KEYS = ("counter", "why", "message_sha256")
+TALLY_RECORD_REQUIRED = frozenset({"counter", "why", "said"})
+TALLY_RECORD_ALLOWED = frozenset({"counter", "why", "message_sha256", "said"})
 # What may not appear in a task name, which is a table row's first cell: a control character, or a
 # character that breaks a line (U+0085 is Cc; U+2028 and U+2029 are Zl and Zp).
 NOT_IN_TASK = frozenset({"Cc", "Zl", "Zp"})
@@ -226,6 +255,18 @@ def key_ok(value: Any) -> str:
 def launch_id_ok(value: Any) -> str:
     if not isinstance(value, str) or not LAUNCH_ID.fullmatch(value):
         refuse(f"a launch_id must be {LAUNCH_ID.pattern}")
+    return value
+
+
+def turn_id_ok(value: Any) -> str:
+    if not isinstance(value, str) or not TURN_ID.fullmatch(value):
+        refuse(f"a turn_id must be {TURN_ID.pattern}")
+    return value
+
+
+def sha256_ok(value: Any, what: str) -> str:
+    if not isinstance(value, str) or not SHA256.fullmatch(value):
+        refuse(f"{what} must be 64 lowercase hex digits")
     return value
 
 
@@ -289,6 +330,32 @@ def spawns_ok(value: Any) -> dict[str, dict[str, str]]:
     return out
 
 
+def tallies_ok(value: Any) -> dict[str, dict[str, str]]:
+    if not isinstance(value, dict):
+        refuse("tallies must be an object")
+    out: dict[str, dict[str, str]] = {}
+    for tid, raw in cast(dict[Any, Any], value).items():
+        turn_id = turn_id_ok(tid)
+        if not isinstance(raw, dict):
+            refuse(f"tally record {json.dumps(turn_id)} must be an object")
+        entry = cast(dict[Any, Any], raw)
+        keys = set(entry)
+        if not TALLY_RECORD_REQUIRED.issubset(keys) or not keys.issubset(TALLY_RECORD_ALLOWED):
+            refuse(f"tally record {json.dumps(turn_id)} must hold counter, why, said and optional message_sha256")
+        record: dict[str, str] = {
+            "counter": counter_ok(entry["counter"]),
+            "why": text_ok(entry["why"], "tally why"),
+        }
+        if "message_sha256" in entry:
+            record["message_sha256"] = sha256_ok(entry["message_sha256"], "tally message_sha256")
+        said = text_ok(entry["said"], "tally said")
+        if not said.strip():
+            refuse("tally said must not be blank")
+        record["said"] = said
+        out[turn_id] = record
+    return out
+
+
 def string_map(value: Any, what: str) -> dict[str, str]:
     if not isinstance(value, dict):
         refuse(f"{what} must be an object")
@@ -325,6 +392,8 @@ def validate(data: Any, wave: str, path: Path) -> Doc:
             text_ok(row.get("updated_at"), "updated_at")
             if "spawns" in row:
                 spawns_ok(row["spawns"])
+            if "tallies" in row:
+                tallies_ok(row["tallies"])
         log: Any = doc.get("log")
         if not isinstance(log, list):
             refuse("log must be a list")
@@ -483,12 +552,38 @@ def bump(doc: Doc, row: Doc, counter: str, why: str, coordinator: str, now: str)
     return f"BOARD TALLY {doc['wave']}: {json.dumps(row['task'])} {counter}={new}"
 
 
-def count(path: Path, doc: Doc, row: Doc, coordinator: str, payload: Doc) -> str:
-    """``tally``'s write (the header): the row's counter one more, its log line, one publish; the
-    acknowledgement it returns."""
+def tally_request(payload: Doc) -> tuple[str, str, str | None, dict[str, str]]:
+    """Validate a ``tally`` payload's counter, reason, optional turn_id and optional message_sha256."""
     counter = counter_ok(payload.get("counter"))
     why = text_ok(payload.get("why"), "a tally's why")
+    turn_id = turn_id_ok(payload["turn_id"]) if "turn_id" in payload else None
+    facts: dict[str, str] = {"counter": counter, "why": why}
+    if "message_sha256" in payload:
+        if turn_id is None:
+            refuse("a tally's message_sha256 requires turn_id")
+        facts["message_sha256"] = sha256_ok(payload["message_sha256"], "a tally's message_sha256")
+    return counter, why, turn_id, facts
+
+
+def count(path: Path, doc: Doc, row: Doc, coordinator: str, payload: Doc) -> str:
+    """``tally``'s write (the header): the row's counter one more, its log line, optional turn_id
+    record, one publish; or a no-op returning the original acknowledgement on a matching replay."""
+    counter, why, turn_id, facts = tally_request(payload)
+    if turn_id is not None:
+        tallies = cast(dict[str, dict[str, str]], row.get("tallies") or {})
+        if turn_id in tallies:
+            recorded = tallies[turn_id]
+            recorded_facts = {key: recorded[key] for key in TALLY_FACT_KEYS if key in recorded}
+            if recorded_facts != facts:
+                refuse(
+                    f"turn_id {json.dumps(turn_id)} is already recorded on {json.dumps(row['task'])}"
+                    " with different tally facts; nothing written"
+                )
+            return recorded["said"]
     said = bump(doc, row, counter, why, coordinator, now_utc().strftime(STAMP))
+    if turn_id is not None:
+        tallies = cast(dict[str, dict[str, str]], row.setdefault("tallies", {}))
+        tallies[turn_id] = {**facts, "said": said}
     publish(path, doc)
     return said
 
@@ -506,7 +601,9 @@ def set_relaunched(before: dict[str, str], after: dict[str, str], pairs: list[tu
 
 def tally_by_worker(root: str, coordinator: str, payload: Doc) -> None:
     """``tally`` by ``worker`` and ``host`` (the header): the one row not done across every board."""
-    counter_ok(payload.get("counter"))
+    if "turn_id" in payload or "message_sha256" in payload:
+        refuse("turn_id requires an explicit wave and task")
+    tally_request(payload)
     worker = text_ok(payload.get("worker"), "worker")
     hosts_raw: Any = payload.get("hosts")
     if not isinstance(hosts_raw, list) or not hosts_raw or not all(isinstance(h, str) and h for h in cast(list[Any], hosts_raw)):

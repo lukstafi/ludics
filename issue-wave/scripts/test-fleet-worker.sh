@@ -3024,6 +3024,36 @@ expect "...and a message that is no readable file is a usage error" 2 "board tal
 wait "$t1"; r1=$?; wait "$t2"; r2=$?
 [ "$r1 $r2 $(jq -r '.tasks[0].fields.interventions' "$ISSUE_WAVE_STATE/boards/bw.json")" = "0 0 3" ] &&
   ok "two tallies at once both count: the store increments under the lock" || ko "concurrent: $r1 $r2 $(jq -c '.tasks[0].fields' "$ISSUE_WAVE_STATE/boards/bw.json")"
+# ludics#1342: --turn-id makes a replayed board tally a no-op that answers as the first did,
+# while a new ID counts one and conflicting facts refuse.
+expect "a keyed routine board tally counts once" 0 '^BOARD TALLY bw: "ll#1" routine_answers=2$' -- \
+  "$FW" board tally bw "ll#1" --message "$TMP/assigned.md" --turn-id bw-ll1-1
+bwbefore=$(git hash-object "$ISSUE_WAVE_STATE/boards/bw.json")
+expect "replaying the same turn_id answers as the first did without counting again" 0 '^BOARD TALLY bw: "ll#1" routine_answers=2$' -- \
+  "$FW" board tally bw "ll#1" --message "$TMP/assigned.md" --turn-id bw-ll1-1
+[ "$bwbefore" = "$(git hash-object "$ISSUE_WAVE_STATE/boards/bw.json")" ] &&
+  ok "...the routine replay writes nothing and keeps routine_answers at 2" || ko "bw routine replay: $(cat "$ISSUE_WAVE_STATE/boards/bw.json")"
+expect "a keyed intervention accepts --turn-id before --message" 0 '^BOARD TALLY bw: "ll#1" interventions=4$' -- \
+  "$FW" board tally bw "ll#1" --turn-id bw-ll1-2 --message "$TMP/followup.md"
+bwbefore=$(git hash-object "$ISSUE_WAVE_STATE/boards/bw.json")
+expect "replaying the keyed intervention writes nothing and appends no second log line" 0 '^BOARD TALLY bw: "ll#1" interventions=4$' -- \
+  "$FW" board tally bw "ll#1" --message "$TMP/followup.md" --turn-id bw-ll1-2
+[ "$bwbefore" = "$(git hash-object "$ISSUE_WAVE_STATE/boards/bw.json")" ] &&
+  ok "...the intervention replay writes nothing" || ko "bw intervention replay: $(cat "$ISSUE_WAVE_STATE/boards/bw.json")"
+expect "a distinct turn_id with the same message counts one more" 0 '^BOARD TALLY bw: "ll#1" interventions=5$' -- \
+  "$FW" board tally bw "ll#1" --message "$TMP/followup.md" --turn-id bw-ll1-3
+bwbefore=$(git hash-object "$ISSUE_WAVE_STATE/boards/bw.json")
+expect "a late replay of an earlier turn_id still answers as its first call did" 0 '^BOARD TALLY bw: "ll#1" interventions=4$' -- \
+  "$FW" board tally bw "ll#1" --message "$TMP/followup.md" --turn-id bw-ll1-2
+printf 'Your plan misses #1210: read it, then go on.\nSecond line differs.\n' > "$TMP/followup2.md"
+expect "reusing a turn_id for a different message counter is refused" 1 '^BOARD REFUSED: turn_id "bw-ll1-2" is already recorded' -- \
+  "$FW" board tally bw "ll#1" --message "$TMP/assigned.md" --turn-id bw-ll1-2
+expect "reusing a turn_id for the same first line with a different body is refused" 1 '^BOARD REFUSED: turn_id "bw-ll1-2" is already recorded' -- \
+  "$FW" board tally bw "ll#1" --message "$TMP/followup2.md" --turn-id bw-ll1-2
+[ "$bwbefore" = "$(git hash-object "$ISSUE_WAVE_STATE/boards/bw.json")" ] &&
+  ok "...replays and conflicts leave the board untouched" || ko "bw conflict: $(cat "$ISSUE_WAVE_STATE/boards/bw.json")"
+expect "a turn_id outside the grammar is a usage error" 2 'board tally: --turn-id must be' -- \
+  "$FW" board tally bw "ll#1" --message "$TMP/followup.md" --turn-id bad/id
 # A row's state grammar (ludics#810): set warns on status= and on a state with no state word, and writes
 # both as given; check, a read, exits 3 listing each row not done and 0 when every row is.
 expect "set warns on status=, and writes it" 0 "^BOARD WARNING: task \"ck-1\": a row's state is its state key, not status; written as given$" -- \

@@ -836,7 +836,8 @@ a successor enters its lease mutation. It checks the refusal and both files in t
 repeated close writes nothing. The fixtures use payload files rather than accepting JSON in argv.
 The same section records a first native spawn, a native respawn and a CLI-to-native finisher
 through `board spawned`, checking the recorded facts, the relaunch counts, launch-attempt ID replay
-idempotency and the lease (#1264, #1294).
+idempotency and the lease (#1264, #1294), and pins `board tally --turn-id` replay idempotency and
+conflict refusal (#1342).
 
 `test-fleet-worker.sh` launch cases also pin `--standing`: a refused reservation leaves the
 prepared worktree, starts no worker, and a retry cannot silently adopt an outstanding dispatch;

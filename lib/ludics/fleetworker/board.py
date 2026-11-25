@@ -22,10 +22,14 @@ Its header is the contract: the document, what it accepts, and the markdown view
                                                       lease; ``ludics.fleetworker.takeover``)
   board close <wave> <task> [--pr <n>] ...            a merged task's close-out, in one line (lease;
                                                       ``ludics.fleetworker.closeout``)
-  board tally <wave> <task> --message <file>          one more of the row's coordinator turns, the
+  board tally <wave> <task> --message <file> [--turn-id <id>]
+                                                      one more of the row's coordinator turns, the
                                                       message sent to a native worker classified as
                                                       routine or an intervention (lease;
-                                                      ``ludics.fleetworker.tally``, ludics#1214)
+                                                      ``ludics.fleetworker.tally``, ludics#1214,
+                                                      ludics#1342); replaying a recorded turn ID
+                                                      with the same message is a no-op answering as
+                                                      the first did
 
 ``record_placement`` is assign's internal writer: the store unions a requested host/checkout
 into the unique worker row under the lease lock (boardstore.py's placement contract).
@@ -78,7 +82,8 @@ USAGE = (
     f"board set [--create] [--new-row] <wave> <task> <key=value>... | {SPAWNED_USAGE} | "
     "board note [--create] <wave> <key=value>... | "
     "board log <wave> <text>... | board show <wave> [--json] | board check <wave> | board takeover <wave> <task> | "
-    "board close <wave> <task> [--pr <n>] [--agent <id>] [--evidence <text>] | board tally <wave> <task> --message <file>"
+    "board close <wave> <task> [--pr <n>] [--agent <id>] [--evidence <text>] | "
+    "board tally <wave> <task> --message <file> [--turn-id <id>]"
 )
 STATE_WORDS = f"live {', '.join(LIVE_STATES)}; done {', '.join(DONE_STATES)}"
 
