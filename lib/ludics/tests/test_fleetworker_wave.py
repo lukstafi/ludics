@@ -19,7 +19,7 @@ from collections.abc import Generator
 from typing import Any
 from unittest import mock
 
-from ludics import cli, proc
+from ludics import agy, cli, proc
 from ludics.fleetworker import farside, gate, preflight, revision, takeover, tally, wave, wavedecide, wavedrive, wavelaunch, waveloop, waveprep, wavereview, waveunprep, workers
 from ludics.fleetworker.boardstore import NO_BOARD_EXIT
 from ludics.fleetworker.config import load_config
@@ -2091,19 +2091,76 @@ HEADINGS = ("## Who you are and where you work", "## Startup (first thing, befor
             "## Landing: ship-pr", "## The review checkpoint", "## After the merge")
 
 
-def agy_stream(response: str, status: str = "SUCCESS", denied: list[dict[str, str]] | None = None) -> str:
-    """What agy --output-format stream-json prints for one turn: init, a step, the result."""
+def agy_step(index: object, state: str, delta: object = None, kind: str = "agent_response") -> dict[str, object]:
+    return {"event": "step_update", "step_update": {"step_type": kind, "step_index": index,
+                                                 "state": state, "text_delta": delta}}
+
+
+def agy_stream(response: str, status: str = "SUCCESS", denied: list[dict[str, str]] | None = None,
+               steps: tuple[dict[str, object], ...] = ()) -> str:
+    """What agy --output-format stream-json prints for one turn: init, steps, the result."""
     result: dict[str, Any] = {"conversation_id": "c1", "status": status, "response": response, "num_turns": 1}
     if denied is not None:
         result["denied_actions"] = denied
     return "\n".join(json.dumps(e) for e in (
         {"event": "init", "conversation_id": "c1", "init": {"model": "gemini-4-neon-high", "permission_mode": "request-review"}},
         {"event": "step_update", "step_update": {"conversation_id": "c1", "step_index": 0, "state": "DONE", "step_type": "user_input"}},
+        *steps,
         {"event": "result", "result": result})) + "\n"
 
 
 def agy_answer(response: str, **more: Any) -> Answer:
     return Answer(stdout=agy_stream(response, **more))
+
+
+class AgyResult(unittest.TestCase):
+    def test_last_done_step_assembles_deltas_by_index(self) -> None:
+        response = "Waiting.\n\nA finding.\nDone.\n"
+        steps = (agy_step(7, "DONE", "Waiting."),
+                 agy_step(3, "ACTIVE", "\nA finding."),
+                 agy_step(9, "ACTIVE", "Other text"),
+                 agy_step(3, "ACTIVE", "\nDone.\n"),
+                 agy_step(3, "DONE"),
+                 agy_step(10, "DONE", "  \n"))
+        self.assertEqual(agy.result(agy_stream(response, steps=steps)), ("\nA finding.\nDone.\n", "c1", ""))
+
+    def test_last_done_step_must_be_a_line_boundary_suffix(self) -> None:
+        for response, step in (("Waiting. Done.", "Done."),
+                               ("Waiting.\u0085Done.", "Done."),
+                               ("Waiting.\nDone.\nStill going.", "Done.\n")):
+            with self.subTest(response=response):
+                steps = (agy_step(1, "DONE", step), agy_step(2, "ACTIVE", "Still going."))
+                self.assertEqual(agy.result(agy_stream(response, steps=steps)), (response, "c1", ""))
+
+    def test_only_agent_response_steps_with_numeric_indices_can_trim(self) -> None:
+        response = "Waiting.\nDone."
+        steps = (agy_step("2", "DONE", "Done."), agy_step(True, "DONE", "Done."),
+                 agy_step(2, "DONE", "Done.", kind="tool_call"))
+        for step in steps:
+            with self.subTest(step=step):
+                self.assertEqual(agy.result(agy_stream(response, steps=(step,))), (response, "c1", ""))
+
+    def test_last_done_step_preserves_plan_markers_in_the_prefix(self) -> None:
+        for prefix, step in (("Waiting.\nPLAN_READY", "\nPlan text.\nEND_PLAN_READY"),
+                             ("PLAN_READY\nPlan text.\n\tEND_PLAN_READY\n", "Finished.")):
+            with self.subTest(prefix=prefix):
+                response = prefix + step
+                self.assertEqual(agy.result(agy_stream(response, steps=(agy_step(2, "DONE", step),))),
+                                 (response, "c1", ""))
+
+    def test_last_done_step_cannot_cross_a_turn_boundary(self) -> None:
+        steps = (agy_step(1, "DONE", "Done."),)
+        response = "Different turn.\nDone."
+        previous_response = "Previous turn.\nDone."
+        previous, current = agy_stream(previous_response, steps=steps), agy_stream(response)
+        init, rest = current.split("\n", 1)
+        result_event = rest.split("\n", 1)[1]
+        cases = (("result reset", previous + result_event, response),
+                 ("init reset", json.dumps(steps[0]) + "\n" + init + "\n" + rest, response),
+                 ("unfinished turn", previous + json.dumps(agy_step(2, "DONE", previous_response)), "Done."))
+        for name, stream, expected in cases:
+            with self.subTest(name=name):
+                self.assertEqual(agy.result(stream), (expected, "c1", ""))
 
 
 class GeminiReview(WaveDirCase):
@@ -2164,6 +2221,15 @@ class GeminiReview(WaveDirCase):
             "`gh issue view 42 --repo o/up --json number,title,body,comments`", "## Your answer")]
         self.assertEqual(order, sorted(order))
         self.assertTrue(self.read(self.stem() + ".md").startswith(f"### Review checkpoint (at-open): head {self.head[:8]}"))
+
+    def test_review_saves_only_the_last_completed_response_step(self) -> None:
+        wait = "Waiting for CI.\n"
+        review = self.said("VERDICT: clean")
+        steps = (agy_step(1, "DONE", wait), agy_step(2, "DONE", review))
+        with self.gworld(agy_answer(wait + review, steps=steps)):
+            rc, out, err = self.review(sha=self.head)
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(self.read(self.stem() + ".md").rstrip("\n"), review)
 
     def test_the_clone_is_at_the_head_with_origin_main_and_no_remote(self) -> None:
         """Read inside the turn, from the directory agy is started in."""

@@ -31,15 +31,24 @@ agy keeps about the first 191 KB of one message (a 400 KB message kept 191,391 b
 ``status`` is ``SUCCESS``, the response is not blank and nothing was denied. Its
 ``conversation_id`` resumes the conversation (``--conversation``), and a resumed turn runs in the
 same directory, since agy scopes conversations to their workspace.
+
+RESPONSE TRIMMING follows farside.LOG_LAST_RESULT (#1308). Between ``init`` and ``result`` resets,
+only string ``text_delta`` fields on ``agent_response`` step updates with numeric indices contribute
+to step text. The last nonblank step observed reaching ``DONE`` can replace the full response only
+if it is an exact LF-boundary suffix. If a removed line would start with ``PLAN_READY`` or
+``END_PLAN_READY`` after optional spaces or tabs, keep the whole response so a plan can span steps.
+Other event types, other marker words and the meaning of prose play no part in trimming.
 """
 
 import json
+import math
 import os
 import shutil
 import subprocess
 from typing import Any, cast
 
 from ludics import proc
+from ludics.peerplan.transcript import CLOSE as PLAN_CLOSE, OPEN as PLAN_OPEN
 
 MARK = "ludics-clone"
 NO_HOOKS = ["-c", f"core.hooksPath={os.devnull}", "-c", "advice.detachedHead=false"]
@@ -64,10 +73,23 @@ def message(prompt: str) -> bytes:
     return (json.dumps({"event": "user", "message": {"content": prompt}}) + "\n").encode("ascii")
 
 
+def _response_text(response: str, step: str) -> str:
+    if not step or not response.endswith(step):
+        return response
+    prefix = response[:-len(step)]
+    if prefix and not (prefix.endswith("\n") or step.startswith("\n")):
+        return response
+    if any(line.lstrip(" \t").startswith((PLAN_OPEN, PLAN_CLOSE)) for line in prefix.split("\n")):
+        return response
+    return step
+
+
 def result(stdout: str) -> tuple[str, str, str]:
     """The turn's final message, its conversation id, and "" or why there is no message."""
     final: dict[str, Any] = {}
     conversation = ""
+    buffers: dict[int | float, str] = {}
+    completed = last_completed = ""
     for raw in stdout.split("\n"):  # one event per LF line (never splitlines: U+0085 is JSON text)
         try:
             event: Any = json.loads(raw)
@@ -79,9 +101,31 @@ def result(stdout: str) -> tuple[str, str, str]:
         cid = fields.get("conversation_id")
         if isinstance(cid, str) and cid:
             conversation = cid
-        if fields.get("event") == "result":
+        kind = fields.get("event")
+        if kind == "init":
+            buffers.clear()
+            completed = ""
+        elif kind == "step_update":
+            step = fields.get("step_update")
+            if not isinstance(step, dict):
+                continue
+            update = cast(dict[str, Any], step)
+            index, delta = update.get("step_index"), update.get("text_delta")
+            if update.get("step_type") != "agent_response" or type(index) not in (int, float):
+                continue
+            if type(index) is float and not math.isfinite(index):
+                continue
+            if isinstance(delta, str):
+                buffers[index] = buffers.get(index, "") + delta
+            whole = buffers.get(index, "")
+            if update.get("state") == "DONE" and whole.strip():
+                completed = whole
+        elif kind == "result":
             found: Any = fields.get("result")
             final = cast(dict[str, Any], found) if isinstance(found, dict) else {}
+            last_completed = completed
+            buffers.clear()
+            completed = ""
             cid = final.get("conversation_id")
             if isinstance(cid, str) and cid:
                 conversation = cid
@@ -91,7 +135,7 @@ def result(stdout: str) -> tuple[str, str, str]:
         return "", conversation, f"agy refused it a permission ({', '.join(names) or 'unnamed'}), which ends its turn"
     if final.get("status") != "SUCCESS" or not (isinstance(text, str) and text.strip()):
         return "", conversation, f"its result is {final.get('status') or 'missing'} with no response"
-    return text, conversation, ""
+    return _response_text(text, last_completed), conversation, ""
 
 
 def environment() -> dict[str, str]:
