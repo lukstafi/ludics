@@ -5461,11 +5461,71 @@ class Heartbeat(unittest.TestCase):
             )
             self.assertNotEqual(outage_stamp, quiet_outage_stamp)
 
-            # Malformed reported payload fails closed to None.
+            # Plain full read during a board outage records the printed non-board parts while keeping
+            # the last complete snapshot and last reported board rows intact.
+            with open(state_file, "w") as f:
+                json.dump(mid_state[0], f)
+            with open(loop_file, "w") as f:
+                f.write("2026-11-23T12:00:00Z LOOP cc PASS wv-cc-1 at abc\n")
+            now[0] = 3600.0
+            with (mock.patch.object(wave, "run", side_effect=lambda argv, **_: Done(0, t1_prs) if argv[1] == "prs" else Done(0, "launches open\n")),  # pyright: ignore[reportUnknownLambdaType]
+                  mock.patch.object(wave, "board_rows", return_value=None),
+                  mock.patch.object(wave, "utc_now", side_effect=fake_utc)):
+                rc, plain_outage_out, _ = captured(wave.cmd_heartbeat, cfg, [path, "--sleep", "0"])
+            self.assertEqual(rc, 0)
+            self.assertIn("HEARTBEAT board: did not read", plain_outage_out)
+            plain_outage_stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(1700003600))
+            with (mock.patch.object(wave, "run", side_effect=lambda argv, **_: Done(0, t1_prs) if argv[1] == "prs" else Done(0, "launches open\n")),  # pyright: ignore[reportUnknownLambdaType]
+                  mock.patch.object(wave, "board_rows", return_value=t2_rows),
+                  mock.patch.object(wave, "clock", side_effect=lambda: now[0]),
+                  mock.patch.object(wave, "sleep", side_effect=advance),
+                  mock.patch.object(wave, "utc_now", side_effect=fake_utc)):
+                rc, after_plain_outage, _ = captured(wave.cmd_heartbeat, cfg, [path, "--sleep", "600", "--until-attention", "--max-quiet", "3600"])
+            self.assertEqual(rc, 0)
+            after_plain_lines = after_plain_outage.rstrip("\n").split("\n")
+            self.assertEqual(after_plain_lines[0], "HEARTBEAT wake wv: board done (t7 merged)")
+            self.assertEqual(
+                after_plain_lines[1],
+                f"HEARTBEAT changed since {plain_outage_stamp}: board rows (t6 launched→reviewing; t7 reviewing→merged)",
+            )
+
+            # Malformed reported payload fails closed to None and persists as null across silent saves on restart.
             bad_state = dict(mid_state[0], reported="not-a-dict")
             with open(state_file, "w") as f:
                 json.dump(bad_state, f)
             self.assertIsNone(wave.saved_reported(state_file))
+            now[0] = 4200.0
+            silent_rows = [["t6", [["state", "merging"]]], ["t7", [["state", "merging"], ["pr", "14"]]]]
+
+            class _StopAfterSilent(BaseException):
+                pass
+
+            def stop_on_second_sleep(dt: float) -> None:
+                if now[0] >= 4800.0:
+                    raise _StopAfterSilent
+                now[0] += dt
+
+            with (mock.patch.object(wave, "run", side_effect=lambda argv, **_: Done(0, t1_prs) if argv[1] == "prs" else Done(0, "launches open\n")),  # pyright: ignore[reportUnknownLambdaType]
+                  mock.patch.object(wave, "board_rows", return_value=silent_rows),
+                  mock.patch.object(wave, "clock", side_effect=lambda: now[0]),
+                  mock.patch.object(wave, "sleep", side_effect=stop_on_second_sleep),
+                  mock.patch.object(wave, "utc_now", side_effect=fake_utc)):
+                with self.assertRaises(_StopAfterSilent):
+                    wave.cmd_heartbeat(cfg, [path, "--sleep", "600", "--until-attention", "--max-quiet", "3600"])
+            with open(state_file) as f:
+                persisted_unknown = json.load(f)
+            self.assertIn("reported", persisted_unknown)
+            self.assertIsNone(persisted_unknown["reported"])
+            self.assertIsNone(wave.saved_reported(state_file))
+            with (mock.patch.object(wave, "run", side_effect=lambda argv, **_: Done(0, t1_prs) if argv[1] == "prs" else Done(0, "launches open\n")),  # pyright: ignore[reportUnknownLambdaType]
+                  mock.patch.object(wave, "board_rows", return_value=t2_rows),
+                  mock.patch.object(wave, "clock", side_effect=lambda: now[0]),
+                  mock.patch.object(wave, "sleep", side_effect=advance),
+                  mock.patch.object(wave, "utc_now", side_effect=fake_utc)):
+                rc, unknown_wake_out, _ = captured(wave.cmd_heartbeat, cfg, [path, "--sleep", "600", "--until-attention", "--max-quiet", "3600"])
+            self.assertEqual(rc, 0)
+            self.assertTrue(unknown_wake_out.startswith("HEARTBEAT wake wv: board done (t7 merged)\n"))
+            self.assertNotIn("HEARTBEAT changed since", unknown_wake_out)
 
     def test_until_attention_exits_on_max_quiet_and_resets_on_movement(self) -> None:
         with tempfile.TemporaryDirectory() as d:

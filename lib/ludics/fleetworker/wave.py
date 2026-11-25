@@ -177,15 +177,17 @@ while updating ``checked_at`` and ``loop_running``; when the board is unreadable
 ``at``/``parts``/``read`` stays untouched while ``alert_state`` records the latest non-board state
 so a reported alert is not replayed on re-arm. The last read printed to the coordinator (or the
 cold-start baseline) is tracked separately and persisted in ``logs/heartbeat.last`` as optional
-``reported`` (``{"at", "parts"}``) whenever it differs from ``at``/``parts`` (omitted when equal;
-an omitted ``reported`` falls back to ``at``/``parts``, and a present malformed one yields no diff).
-Silent ticks advance ``at``/``parts``/``read`` for plain ticks without advancing ``reported``. When
-an exit condition or the stall bound triggers, it prints
+``reported`` (``{"at", "parts"}``) whenever it differs from ``at``/``parts``, or ``null`` when
+unknown (omitted when equal; an omitted ``reported`` falls back to ``at``/``parts``, and a present
+``null`` or malformed one yields no diff and stays ``null`` across silent saves until a full read
+re-establishes it). Silent ticks advance ``at``/``parts``/``read`` for plain ticks without advancing
+``reported``. When an exit condition or the stall bound triggers, it prints
 ``HEARTBEAT wake <wave>: <comma-separated causes>`` first, then the full read with
 ``HEARTBEAT changed since`` diffed against the last reported read (including any captured board
 diagnostic and ending with ``HEARTBEAT <wave> <UTC time>``), and updates ``logs/heartbeat.last``
-(on an unreadable-board wake, ``reported`` advances to the wake's time and non-board parts while
-preserving its last reported ``board rows``).
+(on an unreadable-board wake — or a plain full read with an unreadable board when state exists —
+``reported`` advances to the read's time and non-board parts while preserving its last reported
+``board rows``).
 """
 
 import contextlib
@@ -198,7 +200,7 @@ import shlex
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from ludics import cli
 from ludics.fleetworker.config import Config
@@ -949,6 +951,13 @@ def _alert_state_of(tick: HeartbeatTick, prev_halted: tuple[int, tuple[str, ...]
     }
 
 
+def _partial_reported(tick: HeartbeatTick, prior_parts: dict[str, Any] | None) -> tuple[str, dict[str, Any]]:
+    parts = dict(tick.parts)
+    if prior_parts is not None and "board rows" in prior_parts:
+        parts["board rows"] = prior_parts["board rows"]
+    return tick.stamp, parts
+
+
 def save_heartbeat_state(
     state: str,
     *,
@@ -958,7 +967,7 @@ def save_heartbeat_state(
     read: list[str],
     loop_running: dict[str, bool] | None,
     alert_state: dict[str, Any] | None = None,
-    reported: tuple[str, dict[str, Any]] | None = None,
+    reported: tuple[str, dict[str, Any]] | Literal["same", "unknown"] = "same",
 ) -> None:
     os.makedirs(os.path.dirname(state), exist_ok=True)
     payload: dict[str, Any] = {
@@ -972,7 +981,9 @@ def save_heartbeat_state(
         payload["loop_running"] = loop_running
     if alert_state is not None:
         payload["alert_state"] = alert_state
-    if reported is not None and (reported[0] != at or reported[1] != parts):
+    if reported == "unknown":
+        payload["reported"] = None
+    elif reported != "same" and (reported[0] != at or reported[1] != parts):
         payload["reported"] = {"at": reported[0], "parts": reported[1]}
     write_atomically(state, json.dumps(payload, ensure_ascii=False) + "\n")
 
@@ -1088,6 +1099,25 @@ def cmd_heartbeat(cfg: Config, args: list[str]) -> int:
             loop_running = saved_loop_running(saved if saved is not None else saved_alert_state(state))
             save_heartbeat_state(state, at=tick.stamp, checked_at=tick.stamp, parts=tick.parts, read=tick.read,
                                  loop_running=loop_running)
+        else:
+            alerts = saved_alert_state(state)
+            if saved is not None or alerts is not None:
+                prior_reported = saved_reported(state)
+                raw_read = saved.get("read") if saved is not None else None
+                read_lines = (list(cast(list[str], raw_read))
+                              if isinstance(raw_read, list) and all(isinstance(x, str) for x in cast(list[Any], raw_read))
+                              else [])
+                loop_running = saved_loop_running(saved if saved is not None else alerts)
+                save_heartbeat_state(
+                    state,
+                    at=cast(str, saved["at"]) if saved is not None else None,
+                    checked_at=tick.stamp,
+                    parts=cast(dict[str, Any], saved["parts"]) if saved is not None else None,
+                    read=read_lines,
+                    loop_running=loop_running,
+                    alert_state=alerts,
+                    reported=_partial_reported(tick, prior_reported[1] if prior_reported is not None else None),
+                )
         return 0
 
     saved = saved_read(state)
@@ -1183,9 +1213,6 @@ def cmd_heartbeat(cfg: Config, args: list[str]) -> int:
                 save_heartbeat_state(state, at=tick.stamp, checked_at=tick.stamp, parts=tick.parts, read=tick.read,
                                      loop_running=tick.loop_running)
             else:
-                wake_reported_parts = dict(tick.parts)
-                if reported_parts is not None and "board rows" in reported_parts:
-                    wake_reported_parts["board rows"] = reported_parts["board rows"]
                 save_heartbeat_state(
                     state,
                     at=saved_at,
@@ -1194,10 +1221,12 @@ def cmd_heartbeat(cfg: Config, args: list[str]) -> int:
                     read=saved_read_lines if saved_read_lines is not None else [],
                     loop_running=tick.loop_running,
                     alert_state=_alert_state_of(tick, prev_halted),
-                    reported=(tick.stamp, wake_reported_parts),
+                    reported=_partial_reported(tick, reported_parts),
                 )
             return 0
-        reported_state = (reported_at, reported_parts) if reported_at is not None and reported_parts is not None else None
+        reported_state: tuple[str, dict[str, Any]] | Literal["unknown"] = (
+            (reported_at, reported_parts) if reported_at is not None and reported_parts is not None else "unknown"
+        )
         if tick.rows is not None:
             if snapshot_changed or saved_at is None:
                 saved_at = tick.stamp
