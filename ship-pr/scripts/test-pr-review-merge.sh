@@ -291,7 +291,7 @@ fixture_read_fails() {
 
 # The PR's base and head as the gate's reads see them: moved once the merge loop has read the base.
 fixture_base() {
-  if [ -n "$BASE_KEEPS_MOVING" ]; then
+  if [ -n "$BASE_KEEPS_MOVING" ] && [ "$(fixture_call_total base-sha)" -ge "$BASE_MOVE_AFTER_READS" ]; then
     printf 'moved-%s\n' "$(fixture_call_total base-sha)"
   elif [ -n "$BASE_MOVED" ] && [ "$(fixture_call_total base-sha)" -ge "$BASE_MOVE_AFTER_READS" ]; then
     printf '%s\n' "$BASE_MOVED"
@@ -2585,6 +2585,40 @@ test_a_refused_absent_regate_confirms_against_the_head_bound_to_the_write() {
   done
 }
 
+test_a_refused_absent_retry_limit_confirms_a_concurrent_landing() {
+  local landed_head
+  for landed_head in head-sha landed-sha ''; do
+    reset
+    NO_CHECKS=1
+    MERGE_NOT_MERGEABLE=1
+    BASE_KEEPS_MOVING=1
+    BASE_MOVE_AFTER_READS=2
+    if [ -n "$landed_head" ]; then
+      ALREADY_MERGED=1
+      MERGED_HEAD=$landed_head
+    fi
+    run_merge
+    assert_eq "$(grep -c -x 'CALL base-sha' "$CALLS_FILE")" 3 "the outer loop hit the ABSENT retry limit"
+    assert_eq "$(grep -c -x 'CALL merged-after-refusal' "$CALLS_FILE")" 1 "the limit refusal probed REST"
+    assert_eq "$(merge_calls)" 1 "only the first merge write was sent"
+    if [ "$landed_head" = head-sha ]; then
+      assert_eq "$MERGE_RC" 0 "the judged head landed concurrently ($MERGE_OUTPUT)"
+      assert_contains "$MERGE_STDOUT" "$REPO#7 merged=true state=MERGED" "confirm read the landing"
+    elif [ -n "$landed_head" ]; then
+      assert_eq "$MERGE_RC" 1 "an unjudged head landed concurrently ($MERGE_OUTPUT)"
+      assert_contains "$MERGE_STDOUT" "$REPO#7 merged=true state=MERGED" "confirm read the landing"
+      assert_contains "$MERGE_STDERR" "MERGED at an UNJUDGED head landed-s (the gate judged head-sha)" \
+        "names the head mismatch"
+      assert_contains "$MERGE_STDERR" "do NOT re-merge" "gives the landing instruction"
+    else
+      assert_eq "$MERGE_RC" 1 "an unmerged PR keeps the ABSENT retry-limit refusal ($MERGE_OUTPUT)"
+      assert_contains "$MERGE_STDERR" "base kept moving under its ABSENT verdict (3 gate reads)" \
+        "preserves the original refusal"
+      assert_not_contains "$MERGE_STDOUT" "merged=true" "did not claim a landing"
+    fi
+  done
+}
+
 test_a_thread_opened_during_gateway_backoff_refuses_the_resend() (
   reset
   retune API_ATTEMPTS=3
@@ -4619,6 +4653,46 @@ test_a_refused_gateway_resend_confirms_a_pr_merged_meanwhile() (
   assert_eq "$(merge_calls)" 1 "the write was not resent"
 )
 
+test_a_failed_build_refresh_after_write_confirms_a_concurrent_landing() {
+  local mode
+  for mode in judged unjudged unmerged; do
+    reset
+    moving_build_fixture compatible
+    BUILD_MOVE_ON_CALL=base-modified
+    if [ "$mode" = judged ]; then
+      ALREADY_MERGED=1
+      MERGED_HEAD=$BUILD_HEAD
+    elif [ "$mode" = unjudged ]; then
+      ALREADY_MERGED=1
+      MERGED_HEAD=landed-sha
+    fi
+    BUILD_PROBE_RED=$BUILD_LATER FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+    if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+      assert_posix_only_refusal "confirming after a failed refresh" "trigger always: every merge of this repository is built"
+      return 0
+    fi
+    assert_eq "$(cat "$BUILD_PROBE_LOG")" \
+      "$(printf 'full %s %s\n' "$BUILD_TIP" "$BUILD_HEAD" "$BUILD_LATER" "$BUILD_HEAD" "$BUILD_LATER" "$BUILD_HEAD")" \
+      "the refresh build ran and failed on $BUILD_LATER ($mode)"
+    assert_eq "$(grep -c -x 'CALL merged-after-refusal' "$CALLS_FILE")" 1 "the failed refresh probed REST ($mode)"
+    assert_eq "$(merge_calls)" 1 "only the first merge write was sent ($mode)"
+    if [ "$mode" = judged ]; then
+      assert_eq "$MERGE_RC" 0 "the judged head landed concurrently ($MERGE_OUTPUT)"
+      assert_contains "$MERGE_STDOUT" "$REPO#7 merged=true state=MERGED" "confirm read the landing"
+    elif [ "$mode" = unjudged ]; then
+      assert_eq "$MERGE_RC" 1 "an unjudged head landed concurrently ($MERGE_OUTPUT)"
+      assert_contains "$MERGE_STDOUT" "$REPO#7 merged=true state=MERGED" "confirm read the landing"
+      assert_contains "$MERGE_STDERR" "MERGED at an UNJUDGED head landed-s (the gate judged ${BUILD_HEAD:0:8})" \
+        "names the head mismatch"
+      assert_contains "$MERGE_STDERR" "do NOT re-merge" "gives the landing instruction"
+    else
+      assert_eq "$MERGE_RC" 1 "an unmerged PR keeps the build refresh refusal ($MERGE_OUTPUT)"
+      assert_contains "$MERGE_STDERR" "does not build" "preserves the build failure refusal"
+      assert_not_contains "$MERGE_STDOUT" "merged=true" "did not claim a landing"
+    fi
+  done
+}
+
 # The base moved, and the paths both sides changed hold no build input: the config is read, nothing
 # is built, and the merge proceeds. So with no path changed on both sides (the default trigger). With
 # a side that changed nothing, no trigger can hold, and the config is not even read.
@@ -5208,6 +5282,7 @@ tests=(
   test_a_refused_not_mergeable_retry_confirms_the_judged_head
   test_a_refused_not_mergeable_retry_reports_an_unjudged_landing
   test_a_refused_absent_regate_confirms_against_the_head_bound_to_the_write
+  test_a_refused_absent_retry_limit_confirms_a_concurrent_landing
   test_a_thread_opened_during_gateway_backoff_refuses_the_resend
   test_a_clear_gateway_resend_repeats_the_attempt_reads_in_order
   test_a_blocking_checkpoint_with_no_confirm_refuses
@@ -5294,6 +5369,7 @@ tests=(
   test_a_gateway_refusal_never_resends_a_stale_build
   test_a_gateway_resend_confirms_a_pr_merged_meanwhile
   test_a_refused_gateway_resend_confirms_a_pr_merged_meanwhile
+  test_a_failed_build_refresh_after_write_confirms_a_concurrent_landing
   test_a_refused_gateway_resend_with_an_unanswered_probe_is_unknown
   test_no_build_input_on_both_sides_builds_nothing
   test_a_repository_without_the_config_builds_nothing

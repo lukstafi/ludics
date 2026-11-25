@@ -8,9 +8,12 @@ test-pr-review-base-drift.sh) pin the behaviour through the sourced stubs and th
 these pin that the forward carries the arguments, the constants and the exits the same way when
 gh is whatever is on PATH.
 
-RetryGates exercises the retry exit codes in-process by substituting gate and API outcomes.
+RetryGates exercises the retry exit codes and post-write confirmation paths in-process by
+substituting gate, build, lease and API outcomes.
 """
 
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -21,12 +24,16 @@ from collections.abc import Sequence
 from pathlib import Path
 from unittest import mock
 
-from ludics import cli
+from ludics import cli, proc
+from ludics.prreview import merge as merge_mod, mergelease
+from ludics.prreview.budget import Budget
 from ludics.prreview.checkpoint import Post, headed, heading, hold_of, parse_verdict, post_of
 from ludics.prreview.clock import FuncClock
 from ludics.prreview.core import Config, GhFailed, GhOk, GhSession, GhUnanswered
+from ludics.prreview.drift import Drift
 from ludics.prreview.gate import load_gate_config
 from ludics.prreview.merge import Merge, Options
+from ludics.prreview.mergebuild import BuildConfig, BuildVerdict
 from ludics.tests.fake import Answer, FakeTool, When
 
 LIB = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
@@ -117,6 +124,306 @@ class RetryGates(unittest.TestCase):
                     self.assertIs(caught.exception, refusal)
                 else:
                     self.assertIn("Read the PR's state before re-running merge.", caught.exception.message)
+
+    def _run_merge_in_process(
+        self,
+        merge: Merge,
+        *,
+        build: BuildVerdict | None = None,
+        judged_head: str = "head-sha",
+    ) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+
+        def settle_gate() -> None:
+            merge.gate.check_sha = judged_head
+
+        with (
+            mock.patch.object(merge, "check_checkout"),
+            mock.patch.object(merge.multi, "warn"),
+            mock.patch.object(merge.gate, "advisory_policy", return_value=0),
+            mock.patch.object(merge, "branch_tip_gate"),
+            mock.patch.object(merge, "judge", side_effect=settle_gate),
+            mock.patch.object(merge, "drift", return_value=Drift(0, "main", judged_head, "b1" * 20)),
+            mock.patch.object(merge_mod, "merge_build", return_value=build),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+        ):
+            rc = merge.run()
+        return rc, out.getvalue(), err.getvalue()
+
+    def _build_verdict(self, *, fleet_lease: bool = False) -> BuildVerdict:
+        cfg = BuildConfig("true", (), trigger="always", fleet_lease=fleet_lease)
+        return BuildVerdict("head-sha", "main", "b1" * 20, cfg)
+
+    def test_failed_build_refresh_after_write_confirms_or_keeps_refusal(self) -> None:
+        base_moved = "GraphQL: Base branch was modified. Review and try the merge again. (mergePullRequest)"
+        build = self._build_verdict()
+        next_tip = "b2" * 20
+        for rc in (1, 4, 5):
+            refusal = cli.Exit(rc, f"refresh build failed ({rc})")
+            for mode in ("judged", "unjudged", "unmerged", "unknown"):
+                with self.subTest(rc=rc, mode=mode):
+                    merge = Merge(self.session, "o/r", "7", load_gate_config({}), FuncClock(), Options("7"))
+                    probe = {
+                        "judged": GhOk("true"), "unjudged": GhOk("true"),
+                        "unmerged": GhOk("false"), "unknown": GhUnanswered(),
+                    }[mode]
+                    confirm_head = "head-sha" if mode == "judged" else "landed-sha"
+                    retry_answers = [GhFailed(), GhOk("head-sha"), probe]
+                    if mode in ("judged", "unjudged"):
+                        retry_answers.append(GhOk(f"merged=true state=MERGED\t{confirm_head}"))
+                    with (
+                        mock.patch.object(merge, "pre_merge_reads", side_effect=[(True, None), (True, next_tip)]),
+                        mock.patch.object(merge_mod, "refresh_build", side_effect=refusal),
+                        mock.patch.object(self.session, "retry", side_effect=retry_answers) as retry,
+                        mock.patch.object(self.session, "err_line", side_effect=[base_moved, "HTTP 503"]),
+                    ):
+                        if mode == "judged":
+                            got_rc, stdout, _ = self._run_merge_in_process(merge, build=build)
+                            self.assertEqual(got_rc, 0)
+                            self.assertIn("o/r#7 merged=true state=MERGED", stdout)
+                        else:
+                            with self.assertRaises(cli.Exit) as caught:
+                                self._run_merge_in_process(merge, build=build)
+                            if mode == "unjudged":
+                                self.assertEqual(caught.exception.rc, 1)
+                                self.assertIn("MERGED at an UNJUDGED head", caught.exception.message)
+                            elif mode == "unmerged":
+                                self.assertIs(caught.exception, refusal)
+                            else:
+                                self.assertEqual(caught.exception.rc, 3)
+                                self.assertIn("UNKNOWN whether o/r#7 merged", caught.exception.message)
+                                self.assertIn(refusal.message, caught.exception.message)
+                    merge_calls = [c for c in retry.call_args_list if c.args[1][:2] == ["pr", "merge"]]
+                    probe_calls = [c for c in retry.call_args_list if c.args[1][-2:] == ["--jq", ".merged"]]
+                    self.assertEqual(len(merge_calls), 1)
+                    self.assertEqual(len(probe_calls), 1)
+
+        # Refresh limit after a first write confirms or keeps its refusal too.
+        refreshed = [
+            BuildVerdict("head-sha", "main", "b2" * 20, build.config),
+            BuildVerdict("head-sha", "main", "b3" * 20, build.config),
+        ]
+        for mode in ("judged", "unmerged"):
+            with self.subTest(case="refresh-limit", mode=mode):
+                merge = Merge(self.session, "o/r", "7", load_gate_config({}), FuncClock(), Options("7"))
+                reads = [(True, "b2" * 20), (True, "b3" * 20), (True, None), (True, "b4" * 20)]
+                retry_answers = [GhFailed(), GhOk("head-sha"), GhOk("true" if mode == "judged" else "false")]
+                if mode == "judged":
+                    retry_answers.append(GhOk("merged=true state=MERGED\thead-sha"))
+                with (
+                    mock.patch.object(merge, "pre_merge_reads", side_effect=reads),
+                    mock.patch.object(merge_mod, "refresh_build", side_effect=refreshed),
+                    mock.patch.object(self.session, "retry", side_effect=retry_answers) as retry,
+                    mock.patch.object(self.session, "err_line", return_value=base_moved),
+                ):
+                    if mode == "judged":
+                        got_rc, stdout, _ = self._run_merge_in_process(merge, build=build)
+                        self.assertEqual(got_rc, 0)
+                        self.assertIn("o/r#7 merged=true state=MERGED", stdout)
+                    else:
+                        with self.assertRaises(cli.Exit) as caught:
+                            self._run_merge_in_process(merge, build=build)
+                        self.assertEqual(caught.exception.rc, 1)
+                        self.assertIn("refresh limit", caught.exception.message)
+                probe_calls = [c for c in retry.call_args_list if c.args[1][-2:] == ["--jq", ".merged"]]
+                self.assertEqual(len(probe_calls), 1)
+
+        # Negative controls: before any write, or rc 2 (config/clone error) after a write, never probes REST.
+        for case, reads, retry_side, refusal in (
+            ("before-write", [(True, next_tip)], [], cli.Exit(1, "initial refresh failed")),
+            ("rc-2-after-write", [(True, None), (True, next_tip)], [GhFailed(), GhOk("head-sha")], cli.Exit(2, "shallow clone")),
+        ):
+            with self.subTest(control=case):
+                merge = Merge(self.session, "o/r", "7", load_gate_config({}), FuncClock(), Options("7"))
+                with (
+                    mock.patch.object(merge, "pre_merge_reads", side_effect=reads),
+                    mock.patch.object(merge_mod, "refresh_build", side_effect=refusal),
+                    mock.patch.object(self.session, "retry", side_effect=retry_side) as retry,
+                    mock.patch.object(self.session, "err_line", return_value=base_moved),
+                    self.assertRaises(cli.Exit) as caught,
+                ):
+                    self._run_merge_in_process(merge, build=build)
+                self.assertIs(caught.exception, refusal)
+                probe_calls = [c for c in retry.call_args_list if c.args[1][-2:] == ["--jq", ".merged"]]
+                self.assertEqual(probe_calls, [])
+
+    def test_dispatch_time_lease_refusal_after_write_confirms_or_keeps_refusal(self) -> None:
+        base_moved = "GraphQL: Base branch was modified. Review and try the merge again. (mergePullRequest)\n"
+        gateway_503 = "gh: HTTP 503: Service Unavailable\n"
+        build = self._build_verdict(fleet_lease=True)
+
+        def run_lease_race(
+            *,
+            site: str,
+            mode: str,
+            forwarded: bool = False,
+        ) -> tuple[int | None, cli.Exit | None, str, list[list[str]], list[object]]:
+            clock = mock.Mock(return_value=10.0)
+            budget = mock.Mock(spec=Budget)
+            write_gates = 0
+
+            def gate(kind: str) -> None:
+                nonlocal write_gates
+                if kind == "write":
+                    write_gates += 1
+                    if site == "before-write-dispatch" and write_gates == 1:
+                        clock.return_value = 10.0 + mergelease.TTL
+                    elif site in ("outer-dispatch", "resend-dispatch") and write_gates == 2:
+                        clock.return_value = 10.0 + mergelease.TTL
+
+            budget.gate.side_effect = gate
+            gh_calls: list[list[str]] = []
+
+            def run_gh(name: str, args: Sequence[str]) -> proc.Completed:
+                self.assertEqual(name, "gh")
+                argv = list(args)
+                gh_calls.append(argv)
+                if argv[:2] == ["pr", "merge"]:
+                    return proc.Completed(1, "", gateway_503 if site == "resend-dispatch" else base_moved)
+                if argv[-2:] == ["--jq", '.head.sha // "-"']:
+                    return proc.Completed(0, "head-sha\n", "")
+                if argv[-2:] == ["--jq", ".merged"]:
+                    if mode == "unknown":
+                        return proc.Completed(1, "", gateway_503)
+                    return proc.Completed(0, "true\n" if mode in ("judged", "unjudged") else "false\n", "")
+                if argv[-2] == "--jq" and "merged=" in argv[-1]:
+                    head = "head-sha" if mode == "judged" else "landed-sha"
+                    return proc.Completed(0, f"merged=true state=MERGED\t{head}\n", "")
+                raise AssertionError(f"unexpected gh call: {argv}")
+
+            cfg = Config(repo="o/r", reviewer="r", round_threshold=None, round_gap=0,
+                         api_attempts=2 if site == "resend-dispatch" else 1, api_backoff=0)
+            session = GhSession(cfg, run=run_gh, sleep=lambda _s: None, budget=budget)
+            opts = Options("7", gh_args=["--merge"], forwarded=forwarded)
+            merge = Merge(session, "o/r", "7", load_gate_config({}), FuncClock(), opts)
+            pre_reads = 0
+
+            def fake_pre_reads(
+                active_build: BuildVerdict | None, active_lease: mergelease.MergeLease | None, *, resend: bool,
+            ) -> tuple[bool, str | None]:
+                nonlocal pre_reads
+                pre_reads += 1
+                self.assertIsNotNone(active_build)
+                assert active_lease is not None
+                active_lease.verify()
+                if site == "before-write-call" and pre_reads == 1:
+                    clock.return_value = 10.0 + mergelease.TTL
+                elif site == "outer-call" and pre_reads == 2 and not resend:
+                    clock.return_value = 10.0 + mergelease.TTL
+                return True, None
+
+            lease_replies = ["taken\n", "renewed\n", "renewed\n", "released\n"]
+            if site.startswith("before-write"):
+                lease_replies = ["taken\n", "renewed\n", "released\n"]
+            with (
+                mock.patch.dict(os.environ, {"FLEET_ANCHOR": "local"}),
+                mock.patch.object(mergelease, "_lease_time", clock),
+                mock.patch.object(mergelease.MergeLease, "_call", side_effect=lease_replies) as lease_call,
+                mock.patch.object(merge, "pre_merge_reads", side_effect=fake_pre_reads),
+            ):
+                os.environ.pop("FLEET_REGISTRY_PIN", None)
+                try:
+                    rc, stdout, _ = self._run_merge_in_process(merge, build=build)
+                except cli.Exit as exc:
+                    return None, exc, "", gh_calls, list(lease_call.call_args_list)
+                return rc, None, stdout, gh_calls, list(lease_call.call_args_list)
+
+        for site in ("outer-call", "outer-dispatch", "resend-dispatch"):
+            forwarded_cases = (False, True) if site.endswith("dispatch") else (False,)
+            for forwarded in forwarded_cases:
+                for mode in ("judged", "unjudged", "unmerged", "unknown"):
+                    with self.subTest(site=site, forwarded=forwarded, mode=mode):
+                        rc, exc, stdout, calls, lease_calls = run_lease_race(site=site, mode=mode, forwarded=forwarded)
+                        self.assertEqual(len([c for c in calls if c[:2] == ["pr", "merge"]]), 1)
+                        probes = [c for c in calls if c[-2:] == ["--jq", ".merged"]]
+                        self.assertEqual(len(probes), 2 if (site == "resend-dispatch" and mode == "unknown") else 1)
+                        self.assertEqual(lease_calls[-1], mock.call("release"))
+                        if mode == "judged":
+                            self.assertEqual((rc, exc), (0, None))
+                            self.assertIn("o/r#7 merged=true state=MERGED", stdout)
+                        else:
+                            assert exc is not None
+                            if mode == "unjudged":
+                                self.assertEqual(exc.rc, 1)
+                                self.assertIn("MERGED at an UNJUDGED head", exc.message)
+                            elif mode == "unmerged":
+                                self.assertEqual(exc.rc, 3)
+                                self.assertIn("merge lease ownership expired or was lost", exc.message)
+                                self.assertNotIn("UNKNOWN whether", exc.message)
+                            else:
+                                self.assertEqual(exc.rc, 3)
+                                self.assertIn("UNKNOWN whether o/r#7 merged", exc.message)
+                                expected_action = (
+                                    "the resend of a merge request the gateway refused"
+                                    if site == "resend-dispatch"
+                                    else "the retry of a refused merge request"
+                                )
+                                self.assertIn(expected_action, exc.message)
+                                self.assertIn("merge lease ownership expired or was lost", exc.message)
+
+        # Negative controls: dispatch-time lease refusal before the first merge write never probes REST.
+        for site in ("before-write-call", "before-write-dispatch"):
+            with self.subTest(control=site):
+                rc, exc, _, calls, lease_calls = run_lease_race(site=site, mode="judged")
+                self.assertIsNone(rc)
+                assert exc is not None
+                self.assertEqual(exc.rc, 3)
+                self.assertIn("merge lease ownership expired or was lost", exc.message)
+                self.assertEqual(calls, [])
+                self.assertEqual(lease_calls[-1], mock.call("release"))
+
+    def test_absent_retry_limit_after_write_confirms_or_keeps_refusal(self) -> None:
+        conflict = "GraphQL: Pull Request has merge conflicts (mergePullRequest)"
+        for mode in ("judged", "unjudged", "unmerged", "unknown"):
+            with self.subTest(mode=mode):
+                merge = Merge(self.session, "o/r", "7", load_gate_config({}), FuncClock(), Options("7"))
+                probe = {
+                    "judged": GhOk("true"), "unjudged": GhOk("true"),
+                    "unmerged": GhOk("false"), "unknown": GhUnanswered(),
+                }[mode]
+                confirm_head = "head-sha" if mode == "judged" else "landed-sha"
+                retry_answers = [GhFailed(), GhOk("true"), probe]
+                if mode in ("judged", "unjudged"):
+                    retry_answers.append(GhOk(f"merged=true state=MERGED\t{confirm_head}"))
+                with (
+                    mock.patch.object(merge, "pre_merge_reads", side_effect=[(True, None), (False, None), (False, None)]),
+                    mock.patch.object(self.session, "retry", side_effect=retry_answers) as retry,
+                    mock.patch.object(self.session, "err_line", side_effect=[conflict, "HTTP 503"]),
+                ):
+                    if mode == "judged":
+                        got_rc, stdout, _ = self._run_merge_in_process(merge)
+                        self.assertEqual(got_rc, 0)
+                        self.assertIn("o/r#7 merged=true state=MERGED", stdout)
+                    else:
+                        with self.assertRaises(cli.Exit) as caught:
+                            self._run_merge_in_process(merge)
+                        if mode == "unjudged":
+                            self.assertEqual(caught.exception.rc, 1)
+                            self.assertIn("MERGED at an UNJUDGED head", caught.exception.message)
+                        elif mode == "unmerged":
+                            self.assertEqual(caught.exception.rc, 1)
+                            self.assertIn("base kept moving under its ABSENT verdict (3 gate reads)", caught.exception.message)
+                        else:
+                            self.assertEqual(caught.exception.rc, 3)
+                            self.assertIn("UNKNOWN whether o/r#7 merged", caught.exception.message)
+                            self.assertIn("base kept moving under its ABSENT verdict (3 gate reads)", caught.exception.message)
+                merge_calls = [c for c in retry.call_args_list if c.args[1][:2] == ["pr", "merge"]]
+                probe_calls = [c for c in retry.call_args_list if c.args[1][-2:] == ["--jq", ".merged"]]
+                self.assertEqual(len(merge_calls), 1)
+                self.assertEqual(len(probe_calls), 1)
+
+        # Negative control: hitting the ABSENT retry limit before any merge write never probes REST.
+        merge = Merge(self.session, "o/r", "7", load_gate_config({}), FuncClock(), Options("7"))
+        with (
+            mock.patch.object(merge, "pre_merge_reads", side_effect=[(False, None), (False, None), (False, None)]),
+            mock.patch.object(self.session, "retry") as retry,
+            self.assertRaises(cli.Exit) as caught,
+        ):
+            self._run_merge_in_process(merge)
+        self.assertEqual(caught.exception.rc, 1)
+        self.assertIn("base kept moving under its ABSENT verdict (3 gate reads)", caught.exception.message)
+        retry.assert_not_called()
 
 
 class Production(unittest.TestCase):
