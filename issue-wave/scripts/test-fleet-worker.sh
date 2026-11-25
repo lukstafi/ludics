@@ -948,6 +948,9 @@ if [ "$1 $2" = "pr list" ] && [ -n "${SHIM_GH_PR_LIST:-}" ]; then
   printf '%s\n' "$*" >> "$SHIM_GH_PR_LIST.calls"
   cat "$SHIM_GH_PR_LIST"; exit 0
 fi
+if [ "$1 $2" = "api graphql" ] && [[ "$*" == *closedByPullRequestsReferences* ]] && [ -n "${SHIM_GH_PR_LIST:-}" ]; then
+  printf '%s\n' '[]'; exit 0
+fi
 # `pr view`: the file SHIM_GH_PR_VIEW names (board close, #982).
 if [ "$1 $2" = "pr view" ]; then
   [ "${SHIM_GH:-}" != down ] || { printf 'error connecting to api.github.com\n' >&2; exit 1; }
@@ -7165,12 +7168,22 @@ before=$("${FWK[@]}" execution list | jq length)
 expect "prep on an existing worktree refuses" 1 "^WAVE PREP REFUSED t77: the worktree path $proj-worktrees/wk-77 exists$" -- \
   "${FWK[@]}" wave prep "$K/wave.json" t77 --base master
 [ "$("${FWK[@]}" execution list | jq length)" = "$before" ] && ok "...reserving nothing" || ko "a refused prep reserved"
-echo '[{"number":5,"title":"Fix #78","body":"","headRefName":"x"}]' > "$SHIM_GH_PR_LIST"
+printf '%s\n' '[{"number":5,"title":"Fix","body":"Closes #78","headRefName":"x"}]' > "$SHIM_GH_PR_LIST"
 printf '# Task @@T@@\n' > "$K/tasks/t78.md"
-expect "prep refuses a rival PR" 1 "^WAVE PREP REFUSED t78: open rival PR(s) #5 Fix #78" -- "${FWK[@]}" wave prep "$K/wave.json" t78 --base master
+expect "prep refuses a PR with a closing keyword" 1 "^WAVE PREP REFUSED t78: open rival PR(s) #5 Fix" -- "${FWK[@]}" wave prep "$K/wave.json" t78 --base master
 [ ! -e "$proj-worktrees/wk-78" ] && ok "...before the worktree" || ko "a refused prep made the worktree"
 grep -q -- "--head claude/wk-78 " "$SHIM_GH_PR_LIST.calls" && grep -q -- "--search 78 " "$SHIM_GH_PR_LIST.calls" &&
   ok "...after reading the open PRs by head branch and by number" || ko "pr list calls: $(cat "$SHIM_GH_PR_LIST.calls")"
+printf '%s\n' '[{"number":6,"title":"Rival","body":"","headRefName":"claude/wk-78"}]' > "$SHIM_GH_PR_LIST"
+expect "prep refuses a PR on the task branch" 1 "^WAVE PREP REFUSED t78: open rival PR(s) #6 Rival" -- "${FWK[@]}" wave prep "$K/wave.json" t78 --base master
+printf '%s\n' '[{"number":7,"title":"Sibling","body":"Issue #78 may change shared arguments.","headRefName":"sibling"}]' > "$SHIM_GH_PR_LIST"
+expect "prep notes a sibling PR that mentions the issue in prose" 0 "^WAVE PREP NOTE t78: open PR #7 mentions " -- "${FWK[@]}" wave prep "$K/wave.json" t78 --base master
+grep -q "^WAVE PREP t78: ready:" <<<"$out" && ok "...and prep goes on" || ko "prep did not make t78 ready: $out"
+if [ -e "$proj-worktrees/wk-78" ]; then
+  setup_step "could not conclude t78's standing reservation (setup)" \
+    "${FWK[@]}" execution conclude --standing-handback --request wkv-t78-testbox-iterate --observed-from "$proj-worktrees/wk-78" \
+    --evidence "wave kit fixture" --verdict cancelled
+fi
 unset SHIM_GH_PR_LIST
 setup_step "could not conclude the prep's standing reservation (setup)" \
   "${FWK[@]}" execution conclude --standing-handback --request wkv-t77-testbox-iterate --observed-from "$proj-worktrees/wk-77" \

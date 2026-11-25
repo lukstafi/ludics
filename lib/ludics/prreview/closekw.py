@@ -18,6 +18,10 @@ shaped; this is the same filter, rule for rule, in the same order:
     right after it (``negated``, ludics#815): GitHub's parser does not read negation, so "The PR
     does not close #1647:" in ocannl-staging#1463's body closed ahrefs/ocannl#1647.
 
+Wave rivalry uses the same Markdown and reference rules, with a narrower trigger: a keyword
+must be followed by a reference after its delimiter, optional colon and blanks. References
+elsewhere in a sentence count only after that trigger.
+
 The negated reading is the README's ludics-lite#75 line-shaped scan, and its boundary is a
 fail-closed allowlist (``_NEGATION``): within ONE sentence unit of ONE line, a negation word --
 ``not``, ``never``, ``cannot``, or the contractions don't, doesn't, didn't, won't, wouldn't, can't,
@@ -41,6 +45,7 @@ did not run; here such a body is scanned. A sentence is cut at 200 characters, n
 """
 
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Literal
 
@@ -166,6 +171,13 @@ def _scan_unit(unit: str, quoted: bool, repo: str) -> list[Finding]:
 
 
 def _keyword_finding(unit: str, quoted: bool, repo: str) -> Finding | None:
+    refs = _keyword_refs(unit, repo)
+    if not refs or (len(refs) < 2 and not quoted):
+        return None
+    return Finding("quoted" if quoted else "sentence", len(refs), " ".join(refs), _shown(unit))
+
+
+def _keyword_refs(unit: str, repo: str) -> list[str]:
     # URLs go BEFORE the keyword is located, so the keyword and the references are read off the
     # same text: a keyword in a URL path was a directive until round 16. The keyword's boundaries
     # are whitelists on both sides: `close-out` and `closed/tracker#10` bind nothing (round 6), a
@@ -174,14 +186,7 @@ def _keyword_finding(unit: str, quoted: bool, repo: str) -> Finding | None:
     # (`fixes.md`, `fix._config`, rounds 14 and 15). The references are read FORWARD from the
     # keyword: GitHub's syntax is the keyword followed by the reference (round 15).
     m = _KEYWORD.search(_lower(unit))
-    if m is None:
-        return None
-    refs = refs_of(unit[m.end() :], repo)
-    if not refs:
-        return None
-    if len(refs) < 2 and not quoted:
-        return None
-    return Finding("quoted" if quoted else "sentence", len(refs), " ".join(refs), _shown(unit))
+    return refs_of(unit[m.end() :], repo) if m is not None else []
 
 
 def _columns(text: str) -> int:
@@ -196,10 +201,7 @@ def _columns(text: str) -> int:
     return col
 
 
-def scan(text: str, repo: str, plain: bool) -> list[Finding]:
-    """``awk -v repo=<repo> [-v plain=1] "$MULTI_CLOSE_FILTER" <<<"$text"``: the findings, in order.
-    ``plain`` reads a COMMIT MESSAGE, where an indented line is quoted, not skipped as code."""
-    findings: list[Finding] = []
+def _units(text: str, plain: bool) -> Iterator[tuple[str, bool]]:
     fence = False
     fence_ch = ""
     fence_len = 0
@@ -260,8 +262,28 @@ def scan(text: str, repo: str, plain: bool) -> list[Finding]:
         # Markdown link form (rounds 3, 7, 8, 9) while a version number does not split.
         marked = _SENTENCE_END.sub(lambda mm: mm.group(0) + "\x01", line)
         for unit in marked.split("\x01"):
-            findings.extend(_scan_unit(unit, quoted, repo))
-    return findings
+            yield unit, quoted
+
+
+def scan(text: str, repo: str, plain: bool) -> list[Finding]:
+    """``awk -v repo=<repo> [-v plain=1] "$MULTI_CLOSE_FILTER" <<<"$text"``: the findings, in order.
+    ``plain`` reads a COMMIT MESSAGE, where an indented line is quoted, not skipped as code."""
+    return [finding for unit, quoted in _units(text, plain) for finding in _scan_unit(unit, quoted, repo)]
+
+
+def closing_refs(text: str, repo: str) -> set[str]:
+    """Read PR closing directives, including a lone keyword and reference."""
+    refs: set[str] = set()
+    for unit, _ in _units(text, plain=False):
+        scrubbed = scrub_urls(unit)
+        for keyword in _KEYWORD.finditer(_lower(scrubbed)):
+            rest = scrubbed[keyword.end() :].lstrip(" \t")
+            rest = rest.removeprefix(":").lstrip(" \t")
+            first = _REF.match(rest)
+            if first is not None and not _IDENT_CHAR.fullmatch(rest[first.end() : first.end() + 1]):
+                refs.update(refs_of(rest, repo))
+                break
+    return refs
 
 
 def _say(*parts: str) -> None:

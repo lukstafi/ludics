@@ -192,6 +192,11 @@ names the explicit revision, so a stacked launch keeps its own base (#1099).
 The Prep unit cases and the "wave kit" shell section pin this boundary; the new cases fail
 against the pre-change implementation (missing fallback, provenance and BASE_ORIGIN).
 
+Agent notes (#1347). Prep and CLI launch share the rival check. It reads GitHub's issue-side
+closing links alongside the head and number searches, and uses the merge warning scanner's
+keyword rules for each PR's title and body. The `wave kit` fixture pins the prose NOTE and the
+head and keyword refusals. The prose unit fixture refuses on the old implementation.
+
 ## Wave review evidence
 
 Prep records the rendered task section for the review checkpoint. Review includes that section
@@ -567,13 +572,23 @@ prreview/checkpoint.py
     issue-wave/scripts/test-fleet-worker.sh "wave kit"
     lib/ludics/tests/test_fleetworker_wave.py
 
-prreview/merge.py prreview/closekw.py
+prreview/merge.py
     ship-pr/scripts/test-pr-review-merge.sh
     lib/ludics/tests/test_prreview_merge.py
     ship-pr/scripts/test-pr-review-base-drift.sh
     ship-pr/scripts/test-pr-review-checks-absent.sh
     ship-pr/scripts/test-pr-review-budget.sh
     ship-pr/scripts/test-pr-review-lib.sh
+
+prreview/closekw.py
+    ship-pr/scripts/test-pr-review-merge.sh
+    lib/ludics/tests/test_prreview_merge.py
+    ship-pr/scripts/test-pr-review-base-drift.sh
+    ship-pr/scripts/test-pr-review-checks-absent.sh
+    ship-pr/scripts/test-pr-review-budget.sh
+    ship-pr/scripts/test-pr-review-lib.sh
+    issue-wave/scripts/test-fleet-worker.sh "wave kit"
+    lib/ludics/tests/test_fleetworker_wave.py
 
 prreview/gate.py prreview/ere.py prreview/checkruns.py prreview/images.py
     ship-pr/scripts/test-pr-review-checks-absent.sh
