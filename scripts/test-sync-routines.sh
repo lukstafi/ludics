@@ -6,7 +6,7 @@
 #
 # What it pins:
 #   - the four states status reports (in sync, drift, installed as a symlink, not installed)
-#     and the exit code of each;
+#     and the exit code of each, including the final LF exception for the top-level prompt;
 #   - that push replaces a symlink with a real directory instead of writing THROUGH it, which
 #     is the whole reason the script exists (desktop app 1.46388.4 refuses a task file reached
 #     through a symlink, quietly), and that a destination reached through a link at any component
@@ -172,6 +172,36 @@ expect "status on a matching pair exits 0" 0 "all local routines in sync" -- run
 contains "$out" "$R1: in sync" \
   && ok "...naming each routine" || ko "status does not name $R1 -- $out"
 expect "status is also the default with no argument at all" 0 "in sync" -- run_sync status
+
+reset_trees; install_all
+src_prompt="$REPO/routines/$R1/SKILL.md"
+installed_prompt="$TMP/installed/$R1/SKILL.md"
+# The fixture ends in exactly one LF, so command substitution models the editor's save here.
+printf '%s' "$(cat "$src_prompt")" > "$installed_prompt"
+cp "$src_prompt" "$TMP/checkout-before-status"
+cp "$installed_prompt" "$TMP/installed-before-status"
+expect "status accepts a missing final LF in the installed prompt" 0 \
+  "$R1: in sync (final newline differs)" -- run_sync
+cmp -s "$src_prompt" "$TMP/checkout-before-status" \
+  && cmp -s "$installed_prompt" "$TMP/installed-before-status" \
+  && ok "...without rewriting either prompt" || ko "status changed a prompt during the final LF check"
+
+mkdir -p "$REPO/routines/$R1/extra" "$TMP/installed/$R1/extra"
+printf 'companion\n' > "$REPO/routines/$R1/extra/SKILL.md"
+printf 'companion' > "$TMP/installed/$R1/extra/SKILL.md"
+expect "status still reports a nested SKILL.md difference beside the missing LF" 1 \
+  "$R1: DRIFT" -- run_sync
+
+reset_trees; install_all
+printf '%s' "$(cat "$installed_prompt")" > "$src_prompt"
+expect "status accepts a missing final LF in the checkout prompt" 0 \
+  "$R1: in sync (final newline differs)" -- run_sync
+printf ' with an edit' >> "$src_prompt"
+expect "status reports a prompt edit beside the missing LF" 1 "$R1: DRIFT" -- run_sync
+
+reset_trees; install_all
+printf '\n' >> "$installed_prompt"
+expect "status reports an extra blank line at EOF" 1 "$R1: DRIFT" -- run_sync
 
 reset_trees; install_all
 printf 'body v2 -- edited in the installed copy\n' >> "$TMP/installed/$R1/SKILL.md"
