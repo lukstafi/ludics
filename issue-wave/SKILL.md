@@ -704,7 +704,9 @@ per-arm `agent_host` counts, and ten-per-arm status (`--json` prints the joined 
 `--no-github` skips PR reads); it marks a group ready once at least two complete arms reach ten
 merged tasks (naming any arm still below ten), reads the task fields through `status --json`
 alongside `reviews/*.json` and GitHub PRs, sets reassigned rows apart, and prints missing or
-partial data without guessing.
+partial data without guessing. Export blinded, area-matched pairs with
+`fleet-worker.sh wave ab-pairs` and follow [ab-judging.md](references/ab-judging.md) to run one
+judge from each arm's family with `issue-wave/templates/ab/judge.md`.
 `tier` comes from prep's `--tier` or the queue entry, `model` from the profile or native launch,
 `planner` and `planner_effort` from the paired planner's invocation, and `launched_at` from
 the board's first launch stamp. Give every task its tier at prep.

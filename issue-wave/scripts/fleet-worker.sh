@@ -353,6 +353,12 @@
 #                          # tier group and (transport, kind, model) arm, prints per-arm agent_host
 #                          # counts and ten-per-arm readings, sets reassigned rows apart, and prints
 #                          # missing or partial data without guessing (waveab.py)
+#   fleet-worker.sh wave ab-pairs (<wave.json>... | --from-json <ab.json>) --out <dir> --key <file>
+#                          [--arms <armA> <armB>] [--group D1+D1/D2|D2|D2/D3+D3] [--max-pairs <N>]
+#                          [--seed <int>] [--scrub <word>]...       # export blinded, area-matched PR pairs
+#                          # from wave ab's join (task text scrubbed by a closed list of forms, A/B
+#                          # sides balanced and randomised by a recorded seed, key written outside
+#                          # --out; waveabpairs.py)
 #   fleet-worker.sh farside-close <wave> [--task <task>]... [--regenerable <dir>]... [--remote <name>] [--dry-run]
 #                          # remove a closed wave's far-side worktrees, the board's `farside` words,
 #                          # each only past its row's done state, no outstanding reservation, no leg

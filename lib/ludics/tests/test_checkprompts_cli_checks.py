@@ -1514,7 +1514,7 @@ class BriefTemplateTest(Case):
              f"FAIL: {T}common.md: is no part wave prep reads there (it reads who.md, tests.md, blocking.md, context.md)"),
             ("a directory for no kind", lambda: write(os.path.join(R, "issue-wave", "templates", "native-gpt", "who.md"), ""),
              "FAIL: issue-wave/templates/native-gpt: is no template directory: native-<kind> or cli-<kind> (kinds: claude, codex, gemini),"
-             " shared or review"),
+             " shared, review or ab"),
             ("no native-claude", lambda: os.rename(os.path.join(R, T), os.path.join(R, "issue-wave", "templates", "native-codex")),
              "FAIL: issue-wave/templates: has no native-claude/"),
             ("no shared parts", lambda: shutil.rmtree(os.path.join(R, S)),
@@ -1588,6 +1588,31 @@ class BriefTemplateTest(Case):
         for label, damage, want in cases:
             with self.subTest(case=label):
                 review_tree()
+                damage()
+                self.expect(f"{label} is refused", 1, want)
+
+    def test_the_ab_judge_part_is_held_to_its_own_files_and_names(self) -> None:
+        R, A = self.root, "issue-wave/templates/ab/"
+
+        def ab_tree() -> None:
+            brief_tree(R)
+            write(os.path.join(R, A, "judge.md"), "Judge @@PAIR@@ in @@REPO@@ at @@CHECKOUT@@ from @@DIR@@.\n")
+
+        ab_tree()
+        self.expect("the ab judge part passes", 0, BRIEF_OK.replace("14 parts", "15 parts"))
+        cases: tuple[tuple[str, Callable[[], None], str], ...] = (
+            ("missing judge.md", lambda: os.remove(os.path.join(R, A, "judge.md")),
+             f"FAIL: {A}judge.md: is missing, or no regular file: wave ab-pairs looks this shipped part up"),
+            ("an extra file in templates/ab", lambda: write(os.path.join(R, A, "extra.md"), "x\n"),
+             f"FAIL: {A}extra.md: is no part wave ab-pairs reads there (it reads judge.md)"),
+            ("a brief placeholder in judge.md", lambda: append(os.path.join(R, A, "judge.md"), "@@WT@@\n"),
+             f"FAIL: {A}judge.md: {A}judge.md:2: @@WT@@ is not rendered"),
+            ("a broken reference in judge.md", lambda: append(os.path.join(R, A, "judge.md"), "See `issue-wave/references/gone.md`.\n"),
+             f"FAIL: {A}judge.md: `issue-wave/references/gone.md` names no file of this tree"),
+        )
+        for label, damage, want in cases:
+            with self.subTest(case=label):
+                ab_tree()
                 damage()
                 self.expect(f"{label} is refused", 1, want)
 

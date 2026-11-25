@@ -7572,6 +7572,37 @@ expect "wave unprep of a task with no manifest has nothing to undo" 0 "^WAVE UNP
 expect "wave ab reads a wave's board through the shim (--no-github)" 0 "READING D2: below ten" -- "${FWK[@]}" wave ab "$K/wave.json" --no-github
 expect "wave ab --json emits a version-1 document" 0 '"version": 1' -- "${FWK[@]}" wave ab "$K/wave.json" --no-github --json
 expect "wave ab refuses missing wave paths" 2 "wave ab: name at least one wave.json file" -- "${FWK[@]}" wave ab
+expect "wave ab-pairs refuses --key inside --out" 2 "must live outside --out" -- "${FWK[@]}" wave ab-pairs "$K/wave.json" --out "$K/abp" --key "$K/abp/key.json"
+mkdir -p "$K/bin-abp"
+cat > "$K/bin-abp/gh" <<'ABP_GH'
+#!/usr/bin/env bash
+if [ "$1 $2" = "api graphql" ]; then
+  printf '{"data":{"p0":{"pullRequest":{"number":501,"state":"MERGED","title":"A","createdAt":"2026-11-24T11:00:00Z","mergedAt":"2026-11-24T12:00:00Z","mergeCommit":{"oid":"0000000000000000000000000000000000000501"},"files":{"pageInfo":{"hasNextPage":false},"nodes":[{"path":"pkg/x.py","additions":10,"deletions":2}]}}},"p1":{"pullRequest":{"number":502,"state":"MERGED","title":"B","createdAt":"2026-11-24T11:00:00Z","mergedAt":"2026-11-24T12:00:00Z","mergeCommit":{"oid":"0000000000000000000000000000000000000502"},"files":{"pageInfo":{"hasNextPage":false},"nodes":[{"path":"pkg/x.py","additions":20,"deletions":4}]}}}}}\n'
+elif [ "$1 $2" = "issue view" ]; then
+  printf '{"title":"Fix pkg for Sol and Neon","body":"Details from gpt-6.2-sol/high and gemini-4-neon-high; keep solution.","comments":[]}\n'
+elif [ "$1 $2" = "pr diff" ]; then
+  printf 'diff --git a/pkg/x.py b/pkg/x.py\n+sol = 1\n'
+else
+  printf 'unexpected gh: %s\n' "$*" >&2; exit 2
+fi
+ABP_GH
+chmod +x "$K/bin-abp/gh"
+cat > "$K/ab-input.json" <<'ABP_JSON'
+{"version":1,"readings":[],"tasks":[
+  {"wave":"wkv","task":"t501","tier":"D2","group":"D2","arm":{"transport":"cli","kind":"codex","model":"gpt-6.2-sol/high","label":"cli/codex gpt-6.2-sol/high","complete":true},"phase":"merged","agent_host":"testbox","issue":"example/project#501","issue_number":501,"issue_source":"issue","repository":"example/project","pr":"501","merge":"0000000000000000000000000000000000000501","launched_at":"2026-11-24T10:00:00Z","reassignment_reason":null,"in_sample":true},
+  {"wave":"wkv","task":"t502","tier":"D2","group":"D2","arm":{"transport":"cli","kind":"gemini","model":"gemini-4-neon-high","label":"cli/gemini gemini-4-neon-high","complete":true},"phase":"merged","agent_host":"testbox","issue":"example/project#502","issue_number":502,"issue_source":"issue","repository":"example/project","pr":"502","merge":"0000000000000000000000000000000000000502","launched_at":"2026-11-24T10:00:00Z","reassignment_reason":null,"in_sample":true}
+]}
+ABP_JSON
+expect "wave ab-pairs exports blinded pairs through the shim (--from-json)" 0 "^WAVE AB-PAIRS: exported 1 pair(s)" -- \
+  env PATH="$K/bin-abp:$PATH" SHIP_PR_API_ATTEMPTS=1 SHIP_PR_API_BACKOFF=0 "${FWK[@]}" wave ab-pairs --from-json "$K/ab-input.json" --out "$K/abp-out" --key "$K/abp-key.json" --seed 42
+if [ -f "$K/abp-out/manifest.json" ] && [ -f "$K/abp-key.json" ] &&
+   ! grep -qiE 'gpt-6\.2-sol|gemini-4-neon-high|(^|[^A-Za-z0-9_])(sol|neon)([^A-Za-z0-9_]|$)' "$K/abp-out/P01/A-task.md" &&
+   grep -q 'keep solution' "$K/abp-out/P01/A-task.md" &&
+   grep -q '+sol = 1' "$K/abp-out/P01/A.diff"; then
+  ok "...with scrubbed task text, intact diff, manifest and separated key"
+else
+  ko "wave ab-pairs export check failed"
+fi
 setup_step "could not restore the project's master (setup)" git -C "$K/pusher" push -q -f origin "$pbase:refs/heads/master"
 setup_step "could not restore the project's origin/master (setup)" git -C "$proj" update-ref refs/remotes/origin/master "$pbase"
 # #1290: a launch that loses the coordinator lease at launch's initial gate proves pre-start and

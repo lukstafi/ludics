@@ -198,6 +198,7 @@ class Task:
     launch_to_merge_hours: float | None
     open_to_merge_hours: float | None
     counters: dict[str, CounterReading]
+    issue: str | None = None
 
     @property
     def reassigned(self) -> bool:
@@ -216,6 +217,7 @@ class Task:
             "arm": self.arm.as_dict(),
             "phase": self.phase,
             "agent_host": self.agent_host,
+            "issue": self.issue,
             "issue_number": self.issue_number,
             "issue_source": self.issue_source,
             "repository": self.repository,
@@ -289,14 +291,20 @@ def group_of(tier: str | None) -> str:
     return TIER_TO_GROUP.get(tier, UNTIERED)
 
 
-def issue_number_of(row: dict[str, Any]) -> tuple[int | None, str | None]:
+def issue_ref_of(row: dict[str, Any]) -> tuple[str | None, int | None, str | None]:
     for key in ("issue", "source"):
         raw = row.get(key)
         if isinstance(raw, str):
-            m = ISSUE_REF.fullmatch(raw.strip())
+            text = raw.strip()
+            m = ISSUE_REF.fullmatch(text)
             if m is not None:
-                return int(m.group(1)), key
-    return None, None
+                return text, int(m.group(1)), key
+    return None, None, None
+
+
+def issue_number_of(row: dict[str, Any]) -> tuple[int | None, str | None]:
+    _, num, key = issue_ref_of(row)
+    return num, key
 
 
 def parse_iso(text: str | None) -> datetime | None:
@@ -389,12 +397,19 @@ def read_reviews(wave: Wave, errors: list[dict[str, str]]) -> list[ReviewRecord]
 
 # --- GitHub batched GraphQL reader ----------------------------------------------------------------
 
-def _same_head(a: str | None, b: str | None) -> bool:
+def same_head(a: str | None, b: str | None) -> bool:
     if a == b:
         return True
     if not a or not b:
         return False
     return a.startswith(b) or b.startswith(a)
+
+
+def merge_agrees(board: str | None, github: str | None) -> bool:
+    """True unless both board and GitHub merge SHAs are present and disagree (7-char floor)."""
+    if board is None or github is None:
+        return True
+    return len(board) >= 7 and same_head(board.lower(), github.lower())
 
 
 def _login_matches(author: Any, reviewer: str) -> bool:
@@ -496,7 +511,7 @@ def _graphql_review_rounds(pr_obj: dict[str, Any], reviewer: str, round_gap: int
     cur: str | None = None
     last_t = 0
     for sha, when in sorted(events, key=lambda e: e[1]):
-        if not _same_head(sha, cur) or when - last_t > round_gap:
+        if not same_head(sha, cur) or when - last_t > round_gap:
             n += 1
             cur = sha
         last_t = when
@@ -644,7 +659,7 @@ def join_wave(
         arm = arm_of(row)
         phase = text_or_none(row.get("phase")) or "unknown"
         agent_host = text_or_none(row.get("agent_host"))
-        issue_num, issue_src = issue_number_of(row)
+        issue_ref, issue_num, issue_src = issue_ref_of(row)
         repo = text_or_none(row.get("repository"))
         pr_raw = text_or_none(row.get("pr"))
         pr = pr_raw if pr_raw and PR_NUMBER.fullmatch(pr_raw) else None
@@ -678,9 +693,7 @@ def join_wave(
                 facts = github.get((repo, int(pr)))
                 if facts is None:
                     gh_status = "unread"
-                elif merge is not None and facts.merge_commit is not None and not (
-                    len(merge) >= 7 and _same_head(merge.lower(), facts.merge_commit.lower())
-                ):
+                elif not merge_agrees(merge, facts.merge_commit):
                     gh_status = "mismatch"
                     gh_state = facts.state
                     notes.append(
@@ -743,6 +756,7 @@ def join_wave(
             launch_to_merge_hours=l2m,
             open_to_merge_hours=o2m,
             counters=counters,
+            issue=issue_ref,
         ))
     return tasks
 
@@ -1148,23 +1162,33 @@ def render_markdown(doc: dict[str, Any]) -> list[str]:
 
 # --- entry point ----------------------------------------------------------------------------------
 
-def cmd_ab(cfg: Config, args: list[str]) -> int:
-    paths, as_json, no_github = parse_args(args)
-    waves = load_waves(paths)
-
+def read_boards(
+    cfg: Config, waves: list[Wave], *, label: str = "WAVE AB"
+) -> list[tuple[Wave, list[dict[str, Any]]]] | int:
     boards: list[tuple[Wave, list[dict[str, Any]]]] = []
     for w in waves:
         raw_doc = board_status(cfg, w.wave)
         if raw_doc == 4:
             return 4
         if raw_doc == NO_BOARD_EXIT:
-            err(f"WAVE AB REFUSED: wave {w.wave} has no board on {cfg.anchor}")
+            err(f"{label} REFUSED: wave {w.wave} has no board on {cfg.anchor}")
             return 1
         if isinstance(raw_doc, int):
-            err(f"WAVE AB REFUSED: board of wave {w.wave} could not be read")
+            err(f"{label} REFUSED: board of wave {w.wave} could not be read")
             return 1
         projected = wave_of(raw_doc)
         boards.append((w, cast(list[dict[str, Any]], projected["tasks"])))
+    return boards
+
+
+def cmd_ab(cfg: Config, args: list[str]) -> int:
+    paths, as_json, no_github = parse_args(args)
+    waves = load_waves(paths)
+
+    boards_or_rc = read_boards(cfg, waves)
+    if isinstance(boards_or_rc, int):
+        return boards_or_rc
+    boards = boards_or_rc
 
     errors: list[dict[str, str]] = []
     notes: list[str] = []

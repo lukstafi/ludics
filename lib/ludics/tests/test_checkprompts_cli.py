@@ -1430,6 +1430,7 @@ class ReadingListTest(Case):
         # obligation under test is the shipping reading list alone. Another link to it added later
         # fails this case loudly.
         rewrite(R, "issue-wave/references/coordinator-kit.md", pattern=r"\[Decision gate\]\(\.\./SKILL\.md#[^)]*\)", repl="Decision gate")
+        rewrite(R, "issue-wave/references/ab-judging.md", pattern=r"\[Codex model choice\]\(\.\./SKILL\.md#[^)]*\)", repl="Codex model choice")
         self.expect("without issue-wave, the paragraph alone is held", 0, READ_WHEN_AGREE)
         fresh(R)
         self.lacks(f"a root without {SHIP} carries no reading-list obligation", "What to read when", run(CP, R))

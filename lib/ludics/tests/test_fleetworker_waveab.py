@@ -664,6 +664,22 @@ sys.stdout.write(json.dumps({"data": data}))
         # t3 isolated as the single failing PR in errors
         self.assertEqual([e["pr"] for e in doc["errors"]], ["o/repo#3"])
 
+    def test_tasks_json_carries_full_issue_reference(self) -> None:
+        wpath = self.make_wave("w-iss")
+        self.add_row("w-iss", "t1", state="merged", tier="D2", transport="cli", kind="codex", model="sol",
+                     agent_host="mac-studio", repository="fork/repo", issue="upstream/repo#42", pr="1")
+        self.add_row("w-iss", "t2", state="merged", tier="D2", transport="cli", kind="gemini", model="neon",
+                     agent_host="mac-studio", repository="fork/repo", source="upstream/repo#99", pr="2")
+        rc, out, _ = self.run_ab(wpath, "--no-github", "--json")
+        self.assertEqual(rc, 0)
+        by_task = {t["task"]: t for t in json.loads(out)["tasks"]}
+        self.assertEqual(by_task["t1"]["issue"], "upstream/repo#42")
+        self.assertEqual(by_task["t1"]["issue_number"], 42)
+        self.assertEqual(by_task["t1"]["issue_source"], "issue")
+        self.assertEqual(by_task["t2"]["issue"], "upstream/repo#99")
+        self.assertEqual(by_task["t2"]["issue_number"], 99)
+        self.assertEqual(by_task["t2"]["issue_source"], "source")
+
 
 if __name__ == "__main__":
     unittest.main()

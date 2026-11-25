@@ -434,4 +434,6 @@ driver hands you as an attention line.
     It joins each named wave's board rows, posted `reviews/*.json` checkpoint records, and GitHub
     PRs, prints per-wave `split` and issue-number parity, per-arm `agent_host` counts, the
     three-group comparison table, ten-per-arm readings, reassigned rows set apart, and any missing
-    or partial data without guessing (`waveab.py`).
+    or partial data without guessing (`waveab.py`). For the blind code reading, export area-matched
+    pairs with `fleet-worker.sh wave ab-pairs` (`waveabpairs.py`) and run the dual-family judging
+    procedure in [ab-judging.md](ab-judging.md) using `issue-wave/templates/ab/judge.md`.
