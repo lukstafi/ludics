@@ -861,6 +861,7 @@ def match_pairs(
 
     chosen: list[MatchedPair] = []
     used: set[tuple[str, str]] = set()
+    used_prs: set[tuple[str, int]] = set()
 
     for (repo, group) in sorted(buckets):
         left, right = buckets[(repo, group)]
@@ -868,6 +869,8 @@ def match_pairs(
         for u in left:
             u_files, u_dirs = profiles[(u.wave, u.task)]
             for v in right:
+                if (u.repository, u.pr) == (v.repository, v.pr):
+                    continue
                 v_files, v_dirs = profiles[(v.wave, v.task)]
                 shared_files = tuple(sorted(set(u_files) & set(v_files)))
                 shared_dirs = tuple(sorted(set(u_dirs) & set(v_dirs)))
@@ -889,10 +892,14 @@ def match_pairs(
         for _, _, pair in edges:
             uk = (pair.arm1.wave, pair.arm1.task)
             vk = (pair.arm2.wave, pair.arm2.task)
-            if uk in used or vk in used:
+            upr = (pair.arm1.repository, pair.arm1.pr)
+            vpr = (pair.arm2.repository, pair.arm2.pr)
+            if uk in used or vk in used or upr in used_prs or vpr in used_prs:
                 continue
             used.add(uk)
             used.add(vk)
+            used_prs.add(upr)
+            used_prs.add(vpr)
             chosen.append(pair)
 
     chosen.sort(
@@ -1180,7 +1187,7 @@ def cmd_ab_pairs(cfg: Config, args: list[str]) -> int:
     raw_pr_meta = read_pr_files(session, targets, errors)
 
     valid_meta: dict[tuple[str, int], PrMeta] = {}
-    validated_candidates: list[Candidate] = []
+    validated_raw: list[Candidate] = []
     for c in selected_candidates:
         meta = raw_pr_meta.get((c.repository, c.pr))
         if meta is None:
@@ -1203,7 +1210,41 @@ def cmd_ab_pairs(cfg: Config, args: list[str]) -> int:
             skipped.append({"wave": c.wave, "task": c.task, "why": "PR has no changed files"})
             continue
         valid_meta[(c.repository, c.pr)] = meta
-        validated_candidates.append(c)
+        validated_raw.append(c)
+
+    # Deduplicate by (repository, pr) so one PR can never be paired twice; reject conflicting arms/groups.
+    by_pr: dict[tuple[str, int], list[Candidate]] = collections.defaultdict(list)
+    for c in validated_raw:
+        by_pr[(c.repository, c.pr)].append(c)
+    validated_candidates: list[Candidate] = []
+    for pr_key in sorted(by_pr):
+        group_rows = sorted(by_pr[pr_key], key=lambda c: (c.wave, c.task))
+        if len(group_rows) == 1:
+            validated_candidates.append(group_rows[0])
+            continue
+        distinct_identities = {(c.arm_label, c.group, c.issue_ref) for c in group_rows}
+        if len(distinct_identities) > 1:
+            names = ", ".join(f"{c.wave}/{c.task} ({c.arm_label}, {c.group})" for c in group_rows)
+            notes.append(f"conflicting candidate rows for {pr_key[0]}#{pr_key[1]} ({names}); all excluded")
+            for c in group_rows:
+                skipped.append({
+                    "wave": c.wave,
+                    "task": c.task,
+                    "why": f"conflicting arm/group/issue across waves for {pr_key[0]}#{pr_key[1]}",
+                })
+        else:
+            kept = group_rows[0]
+            validated_candidates.append(kept)
+            for dup in group_rows[1:]:
+                notes.append(
+                    f"{dup.wave}/{dup.task}: duplicate candidate for {pr_key[0]}#{pr_key[1]}"
+                    f" (already represented by {kept.wave}/{kept.task}); skipped"
+                )
+                skipped.append({
+                    "wave": dup.wave,
+                    "task": dup.task,
+                    "why": f"duplicate PR {pr_key[0]}#{pr_key[1]} (kept {kept.wave}/{kept.task})",
+                })
 
     matched, unpaired = match_pairs(validated_candidates, valid_meta, arm1_label, arm2_label, opts.max_pairs)
     if not matched:

@@ -742,6 +742,57 @@ class TestRefusalsAndEdgeCases(BaseWaveAbPairs):
         self.assertEqual(os.listdir(empty_out), [])
         self.assertFalse(os.path.exists(rb_key))
 
+    def test_one_to_one_by_pr_identity_and_conflicting_arm_rejection(self) -> None:
+        w1 = self.make_wave("w-pr1")
+        w2 = self.make_wave("w-pr2")
+        # Both w-pr1/t1 and w-pr2/t1dup are valid Sol rows for PR #10 -> must pair PR #10 at most once.
+        # w-pr1/t9 (Sol) and w-pr2/t9conflict (Neon) disagree on arm for PR #90 -> both excluded.
+        self.write_board("w-pr1", [
+            self.merged_row("t1", 10, 10, SOL_ARM, tier="D2"),
+            self.merged_row("t2", 20, 20, NEON_ARM, tier="D2"),
+            self.merged_row("t9", 90, 90, SOL_ARM, tier="D2"),
+        ])
+        self.write_board("w-pr2", [
+            self.merged_row("t1dup", 10, 10, SOL_ARM, tier="D2"),
+            self.merged_row("t3", 30, 30, NEON_ARM, tier="D2"),
+            self.merged_row("t9conflict", 90, 90, NEON_ARM, tier="D2"),
+        ])
+        fixture: dict[str, Any] = {
+            "prs": {
+                "fork/proj#10": _pr_files_node(10, [("pkg/a.py", 10, 0)]),
+                "fork/proj#20": _pr_files_node(20, [("pkg/a.py", 10, 0)]),
+                "fork/proj#30": _pr_files_node(30, [("pkg/a.py", 10, 0)]),
+                "fork/proj#90": _pr_files_node(90, [("pkg/z.py", 10, 0)]),
+            },
+            "issues": {
+                f"upstream/proj#{n}": {"title": f"T{n}", "body": "Spec", "comments": []}
+                for n in (10, 20, 30, 90)
+            },
+            "diffs": {
+                f"fork/proj#{n}": f"diff --git a/pkg/f b/pkg/f\n+{n}\n" for n in (10, 20, 30, 90)
+            },
+        }
+        out_dir = os.path.join(self.root, "prid-out")
+        key_path = os.path.join(self.root, "prid-key.json")
+        with FakeTool("gh") as gh:
+            _install_gh_fake(gh, fixture)
+            rc, _, stderr = self.run_cmd(
+                ["ab-pairs", w1, w2, "--out", out_dir, "--key", key_path, "--seed", "5"],
+                gh_dir=gh.dir,
+            )
+        self.assertEqual(rc, 0, stderr)
+        with open(key_path, encoding="utf-8") as f:
+            kd = json.load(f)
+        # Only 1 pair (PR #10 paired once, never double-counted with both #20 and #30).
+        self.assertEqual(len(kd["pairs"]), 1)
+        paired_prs = {kd["pairs"][0]["A"]["pr"], kd["pairs"][0]["B"]["pr"]}
+        self.assertIn("10", paired_prs)
+        self.assertNotIn("90", paired_prs)
+        skipped_by_wt = {(s["wave"], s["task"]): s["why"] for s in kd["skipped"]}
+        self.assertIn("duplicate PR", skipped_by_wt[("w-pr2", "t1dup")])
+        self.assertIn("conflicting", skipped_by_wt[("w-pr1", "t9")])
+        self.assertIn("conflicting", skipped_by_wt[("w-pr2", "t9conflict")])
+
     def test_arms_group_max_pairs_and_zero_matches(self) -> None:
         wpath = self.make_wave("w-multi")
         self.write_board("w-multi", [
