@@ -1533,6 +1533,13 @@ expect "...naming the codex a tmux session resolved, and its version" 0 "PREFLIG
 expect "a model the box's codex cannot serve refuses the codex preflight given those args" 1 "codex cannot run headless in a tmux session with -m gpt-unservable: \"message\":\"The gpt-unservable model is not supported\"" -- \
   "$FW" preflight testbox --codex --no-cross -- -m gpt-unservable
 expect "codex args go with --codex only" 2 "goes with --codex" -- "$FW" preflight testbox --no-cross -- -m gpt-6.1-sol
+expect "gemini preflight reports lifetime unknown when no SSH token file exists" 0 "PREFLIGHT GEMINI TOKEN testbox: lifetime unknown (no SSH token file" -- \
+  "$FW" preflight testbox --gemini --no-probe --no-cross
+mkdir -p "$HOME/.gemini/antigravity-cli"
+printf '%s\n' '{"token":{"access_token":"fixture","expiry":"2099-01-01T00:00:00Z"},"auth_method":"consumer"}' > "$HOME/.gemini/antigravity-cli/antigravity-oauth-token"
+expect "gemini preflight reports remaining lifetime when the SSH token file states an expiry" 0 "PREFLIGHT GEMINI TOKEN testbox: .* remaining (expires 2099-01-01T00:00:00Z" -- \
+  "$FW" preflight testbox --gemini --no-probe --no-cross
+rm -f "$HOME/.gemini/antigravity-cli/antigravity-oauth-token"
 expect "a stalling skills fetch is bounded and refused" 1 "git fetch in .* timed out after 2s" -- env SHIM_GIT_HANG_FETCH=1 FLEET_FETCH_TIMEOUT=2 "$FW" preflight testbox --no-probe
 # Cross-box reach (ludics-lite#57): a missing credential refuses, a box that is down is noted.
 expect "a sibling refusing the key refuses the preflight" 1 "no non-interactive ssh to otherbox from testbox: .*Permission denied" -- env FLEET_BOXES="testbox otherbox" SHIM_SSH_DENY=otherbox "$FW" preflight testbox --no-probe
