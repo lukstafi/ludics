@@ -22,6 +22,9 @@ loop orphaning its run. The kit is those four, project-neutral, so a wave direct
   wave review <wave.json> <task> <pr> <sha> --kind at-open|confirm                         wavereview.py
               [--issue <N> | --source <N>] [--dry-run | --posted <url> | --again]
   wave ab <wave.json>... [--json] [--no-github]                                            waveab.py
+  wave ab-pairs (<wave.json>... | --from-json <ab.json>) --out <dir> --key <file>          waveabpairs.py
+                [--arms <armA> <armB>] [--group D1+D1/D2|D2|D2/D3+D3]
+                [--max-pairs <N>] [--seed <int>] [--scrub <word>]...
 
 It wraps the mechanisms that exist and re-implements none: ``execution run`` takes the
 reservations, ``board set`` writes the row, ``execution tip-run`` runs and concludes each loop run,
@@ -212,7 +215,9 @@ USAGE = (
     " [--posted <url>] | wave decisions <wave.json> | "
     "wave review <wave.json> <task> <pr> <sha> --kind at-open|confirm [--issue <N> | --source <N>]"
     " [--dry-run | --posted <url> | --again] | "
-    "wave ab <wave.json>... [--json] [--no-github]"
+    "wave ab <wave.json>... [--json] [--no-github] | "
+    "wave ab-pairs (<wave.json>... | --from-json <ab.json>) --out <dir> --key <file>"
+    " [--arms <armA> <armB>] [--group D1+D1/D2|D2|D2/D3+D3] [--max-pairs <N>] [--seed <int>] [--scrub <word>]..."
 )
 WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]+")
@@ -1183,11 +1188,13 @@ def cmd_heartbeat(cfg: Config, args: list[str]) -> int:
 
 
 def cmd_wave(cfg: Config, args: list[str]) -> int:
-    from ludics.fleetworker import waveab, wavedecide, wavedrive, wavelaunch, waveloop, waveprep, wavereview, waveunprep
+    from ludics.fleetworker import waveab, waveabpairs, wavedecide, wavedrive, wavelaunch, waveloop, waveprep, wavereview, waveunprep
 
     match args[:1]:
         case ["ab"]:
             return waveab.cmd_ab(cfg, args[1:])
+        case ["ab-pairs"]:
+            return waveabpairs.cmd_ab_pairs(cfg, args[1:])
         case ["render"]:
             return cmd_render(args[1:])
         case ["prep"]:

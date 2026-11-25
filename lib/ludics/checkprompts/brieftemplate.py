@@ -13,18 +13,21 @@ without it has no template to keep, as the suites' trees of copied prompts do no
 - THE FILES. ``issue-wave/templates/`` holds ``shared`` (waveprep's ``SHARED`` and ``PLANNING``
   parts, exactly: the sections every transport's brief states once), directories ``native-<kind>``
   and ``cli-<kind>`` for a kind wave.json takes (claude, codex, gemini), optionally ``review`` (the
-  review checkpoint's prompt, wavereview.py), and nothing else. A kind's directory holds exactly
+  review checkpoint's prompt, wavereview.py) and ``ab`` (the blind A/B judge prompt,
+  waveabpairs.py), and nothing else. A kind's directory holds exactly
   waveprep's ``OWN`` parts: half a brief is not shipped, and no kind restates a planning part.
-  ``native-claude`` and ``shared`` are required. ``review`` holds exactly wavereview's parts. All
+  ``native-claude`` and ``shared`` are required. ``review`` holds exactly wavereview's parts and
+  ``ab`` holds exactly waveabpairs's parts. All
   are regular files; anything missing or extra fails.
 - THE NAMES. Each shipped part, and the project part, renders through wavebrief's own ``render``
   with one value for each NAME it may use: a common part the built-ins every task is given (no
   ISSUE, no SOURCE, no leg NAME; BASE_ORIGIN describes the resolved base), waveprep's
   ``SHIPPED_VARS`` and PROJECT; a planning part those and ISSUE; the project part those of a common
-  part but PROJECT; a ``review`` part the NAMEs wavereview's ``PART_NAMES`` gives it, and this
+  part but PROJECT; a ``review`` part the NAMEs wavereview's ``PART_NAMES`` gives it, an ``ab``
+  part the NAMEs waveabpairs's ``AB_PART_NAMES`` gives it, and this
   repository's own review part, ``.github/review-checkpoint.md`` when it has one, wavereview's
   ``COMMON_NAMES``. A placeholder outside its set fails, named by its part and line, as prep
-  (or ``wave review``) would refuse it.
+  (or ``wave review`` / ``wave render``) would refuse it.
 - THE REFERENCES. In a backticked span, each blank-separated word that begins ``~/.claude/skills/``
   or ``~/ludics/`` (both read as this tree's root) or with a top-level entry of the tree and a
   ``/``, and is made of ``[A-Za-z0-9_.+*/-]`` only, names an existing file or directory (a ``*``
@@ -50,6 +53,7 @@ import re
 
 from ludics.checkprompts.tree import Report, Tree
 from ludics.fleetworker.wave import BUILTIN
+from ludics.fleetworker.waveabpairs import AB_PART_NAMES
 from ludics.fleetworker.waveprep import OWN, PLANNING, SHARED, SHIPPED_VARS
 from ludics.fleetworker.wavebrief import Part, render
 from ludics.fleetworker.wavereview import COMMON_NAMES as REVIEW_NAMES, PART_NAMES as REVIEW_PART_NAMES
@@ -59,6 +63,11 @@ TEMPLATES = "issue-wave/templates"
 KINDS = ("claude", "codex", "gemini")
 PROJECT_PART = ".github/wave-brief.md"
 REVIEW = "review"
+AB_DIR = "ab"
+EXTRA_DIRS: dict[str, tuple[str, dict[str, frozenset[str]]]] = {
+    REVIEW: ("wave review", REVIEW_PART_NAMES),
+    AB_DIR: ("wave ab-pairs", AB_PART_NAMES),
+}
 SHARED_DIR = "shared"
 REQUIRED_KIND = "native-claude"
 REVIEW_PROJECT_PART = ".github/review-checkpoint.md"
@@ -130,9 +139,9 @@ def template_files(report: Report, tree: Tree) -> list[tuple[str, frozenset[str]
     # gemini has no native transport (wave.py's NO_NATIVE), so no native-gemini directory either.
     kinds = {f"{transport}-{kind}" for transport in ("native", "cli") for kind in KINDS if (transport, kind) != ("native", "gemini")}
     for name in sorted(listed):
-        if name not in kinds | {SHARED_DIR, REVIEW} or tree.is_link(f"{TEMPLATES}/{name}"):
+        if name not in kinds | {SHARED_DIR, *EXTRA_DIRS} or tree.is_link(f"{TEMPLATES}/{name}"):
             report.ko(f"{TEMPLATES}/{name}", f"is no template directory: native-<kind> or cli-<kind> (kinds: {', '.join(KINDS)}),"
-                                             f" {SHARED_DIR} or {REVIEW}")
+                                             f" {SHARED_DIR}, {REVIEW} or {AB_DIR}")
             bad = True
             continue
         inside = tree.names(f"{TEMPLATES}/{name}")
@@ -140,8 +149,9 @@ def template_files(report: Report, tree: Tree) -> list[tuple[str, frozenset[str]
             report.ko(f"{TEMPLATES}/{name}", "is not a directory")
             bad = True
             continue
-        reader = "wave review" if name == REVIEW else "wave prep"
-        allowed = tuple(REVIEW_PART_NAMES) if name == REVIEW else SHARED + PLANNING if name == SHARED_DIR else OWN
+        extra_spec = EXTRA_DIRS.get(name)
+        reader = extra_spec[0] if extra_spec is not None else "wave prep"
+        allowed = tuple(extra_spec[1]) if extra_spec is not None else SHARED + PLANNING if name == SHARED_DIR else OWN
         for extra in sorted(set(inside) - set(allowed)):
             report.ko(f"{TEMPLATES}/{name}/{extra}", f"is no part {reader} reads there (it reads {', '.join(allowed)})")
             bad = True
@@ -151,7 +161,7 @@ def template_files(report: Report, tree: Tree) -> list[tuple[str, frozenset[str]
                 report.ko(rel, f"is missing, or no regular file: {reader} looks this shipped part up")
                 bad = True
                 continue
-            out.append((rel, REVIEW_PART_NAMES[part] if name == REVIEW else PLANNING_NAMES if part in PLANNING else COMMON_NAMES))
+            out.append((rel, extra_spec[1][part] if extra_spec is not None else PLANNING_NAMES if part in PLANNING else COMMON_NAMES))
     for needed, what in ((REQUIRED_KIND, "the reference native-Claude brief's own parts"),
                          (SHARED_DIR, "the parts every transport's brief shares")):
         if needed not in listed:
