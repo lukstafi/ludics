@@ -44,7 +44,8 @@ plan directory is `$ISSUE_WAVE_STATE/plans/<wave>-<issue>`:
      --checkout <the project's main checkout> --base <that sha> --wave <wave> --task <task>
    ```
 
-   It reads the issue with `gh` (the planner's sandbox has no network) and adds a detached
+   Invalid planner options or a board target that fails validation return exit 2 before allocation.
+   Then it reads the issue with `gh` (the planner's sandbox has no network) and adds a detached
    worktree of the base under `<plan-dir>`. Then it starts Fable (at high, through `claude -p` with
    only read and search tools; `--model`/`--effort` to change them: a GPT model runs through
    `codex exec`, and a `gemini-...` model such as `gemini-4-neon-high` through `agy` in a clone of

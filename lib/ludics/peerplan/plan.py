@@ -37,9 +37,11 @@ session id in ``<dir>/thread`` (agy's ``conversation_id``) and the critique's re
 session follow the same files for all three; a claude run's ``<kind>.jsonl`` holds its one JSON
 result, an agy run's its event stream.
 
-With ``--wave`` and ``--task``, the planning run records its model and effort on that existing
-paired row through ``board set``, after preparing the planner command and before dispatch.
-The row's recorded ``plan_dir`` must match the run's absolute plan directory.
+Before allocating anything, ``start`` checks supplied model and effort values against the wave
+profile grammar. With ``--wave`` and ``--task``, it reads the board's JSON snapshot and checks that
+the task is paired and its recorded ``plan_dir`` equals the absolute plan directory. The snapshot
+cannot establish lease ownership or reserve the row. The run rechecks the target through the
+leased ``board set`` that records its model and effort before dispatch.
 For agy, ``planner`` carries the full slug and ``planner_effort`` is empty. The board records
 the dispatch configuration. The bg-run verdict establishes whether a plan was produced.
 A failed board write ends the run before dispatch, with the board diagnostic in its log.
@@ -67,7 +69,9 @@ from pathlib import Path
 from typing import cast
 
 from ludics import agy, bgrun, claude as claude_cli, cli, fs, proc
-from ludics.fleetworker.boardstore import WAVE
+from ludics.fleetworker.boardstore import WAVE, planner_target_ok, string_map, task_ok
+from ludics.fleetworker.takeover import row_of
+from ludics.fleetworker.wave import REVIEW_NAME
 from ludics.peerplan import transcript
 
 PROG = "peer-plan.sh"
@@ -89,6 +93,12 @@ def is_claude(model: str) -> bool:
 def is_gemini(model: str) -> bool:
     """THE PLANNER (the header): an Antigravity model, run by ``agy`` in a clone."""
     return model.startswith("gemini-")
+
+
+def validate_options(options: dict[str, str]) -> None:
+    for name in ("--model", "--effort"):
+        if name in options and not REVIEW_NAME.fullmatch(options[name]):
+            raise ValueError(f"{name} must match {REVIEW_NAME.pattern}, got {shlex.quote(options[name])}")
 
 
 def is_clone(worktree: str) -> bool:
@@ -314,10 +324,34 @@ def live(run: str) -> bool:
         raise cli.Exit(1, f"cannot read the run {run} (bg-run.sh wait exit {done.rc}): {last_line(done.stderr)}")
 
 
+def validate_board_target(wave: str, task: str, d: str) -> None:
+    task_ok(task)
+    done = proc.run_tool(str(FLEET_WORKER), ["board", "show", wave, "--json"],
+                         stdin=subprocess.DEVNULL, timeout=60)
+    if done.rc != 0:
+        detail = last_line(done.stderr.strip() or done.stdout)
+        raise ValueError(f"cannot read the board of {shlex.quote(wave)} (board show exit {done.rc}): {detail}")
+    try:
+        doc: object = json.loads(done.stdout)
+    except ValueError:
+        raise ValueError(f"the board of {shlex.quote(wave)} is not JSON") from None
+    if not isinstance(doc, dict):
+        raise ValueError(f"the board of {shlex.quote(wave)} is not a JSON object")
+    row = row_of(cast(dict[str, object], doc), task)
+    if row is None:
+        raise ValueError(f"no task {json.dumps(task)} on the board of {shlex.quote(wave)}")
+    fields = string_map(row.get("fields"), "board row fields")
+    planner_target_ok(task, fields.get("planning"), fields.get("plan_dir"), d)
+
+
 def start(args: Sequence[str]) -> int:
     d, values = parse(args, {"--issue", "--checkout", "--base", "--model", "--effort", "--wave", "--task"},
                       frozenset({"--managed"}))
     required(values, "--issue", "--checkout", "--base")
+    try:
+        validate_options(values)
+    except ValueError as err:
+        raise usage(str(err)) from None
     if "--wave" in values or "--task" in values:
         required(values, "--wave", "--task")
         if not WAVE.fullmatch(values["--wave"]):
@@ -332,6 +366,11 @@ def start(args: Sequence[str]) -> int:
         raise cli.Exit(1, f"{d} already exists: each paired planning takes a fresh directory")
     if not os.path.isdir(checkout):
         raise cli.Exit(1, f"--checkout {checkout} is not a directory")
+    if "--wave" in values:
+        try:
+            validate_board_target(values["--wave"], values["--task"], d)
+        except ValueError as err:
+            raise usage(str(err)) from None
     issue = proc.run_tool(
         "gh",
         ["issue", "view", number, "--repo", repo, "--json", "number,title,body,comments"],
