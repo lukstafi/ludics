@@ -132,6 +132,28 @@ class NoPR(Refusing):
     def test_a_passed_run_closes_with_pass(self) -> None:
         self.assert_run_closes("0", "pass")
 
+    def test_run_with_trailing_whitespace_closes_against_record(self) -> None:
+        seen: list[str] = []
+
+        def exact_read(_cfg: Any, _host: str, directory: str, _head: str) -> dict[str, str] | ex.Refusal:
+            seen.append(directory)
+            if directory == "/run":
+                return run_record(wt="/wt", whead=OID, launched=OID, exit="0")
+            return ex.Refusal(f"no run directory {directory}", 1)
+
+        with (mock.patch.object(closeout, "board_document", return_value=self.doc),
+              mock.patch.object(closeout, "listing", side_effect=self.listed),
+              mock.patch.object(closeout, "stepped", side_effect=self.write),
+              mock.patch.object(ex, "observed_sha_of", return_value=OID),
+              mock.patch.object(ex, "read_run", side_effect=exact_read),
+              mock.patch.object(ex, "read_bg_run", return_value=ex.Refusal("absent", 1)),
+              mock.patch.object(ex, "unused_leg", side_effect=self.unused),
+              contextlib.redirect_stdout(io.StringIO())):
+            self.assertEqual(closeout.cmd_close(CFG, ["w", "t", "--no-pr", "--run", "/run  "]), 0)
+        self.assertEqual(seen, ["/run"])
+        self.assertEqual(self.records[0]["verdict"], "pass")
+        self.assertEqual(self.doc["tasks"][0]["fields"]["state"], "done, no PR")
+
     def test_a_failed_run_closes_with_fail(self) -> None:
         self.assert_run_closes("1", "fail")
 
@@ -295,6 +317,14 @@ class TheFlags(unittest.TestCase):
         self.assertEqual(closeout.parsed(["w", "t", "--no-pr", "--run", "/a", "--run", "/b"]),
                          ("w", "t", {"no-pr": "true", "runs": '["/a", "/b"]'}))
         for args in (["--no-pr", "--pr", "7"], ["--run", "/a"], ["--no-pr", "--run", "relative"]):
+            with self.subTest(args=args), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises((cli.Exit, SystemExit)):
+                    closeout.parsed(["w", "t", *args])
+
+    def test_run_flag_trims_trailing_whitespace_only(self) -> None:
+        self.assertEqual(closeout.parsed(["w", "t", "--no-pr", "--run", "/a  ", "--run", "/dir with spaces\t \r\n"]),
+                         ("w", "t", {"no-pr": "true", "runs": '["/a", "/dir with spaces"]'}))
+        for args in (["--no-pr", "--run", " /a"], ["--no-pr", "--run", "relative  "]):
             with self.subTest(args=args), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises((cli.Exit, SystemExit)):
                     closeout.parsed(["w", "t", *args])

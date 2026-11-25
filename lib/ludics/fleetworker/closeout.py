@@ -46,8 +46,9 @@ THE VERDICT. ``conclude --standing-handback`` takes no default because its verdi
 word. Here ``pass`` is what this verb establishes: a standing record is concluded as the worker's
 life ending, and this form concludes it only for a task whose PR GitHub says merged.
 
-With ``--no-pr``, each repeated absolute ``--run`` is read on the standing records' execution
-hosts, first as test-run, then bg-run. Exactly one record must match its host and checkout; bg-run
+With ``--no-pr``, each repeated absolute ``--run`` trims trailing whitespace (``str.rstrip()``;
+internal spaces stay, while leading whitespace and relative paths are refused) and is read on
+the standing records' execution hosts, first as test-run, then bg-run. Exactly one record must match its host and checkout; bg-run
 records no checkout, so its request file must bind it to that record. Its own verdict (including
 fail or an admission refusal's not-launched) concludes that record. Test-run uses standing-handback
 semantics: dirty edits and a changed HEAD are recorded in evidence, not refused as certification
@@ -129,7 +130,7 @@ def parsed(args: list[str]) -> tuple[str, str, dict[str, str]]:
             rest = rest[1:]
             continue
         if rest[0] == "--run" and len(rest) >= 2 and rest[1].startswith("/"):
-            runs.append(rest[1])
+            runs.append(rest[1].rstrip())
             rest = rest[2:]
             continue
         if rest[0] not in ("--pr", "--agent", "--evidence") or len(rest) < 2 or not rest[1].strip():
