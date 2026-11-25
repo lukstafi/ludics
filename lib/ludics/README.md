@@ -789,12 +789,13 @@ npx --yes pyright@1.1.414 --pythonplatform Darwin                 # (CI runs bot
 scripts/py -m unittest discover -s lib -t lib -p 'test_*.py'     # the package's unit tests
 scripts/test-py.sh                                                # the wrapper
 ship-pr/scripts/test-pr-review-<suite>.sh                         # the conformance suites
-scripts/py -m unittest ludics.tests.test_checkprompts_cli         # ...and the ported ones
+scripts/py -m unittest ludics.tests.test_checkprompts_cli         # ...and the ported ones (part 1)
+scripts/py -m unittest ludics.tests.test_checkprompts_cli_checks  # ...and part 2 (links, readings, templates)
 ```
 
 CI runs pyright in the `python` job and the unit tests in the `python-unit` matrix of `.github/workflows/skill-scripts.yml`,
 and the shell suites where they always ran. A ported conformance suite runs where its shell suite
-did as well, named as a module: `test_checkprompts_cli` in the small-guards job, whatever the diff,
+did as well, named as a module: `test_checkprompts_cli` and `test_checkprompts_cli_checks` in the small-guards job, whatever the diff,
 and in macos-weekly.yml's repo-guards job. `scripts/fleet-peers.py` is not behind `scripts/py`
 yet: its callers and its tests run it with `python3` and by path.
 

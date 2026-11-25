@@ -47,7 +47,6 @@
 #              step and CI's lint job, which names its steps, runs none).
 # A GUARD named on the command line runs whatever the mode. The table (`preflight.sh guards`):
 #   - prompt-fixtures      lib/ludics/tests/test_checkprompts_cli.py, run through scripts/py, on any
-#   - prompt-checks-fixtures lib/ludics/tests/test_checkprompts_cli_checks.py, the second half (#1336)
 #                          *.md: check-prompts.sh reads every SKILL.md, both index READMEs and
 #                          (its slot count) every *.md, and its suite reads the live
 #                          ship-pr/SKILL.md's shape -- wider than the
@@ -55,6 +54,8 @@
 #                          root README and the other skills. Also on the checker's code and the
 #                          live scripts the suite reads: fleet-worker.sh's SLOTS, sync-routines.sh's
 #                          LOCAL_ROUTINES, post-merge-cleanup's usage (the table names them)
+#   - prompt-checks-fixtures lib/ludics/tests/test_checkprompts_cli_checks.py, the same triggers,
+#                          for the second half of the prompt-checker CLI suite (#1336)
 #   - routines-fixtures    scripts/test-sync-routines.sh, on routines/*.md: its pin compares the
 #                          routines table with sync-routines.sh; and on that script and the checker
 #   - reporters            scripts/test-workflow-reporters.py   } no file trigger: a Markdown

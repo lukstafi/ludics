@@ -562,8 +562,9 @@ jobs:
     # deleting a row refuses, and new test modules land in a range without editing this job.
     # Rebalanced in #1336 after test_checkprompts_cli grew to 149-197s on Ubuntu (tripping the
     # 200s watchdog on slower ~1.4x runners): test_checkprompts_cli was split into two modules
-    # and the suite partitioned into five shards (planned baseline medians 91/93/100/90/109s,
-    # x1.4 = 128/130/140/125/152s, each leaving >= 47s headroom under the 200s watchdog).
+    # and the suite partitioned into five shards (planned baselines 90/105/112/90/109s from
+    # main runs plus PR #1371 run 45672327970's split measurements, x1.4 = 126/147/157/126/153s,
+    # each leaving >= 42s headroom under the 200s watchdog).
     # scripts/test-python-shards.py pins coverage and >= 30s headroom at 1.4x under LUDICS_TEST_WATCHDOG.
     timeout-minutes: 5
     strategy:
@@ -571,7 +572,7 @@ jobs:
       matrix:
         part: [0, 1, 2, 3, 4]
     env:
-      PYTHON_TEST_CUTS: ludics.tests.test_checkprompts_cli_checks|ludics.tests.test_fleetworker_group|ludics.tests.test_fleetworker_waveab|ludics.tests.test_prreview_merge
+      PYTHON_TEST_CUTS: ludics.tests.test_checkprompts_cli_checks|ludics.tests.test_fleetworker_farsideclose|ludics.tests.test_fleetworker_waveab|ludics.tests.test_prreview_merge
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

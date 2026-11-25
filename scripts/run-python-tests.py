@@ -42,15 +42,15 @@ UNRECORDED_MODULE_SECONDS = 5.0
 # Recorded Ubuntu baseline seconds per module: medians over six green main-branch
 # runs (45213233000, 45215827456, 45220631341, 45224703994, 45233765095,
 # 45367321537; recent five for test_peerplan after its wave-20261123 growth).
-# test_checkprompts_cli (164.1s median unsplit) is split 54.3% / 45.7% into
-# test_checkprompts_cli (89.1s) and test_checkprompts_cli_checks (75.0s) from
-# per-class subprocess profiling (#1336).
+# test_checkprompts_cli (87.7s, job 139410677372 on us-west-2) and
+# test_checkprompts_cli_checks (98.9s, job 139410677397 on eastus2) are measured
+# from PR #1371 run 45672327970's python-unit elapsed rows (#1336).
 MODULE_TIMINGS: dict[str, float] = {
     "ludics.tests.test_bash_fragments": 0.8,
     "ludics.tests.test_bgrun": 1.3,
     "ludics.tests.test_checkprompts": 0.0,
-    "ludics.tests.test_checkprompts_cli": 89.1,
-    "ludics.tests.test_checkprompts_cli_checks": 75.0,
+    "ludics.tests.test_checkprompts_cli": 87.7,
+    "ludics.tests.test_checkprompts_cli_checks": 98.9,
     "ludics.tests.test_claude": 0.3,
     "ludics.tests.test_fake": 0.4,
     "ludics.tests.test_fleetworker_assign": 0.6,

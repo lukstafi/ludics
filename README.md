@@ -767,7 +767,9 @@ brief template `wave prep` renders, `issue-wave/templates/`, with this repositor
 every placeholder is a NAME prep gives that part; every `~/.claude/skills/`, `~/ludics/` or
 tree-rooted path in a backticked span exists, as does the heading a `.md` path followed by
 `, *Heading*` names; and no line holds a step a PR retired from SKILL.md's *The brief* (the list
-and the boundary are in its `brieftemplate` module's header). Its suite, `lib/ludics/tests/test_checkprompts_cli.py`, runs it
+and the boundary are in its `brieftemplate` module's header). Its CLI suite — split across
+`lib/ludics/tests/test_checkprompts_cli.py` and `lib/ludics/tests/test_checkprompts_cli_checks.py`
+(where the link, verdict, suite-map, brief-template, and live-checkout probes live) — runs it
 against scratch trees, one per defect (native Codex own-part placeholders without planning
 parts among them), with the well-formed tree as the control, and ends by
 running it on this checkout.

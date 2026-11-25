@@ -101,6 +101,8 @@ class Shards(unittest.TestCase):
     def test_old_four_shard_plan_fails_headroom(self):
         # Frozen pre-#1336 snapshot so this historical regression stays independent of live
         # module renames or future speedups while still pinning the exact failure mode.
+        # Each of the three cut modules stands for its whole old shard; their values are the
+        # historical range totals (not single-module timings).
         snapshot_timings = {
             "ludics.tests.test_bash_fragments": 0.8,
             "ludics.tests.test_bgrun": 1.3,
