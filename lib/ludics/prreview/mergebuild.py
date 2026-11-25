@@ -253,7 +253,7 @@ NUL in it, past the argument limit) is a config error (exit 2); anything else it
 outside its tree, a network call, a process it detaches with ``setsid``) is the command's
 business, as it would be from a developer's shell.
 
-LOG RETENTION (#1188, #1263, #1293). Under ship-pr's state directory (budget.budget_dir),
+LOG RETENTION (#1188, #1263, #1293, #1341). Under ship-pr's state directory (budget.budget_dir),
 independent of ISSUE_WAVE_STATE, each candidate has a directory at
 ``merge-builds/logs/<owner>--<repo>/<pr>/<head>/<base>/``. Its ``build``, ``base`` and ``plan``
 subdirectories hold the latest published attempt of each command in a unique directory.
@@ -274,8 +274,19 @@ cannot identify a particular attempt. A stale-build
 or refresh refusal reports the attempt paths of the build logs already retained by the gate.
 Directories for distinct candidates and legacy head-only artifacts remain until manual removal.
 An interruption before publication may leave staging files, and one after publication may leave
-the old pair too. A completed retry clears both. Retention can only publish evidence once the
-attempt reaches the copy step. Recovery after host or filesystem failure is outside this boundary.
+the old pair too. A completed retry clears both. On POSIX, ``watch`` also sweeps this box's logs
+at most once a day. It walks the fixed repository/run/head/base/command layout of real
+directories and reads only metadata and entry names. It reaps only real ``.pending`` and
+``.retired`` directories whose contents are limited to that command's regular log/status files.
+The staging entries and the command directory must all be more than seven days old because
+renaming a previous attempt to ``.retired`` changes the command directory's mtime, even if the
+pair is older. It checks again with the existing command lock held, skipping a contended or
+unreadable lock. A future retry can recreate staging, and a retry waiting to take the lock has
+yet to stage anything. The sweep makes no PR-state query, follows no symlinks within the logs
+tree, and leaves published paths, receipts, locks, and legacy artifacts alone. Cleanup is best
+effort and a box needs a state-enabled ``watch`` to sweep. Retention can only
+publish evidence once the attempt reaches the copy step. Recovery after host or filesystem
+failure is outside this boundary.
 
 DIAGNOSTIC SCAN -- the boundary. In addition to the bounded head/tail display, scan the complete
 log in bounded chunks for physical lines whose first SHOWN_BYTES bytes, decoded as UTF-8 with
@@ -330,12 +341,13 @@ import shlex
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
 import time
 from collections import Counter
-from collections.abc import Generator, Sequence
+from collections.abc import Generator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import FrameType
@@ -344,6 +356,7 @@ from uuid import uuid4
 
 from ludics import cli, fs, proc
 from ludics.prreview import buildhistory, commentonly
+from ludics.prreview.budget import budget_dir
 from ludics.prreview.branchtip import FULL_SHA
 from ludics.prreview.clock import Clock
 from ludics.prreview.core import GhFailed, GhOk, GhSession, GhUnanswered, fail, warn
@@ -1551,6 +1564,113 @@ class _Ran:
     earlier: tuple[buildhistory.Row, ...] = ()
 
 
+_STAGING_AGE = 7 * 86400
+_SWEEP_INTERVAL = 86400
+_STAGING_NAMES = (".pending", ".retired")
+_LOG_LOCK = ".lock"
+_LOG_LAYOUT = (
+    re.compile(r"[A-Za-z0-9._-]+--[A-Za-z0-9._-]+"),
+    re.compile(r"(?:[1-9][0-9]*|dry-run|plan-only)"),
+    _SHA, _SHA,
+    re.compile(r"(?:build|base|plan)"),
+)
+
+
+@contextlib.contextmanager
+def _open_log_dir(name: str, parent: int | None = None) -> Generator[int]:
+    # Open each component from its parent so a concurrent symlink swap cannot redirect deletion.
+    fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+    try:
+        yield fd
+    finally:
+        os.close(fd)
+
+
+@contextlib.contextmanager
+def _try_staging_lock(parent: int, leaf: str, *, create: bool = False) -> Generator[int]:
+    import fcntl  # HOSTS AND CLONES: retention runs only on POSIX.
+
+    flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK
+    fd = os.open(leaf, flags | (os.O_CREAT if create else 0), 0o600, dir_fd=parent)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or (create and info.st_nlink != 1):
+            raise OSError("unexpected staging lock file")
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def _old_staging(directory: int, cutoff: float) -> list[str]:
+    if os.fstat(directory).st_mtime >= cutoff:
+        return []
+    old: list[str] = []
+    for leaf in _STAGING_NAMES:
+        with contextlib.suppress(FileNotFoundError):
+            staged = os.stat(leaf, dir_fd=directory, follow_symlinks=False)
+            if stat.S_ISDIR(staged.st_mode) and staged.st_mtime < cutoff:
+                old.append(leaf)
+    return old
+
+
+def _remove_staging(directory: int, leaf: str, pair: set[str], cutoff: float) -> None:
+    with _open_log_dir(leaf, directory) as staging, os.scandir(staging) as entries:
+        if os.fstat(staging).st_mtime >= cutoff:
+            return
+        files: list[str] = []
+        for entry in entries:
+            if entry.name not in pair:
+                return
+            info = entry.stat(follow_symlinks=False)
+            if not stat.S_ISREG(info.st_mode) or info.st_mtime >= cutoff:
+                return
+            files.append(entry.name)
+        for name in files:
+            os.unlink(name, dir_fd=staging)
+        os.rmdir(leaf, dir_fd=directory)
+
+
+def _reap_staging(directory: int, path: Path, cutoff: float) -> None:
+    with contextlib.suppress(OSError):
+        if not _old_staging(directory, cutoff):
+            return
+        with _try_staging_lock(directory, _LOG_LOCK):
+            pair = {f"{path.name}.log", f"{path.name}.status"}
+            for leaf in _old_staging(directory, cutoff):
+                try:
+                    _remove_staging(directory, leaf, pair, cutoff)
+                except OSError as exc:
+                    warn(f"could not reap merge-build staging {shlex.quote(str(path / leaf))} ({exc.strerror})")
+
+
+def _walk_staging(directory: int, path: Path, levels: tuple[re.Pattern[str], ...], cutoff: float) -> None:
+    if not levels:
+        _reap_staging(directory, path, cutoff)
+        return
+    with contextlib.suppress(OSError), os.scandir(directory) as entries:
+        for entry in entries:
+            if levels[0].fullmatch(entry.name):
+                with contextlib.suppress(OSError), _open_log_dir(entry.name, directory) as child:
+                    _walk_staging(child, path / entry.name, levels[1:], cutoff)
+
+
+def sweep_staging(env: Mapping[str, str]) -> None:
+    """Best-effort staging cleanup alongside watch's scratch sweep (LOG RETENTION)."""
+    state = budget_dir(env)
+    if os.name != "posix" or not state:
+        return
+    root = Path(state) / "merge-builds"
+    with contextlib.suppress(OSError), _open_log_dir(str(root)) as builds, _open_log_dir("logs", builds) as logs:
+        with _try_staging_lock(logs, ".staging-sweep", create=True) as lock:
+            now = time.time()
+            stamp = os.fstat(lock)
+            if stamp.st_size and 0 <= now - stamp.st_mtime < _SWEEP_INTERVAL:
+                return
+            _walk_staging(logs, root / "logs", _LOG_LAYOUT, now - _STAGING_AGE)
+            os.write(lock, b"1")
+
+
 @contextlib.contextmanager
 def _retain(
     repo: str, pr: str, head: str, base: str, name: str, log: str, status: str, *, plan_only: bool = False,
@@ -1567,11 +1687,10 @@ def _retain(
     candidate = Path(os.path.abspath(os.path.join(root, "logs", repo.replace("/", "--"), run, head, base)))
     directory = candidate / name
     attempt = directory / uuid4().hex
-    pending = directory / ".pending"
-    retired = directory / ".retired"
+    pending, retired = (directory / leaf for leaf in _STAGING_NAMES)
     try:
         directory.mkdir(parents=True, exist_ok=True)
-        lock = (directory / ".lock").open("ab")
+        lock = (directory / _LOG_LOCK).open("ab")
     except OSError as exc:
         fail(3, f"NOT merging: could not retain merge-build log/status in {shlex.quote(str(directory))}: {exc}")
     with lock:

@@ -590,9 +590,11 @@ prreview/workflows.py prreview/workflow_yaml.py
 
 prreview/mergebuild.py prreview/commentonly.py prreview/mergedry.py prreview/buildhistory.py
     ship-pr/scripts/test-pr-review-merge.sh
+    ship-pr/scripts/test-pr-review-watch.sh
     lib/ludics/tests/test_prreview_mergebuild.py
     lib/ludics/tests/test_prreview_buildhistory.py
     lib/ludics/tests/test_prreview_commentonly.py
+    lib/ludics/tests/test_prreview_watch.py
 
 prreview/mergelease.py fleetworker/mergelease.py
     ship-pr/scripts/test-pr-review-merge.sh
@@ -654,6 +656,12 @@ shown without a count cap, and the complete log is retained. Targeted unit negat
 middle diagnostics and cleanup survival. Review regression tests distinguish unstarted receipts,
 scan overrun diagnostics once, handle unreadable logs, and enforce replacement decoding; all fail
 against pre-fix `e23e7b0a`.
+
+Agent notes (wave-20261125-ludics, t1341; refs #1341): On POSIX `watch` sweeps reserved staging
+across the box after the daily interval. The walk and deletion use directory descriptors and
+recheck age under the existing command lock. The seven-day bound uses mtime on the command
+directory too, since retirement renames an old pair. The killed-writer fixture checks the lock,
+fresh retirement, the daily interval, and preservation of published and legacy evidence.
 
 Agent notes (wave-20261119-ludics, t1233; refs #1233): `merge-build --plan-only` uses the dry
 run's local revisions and the same plan reader as `merge`. It stops before the build slot probe.

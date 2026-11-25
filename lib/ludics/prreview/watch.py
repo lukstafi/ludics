@@ -80,6 +80,7 @@ from ludics.prreview.drift import warn_base_drift
 from ludics.prreview.branchtip import Tip, qualified, read_tip, warning
 from ludics.prreview.feeds import Ctx, pr_head_read
 from ludics.prreview.jqsem import JqError, idx, jstr, login_is
+from ludics.prreview.mergebuild import sweep_staging
 from ludics.prreview.poll import poll
 from ludics.prreview.state import (
     NudgeBarred,
@@ -1323,6 +1324,7 @@ def run(session: GhSession, args: list[str], env: Mapping[str, str] | None = Non
         die(f"watch: one watermark at most, got {len(rest)} arguments after the PR")
     mark = rest[0] if rest else ""
     target = pr_arg(args[0], session.config.repo, session)
+    sweep_staging(e)
     cfg = with_window(cfg, e)
     threshold = "off" if session.config.round_threshold is None else str(session.config.round_threshold)
     ctx = Ctx(session, target.repo, session.config.reviewer, clock_from_env(e), cfg.stall,

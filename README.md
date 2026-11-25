@@ -1105,7 +1105,10 @@ repository), a command no exec takes (exit 2), a rename across the input boundar
 its other name), a log of any size (read bounded), and COMMENTS ONLY's reading (#861): a side that
 changed a shared input in comments alone builds nothing, while code on both sides, a path no
 `comments` glob matches, a language it does not read and a rename each still build, and `any-input`
-needs code on each side. `lib/ludics/tests/test_prreview_commentonly.py` pins the comment reader's
+needs code on each side. `lib/ludics/tests/test_prreview_watch.py` kills a merge-build retention
+writer and checks that `watch` sweeps old staging, preserving fresh staging, locked staging, and
+published evidence.
+`lib/ludics/tests/test_prreview_commentonly.py` pins the comment reader's
 allowlist: OCaml's nested and doc comments, strings, quoted strings and character literals inside and
 outside comments, dune's `;` comments and strings, and each form it gives up on (read as code).
 `test-pr-review-merge.sh` also exercises `merge-build --plan-only` with an owed run before and
