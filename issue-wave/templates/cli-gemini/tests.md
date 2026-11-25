@@ -41,9 +41,10 @@ Keep every command in the foreground until it exits. When `run_command` returns 
 stop calling tools and wait for agy's reactive wakeup without polling. This includes batches
 waiting inside `--wait-window` for a measurement window to close.
 
-For a process detached with `bg-run.sh spawn`, block on `bg-run.sh wait <dir>` until the run
-exits before sending the final message. Apply the same wakeup rule if `run_command` manages the
-wait itself.
+For a process detached with `bg-run.sh spawn`, block on `bg-run.sh wait <dir>` in the same turn.
+Apply the wakeup rule while `run_command` manages that wait. When the wait returns `RUNNING`,
+issue it again. Retry `STARTING` once, then treat a second `STARTING` as a launch failure.
+Read the batch's exit status from `rc=<n>` and finish waiting before sending the final message.
 
 A commit gated on a batch (the project section names any such gate) is made only after that
 batch's own `exit=0`, with no edit in between, and never chained after the batch with `;`.

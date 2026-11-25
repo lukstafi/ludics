@@ -8,9 +8,10 @@ every suite in the foreground. The other sections call a command run this way a 
 When `run_command` returns a managed task, stop calling tools and wait for agy's reactive wakeup
 without polling.
 
-A process detached with `bg-run.sh spawn` can die at turn end. Block on `bg-run.sh wait <dir>`
-in the same turn until the run exits before sending the final message. Apply the same wakeup rule
-if `run_command` manages the wait itself.
+For a process detached with `bg-run.sh spawn`, block on `bg-run.sh wait <dir>` in the same turn.
+Apply the wakeup rule while `run_command` manages that wait. When the wait returns `RUNNING`,
+issue it again. Retry `STARTING` once, then treat a second `STARTING` as a launch failure.
+Read the batch's exit status from `rc=<n>` and finish waiting before sending the final message.
 
 When a long run can outlast what your shell tool allows one call, give it a run record and still
 keep it in the foreground, under one absolute parent for all your runs, `@@SCR@@/runs`:
