@@ -1097,14 +1097,16 @@ an unread tip, a retarget and a stale gateway resend. The compiler witness uses 
 `.github/ship-pr-merge-build` merges the clash unbuilt, as before; a failed build whose failure the
 base alone shares (the same command on the base tip's tree, the merge's parents) is refused naming
 `--override` and merges under a cited one, and one with a failure of its own beside that red is
-refused under the override too, its extra line shown (#860); under a `comments *.ml` line, a
+refused under the override too, its extra line shown (#860). The same harness check with different
+details and extra passing checks can be overridden, while a new failing check or an unmatched
+literal line refuses (#1359). Under a `comments *.ml` line, a
 build input both sides changed, one side in a comment alone, merges with no build, and a code change
 there on both sides still builds (#861); a line outside the config's
 grammar is exit 2, an unread config exit 3 and a merge outside a clone exit 2 -- under `--wait`
 before the wait, naming `-C`, while with no config it merges and with an unread one it waits (#944). Each build case then
 checks the clone: its working tree, its worktree list and its refs are as they were. Under Git Bash
 the merge build is POSIX-only by design, so the cases that would build (the clash, its control, the
-single-side clash under `any-input`, the first `trigger always` case, the two base-red cases, the two `comments` cases and the merge outside a clone) assert its refusal there instead
+single-side clash under `any-input`, the first `trigger always` case, the base-red cases, the two `comments` cases and the merge outside a clone) assert its refusal there instead
 (exit 2, why the merge needed a build and where to run it, nothing built or merged, the clone
 untouched; ludics-lite#515). `lib/ludics/tests/test_prreview_mergebuild.py` pins the grammar, the
 glob boundary, the trigger's decision on the two sides, the remote match, a textual conflict, a

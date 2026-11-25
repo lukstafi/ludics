@@ -334,6 +334,32 @@ class Log(unittest.TestCase):
         self.assertNotIn("FAILURE no", lines)
         self.assertNotIn("text FAIL no", lines)
 
+    def test_failure_evidence_retains_near_misses(self) -> None:
+        scan = mergebuild._failure_evidence  # pyright: ignore[reportPrivateUsage]
+        header = "HARNESS one.sh (shell; bash 3.2 /bin/bash)"
+        failed = "FAIL  shared check"
+        for literal in (
+            "       seven leading spaces",
+            "  real fleet run: relative/run; background record: /tmp/record",
+            "FAIL one separator space",
+        ):
+            with self.subTest(literal=literal):
+                self.assertEqual(scan([header, failed, literal]), {
+                    ("", header): 1, (header, failed): 1, ("", literal): 1,
+                })
+        footer = "HARNESS another.sh exit: 1"
+        self.assertEqual(scan([header, footer, failed]), {
+            ("", header): 1, ("", footer): 1, (header, failed): 1,
+        })
+
+    def test_failure_evidence_retains_slot_capacity_and_command(self) -> None:
+        scan = mergebuild._failure_evidence  # pyright: ignore[reportPrivateUsage]
+        shape = "EXECUTION SLOT fixture: inside slot {} of {}, held by an enclosing batch, for: {}"
+        base = scan([shape.format(1, 4, "sh a")])
+        for capacity, command in ((5, "sh a"), (4, "sh b")):
+            with self.subTest(capacity=capacity, command=command):
+                self.assertNotEqual(base, scan([shape.format(2, capacity, command)]))
+
     def test_overrun_keeps_middle_diagnostics(self) -> None:
         with tempfile.NamedTemporaryFile() as handle:
             handle.write(b"ordinary\n" * 300 + b"HARNESS overrun exit: 1\n" + b"ordinary\n" * 300)
@@ -1283,6 +1309,24 @@ class BaseAlone(Repo):
         self.assertRegex(out, r"\n  \+ \./api\.sh: (line )?9: seam: ", "the merge's own failure is shown")
         self.assertIn("its failure is not only main's", out)
         self.assertIn("--override goes over only a failure the base alone shares", out)
+
+    def test_failing_checks_are_bound_to_their_harness_invocations(self) -> None:
+        head, _ = self.sides("keep", RED)
+        first_header = "HARNESS first.sh (shell; bash 3.2 /bin/bash)"
+        for second_path in ("second.sh", "first.sh"):
+            with self.subTest(second_path=second_path):
+                second_header = f"HARNESS {second_path} --only 'alpha|beta' (shell; bash 5.2 /opt/bin/bash)"
+                command = (
+                    "if git diff --quiet HEAD^1 HEAD; then first=alpha; second=beta;"
+                    " else first=beta; second=alpha; fi;"
+                    f" printf '%s\n' '{first_header}' \"FAIL  $first\" 'HARNESS first.sh exit: 1'"
+                    f" \"{second_header}\" \"FAIL  $second\" 'HARNESS {second_path} exit: 1'; exit 1"
+                )
+                rc, out, shared = self.build_over(head, command, WHY)
+                self.assertEqual(rc, 1, out)
+                self.assertIsNone(shared)
+                self.assertIn(f"  + FAIL  beta [{first_header}]\n", out)
+                self.assertIn(f"  + FAIL  alpha [{second_header}]\n", out)
 
     def test_another_status_is_refused_under_override(self) -> None:
         """No line differs (the PR's `false` prints nothing), only the status: not the same way."""

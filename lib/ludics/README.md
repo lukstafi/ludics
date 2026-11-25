@@ -728,6 +728,13 @@ timeout, missing/multiple/malformed verdict line, or unstarted/wrapper failure) 
 On launch base `27d1d7e4`, all three new fallback fixtures in `test-pr-review-merge.sh` and the
 `Refresh` unit cases in `test_prreview_mergebuild.py` fail.
 
+Agent notes (wave-20261125-ludics, t1359; refs #1359). The merge-build comparison keeps exit
+statuses and unfamiliar lines literal. A harness FAIL contributes its invocation and check
+label, counted so repeated invocations cannot hide a new failure. The header in `mergebuild.py`
+lists the passing lines, reporter detail and fleet metadata that can vary.
+On launch base `679b862a`, all three new shell cases fail their expected comparison outcomes,
+and the unit fixture admits failed labels swapped across harness invocations.
+
 ## Checking
 
 Placement recovery (#1133, #1160): `wave launch` reads a caller-named JSON result file,
