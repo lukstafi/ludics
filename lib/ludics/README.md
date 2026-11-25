@@ -632,6 +632,12 @@ probe compares the anchor name, host, device and inode. It does not inspect live
 or establish that in-flight merges are drained. The lease context logs successful acquire and
 acknowledged release, including when leaving the context after a refusal.
 
+Agent notes (#1346): `pr-review.sh lease-preflight` also takes a bounded `LC_ALL=C ps -Aww -o pid=,stat=,args=`
+snapshot on each reachable box (bounded by `FLEET_CROSS_TIMEOUT`, default 20s) and matches visible
+non-zombie argvs against a closed allowlist of `pr-review.sh`, `scripts/py`, and `python`/`Python`
+`-m ludics.prreview` `merge` forms. Any recognizable in-flight merge or unreadable process listing
+refuses rollout while acquiring nothing, and every run prints the snapshot's point-in-time limit.
+
 Agent notes (#1257): `Merge.merge_call` classifies failed merge answers by whole first stderr
 line. The allowlist binds CLI preflight refusals to the target PR and GraphQL refusals to the
 `mergePullRequest` path. Unrecognised answers require REST confirmation before another write.
