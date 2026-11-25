@@ -1396,8 +1396,11 @@ or resolves a different anchor directory. The probe parses a synthetic config wi
 served reader and compares the anchor name, host, device and inode. Configure the anchor with a
 plain fleet name and a state path that is absolute after expanding a leading `$HOME/`. The probe
 reads no repository config
-or lease records and acquires nothing. Drain in-flight merges separately before enabling the line,
-since they still use the config they read at the gate. Older readers reject `lease fleet` with
+or lease records and acquires nothing. It also takes a bounded point-in-time `ps` snapshot on each
+reachable box, reporting recognizable ship-pr merge processes (and refusing if any are in flight or a
+process listing cannot be read); this snapshot cannot cover merges started afterwards, unexamined
+hosts, web/API merges, or unrecognized wrappers/command lines, so drain any reported merges before
+enabling the line, since they still use the config they read at the gate. Older readers reject `lease fleet` with
 exit 2. `merge` logs lease acquisition and acknowledged release on stderr. A waiter
 has 1,800 seconds to acquire the lease, including time a holder spends waiting
 for a refresh's slot. A dead holder's lease expires 120 seconds after its last renewal. A timeout

@@ -1116,7 +1116,8 @@ after a record admits it, a config with no plan line, and a malformed verdict. T
 unit case refuses any slot probe.
 The lease takeover case checks that `merge` logs acquisition and acknowledged release around
 the refreshed build. `lib/ludics/tests/test_prreview_mergelease.py` also covers the read-only
-lease preflight, including a box that rejects the directive or resolves another anchor directory.
+lease preflight, including a box that rejects the directive, resolves another anchor directory,
+is unreachable, or has recognizable in-flight ship-pr merge processes.
 
 `test-pr-review-retry.sh` drives `retry`: the plain retry's classification, and `retry run
 watch`, which addresses its run as

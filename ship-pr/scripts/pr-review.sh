@@ -280,7 +280,8 @@
 #                                          # 0 admitted, nothing owed or no plan; 1 unadmitted or
 #                                          # conflict; 2 usage/prerequisite; 3 no verdict or read failure.
 #   pr-review.sh lease-preflight <owner/repo> [--boxes <box> ...]
-#                                          # read each box's lease support and anchor identity
+#                                          # read each box's lease support, anchor identity, and
+#                                          # recognizable in-flight ship-pr merge processes
 #                                          # (default: fleet roster), with no lease acquisition
 #   pr-review.sh local-review <base> [--out <dir>] [-C <dir>]
 #                                          # the local Codex review before the PR opens: HEAD
@@ -854,7 +855,7 @@ main() {
                                              # a dry run: no PR read, no fetch, no merge
                                              # --plan-only reports the plan before the build slot
   pr-review.sh lease-preflight <owner/repo> [--boxes <box> ...]
-                                             # compare served readers and anchor directories
+                                             # compare served readers, anchor directories, and in-flight merges
   pr-review.sh local-review <base> [--out <dir>] [-C <dir>]  # the local Codex review before the
                                              # PR opens: HEAD against origin/<base>'s merge base,
                                              # the transcript to <dir>/run.log, the verdict alone
