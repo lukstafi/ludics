@@ -101,7 +101,12 @@ SCRUBBING BOUNDARY (closed allowlist of forms):
        ``https?://github.com/<repo>/pull/<pr>...`` -> ``[this-pr]``), ``<issue_repo>#<N>`` /
        ``<issue_repo_name>#<N>`` / bare ``#<N>`` -> ``[this-issue]``, ``<repo>#<pr>`` /
        ``<repo_name>#<pr>`` / bare ``#<pr>`` -> ``[this-pr]``, wave ID -> ``[wave]``, and task ID
-       -> ``[task]``. Unrelated cross-references stay intact.
+       -> ``[task]``. Numeric self-reference forms require a right boundary of
+       ``(?![A-Za-z0-9]|_+[A-Za-z0-9])``, so hex literals and identifier/fragment continuations
+       such as ``#101abc``, ``#10_flag``, or ``proj#10_sec`` stay intact while ``#101``,
+       ``(#101)``, ``#101.``, ``#101:``, and closing Markdown emphasis (``_tracked in #101_``)
+       redact (pure-digit literals equal to ``#<N>`` are not distinguished from issue references
+       without language parsing). Unrelated cross-references stay intact.
     8. Adjacent ``[agent]`` tokens separated only by spaces, tabs, ``/``, ``:``, or ``-`` collapse
        to a single ``[agent]`` so multi-word and single-word names leave the same shape.
   - **What is deliberately NOT scrubbed**: model/profile/vendor names inside ``A.diff`` and
@@ -148,6 +153,10 @@ AB_PART_NAMES: dict[str, frozenset[str]] = {
 
 _NON_WORD_LEFT = r"(?<![A-Za-z0-9_])"
 _NON_WORD_RIGHT = r"(?![A-Za-z0-9_])"
+# Right boundary for numeric issue/PR self-references: reject alphanumeric and identifier/fragment
+# continuations (#101abc, #10_flag, proj#10_sec), while still redacting before closing Markdown
+# emphasis delimiters (_tracked in #10_, __#10__).
+_SELF_REF_RIGHT = r"(?![A-Za-z0-9]|_+[A-Za-z0-9])"
 
 _CO_AUTHORED_RE = re.compile(r"(?im)^Co-Authored-By:[^\n]*$")
 _ARM_BRANCH_RE = re.compile(rf"(?i){_NON_WORD_LEFT}(?:codex|claude|gemini)/[A-Za-z0-9_-](?:[A-Za-z0-9._-]*[A-Za-z0-9_-])?")
@@ -1006,17 +1015,20 @@ def scrub_self_references(text: str, cand: Candidate) -> tuple[str, int]:
     url_tail = r"(?:/[A-Za-z0-9._/%-]*)?(?:#[A-Za-z0-9._-]+)?"
     replacements: list[tuple[re.Pattern[str], str]] = [
         # Canonical GitHub URLs first (before shorter owner/repo#N or #N patterns).
-        (re.compile(rf"(?i)https?://github\.com/{re.escape(cand.issue_repo)}/issues/{cand.issue_number}(?![0-9]){url_tail}"), "[this-issue]"),
-        (re.compile(rf"(?i)https?://github\.com/{re.escape(cand.repository)}/pull/{cand.pr}(?![0-9]){url_tail}"), "[this-pr]"),
+        # _SELF_REF_RIGHT keeps hex literals and identifier/fragment continuations (#101abc,
+        # #10_flag, proj#10_sec, /issues/10abc) intact while still redacting punctuation, URL
+        # tails, and closing Markdown emphasis (_tracked in #10_).
+        (re.compile(rf"(?i)https?://github\.com/{re.escape(cand.issue_repo)}/issues/{cand.issue_number}{_SELF_REF_RIGHT}{url_tail}"), "[this-issue]"),
+        (re.compile(rf"(?i)https?://github\.com/{re.escape(cand.repository)}/pull/{cand.pr}{_SELF_REF_RIGHT}{url_tail}"), "[this-pr]"),
         # Full owner/repo#N references.
-        (re.compile(rf"(?i){_NON_WORD_LEFT}{re.escape(cand.issue_ref)}(?![0-9])"), "[this-issue]"),
-        (re.compile(rf"(?i){_NON_WORD_LEFT}{re.escape(f'{cand.repository}#{cand.pr}')}(?![0-9])"), "[this-pr]"),
+        (re.compile(rf"(?i){_NON_WORD_LEFT}{re.escape(cand.issue_ref)}{_SELF_REF_RIGHT}"), "[this-issue]"),
+        (re.compile(rf"(?i){_NON_WORD_LEFT}{re.escape(f'{cand.repository}#{cand.pr}')}{_SELF_REF_RIGHT}"), "[this-pr]"),
         # Short repo-name#N references (e.g. ludics#1274, proj#101).
-        (re.compile(rf"(?i){_NON_WORD_LEFT}{re.escape(issue_repo_name)}#{cand.issue_number}(?![0-9])"), "[this-issue]"),
-        (re.compile(rf"(?i){_NON_WORD_LEFT}{re.escape(pr_repo_name)}#{cand.pr}(?![0-9])"), "[this-pr]"),
+        (re.compile(rf"(?i){_NON_WORD_LEFT}{re.escape(issue_repo_name)}#{cand.issue_number}{_SELF_REF_RIGHT}"), "[this-issue]"),
+        (re.compile(rf"(?i){_NON_WORD_LEFT}{re.escape(pr_repo_name)}#{cand.pr}{_SELF_REF_RIGHT}"), "[this-pr]"),
         # Bare #N references.
-        (re.compile(rf"(?<![A-Za-z0-9_/])#{cand.issue_number}(?![0-9])"), "[this-issue]"),
-        (re.compile(rf"(?<![A-Za-z0-9_/])#{cand.pr}(?![0-9])"), "[this-pr]"),
+        (re.compile(rf"(?<![A-Za-z0-9_/])#{cand.issue_number}{_SELF_REF_RIGHT}"), "[this-issue]"),
+        (re.compile(rf"(?<![A-Za-z0-9_/])#{cand.pr}{_SELF_REF_RIGHT}"), "[this-pr]"),
     ]
     if cand.wave and cand.wave != "<unknown>":
         replacements.append((re.compile(rf"{_NON_WORD_LEFT}{re.escape(cand.wave)}{_NON_WORD_RIGHT}"), "[wave]"))
