@@ -69,7 +69,7 @@ from pathlib import Path
 from typing import cast
 
 from ludics import agy, bgrun, claude as claude_cli, cli, fs, proc
-from ludics.fleetworker.boardstore import WAVE, planner_target_ok, string_map, task_ok
+from ludics.fleetworker.boardstore import NO_BOARD_EXIT, WAVE, planner_target_ok, string_map, task_ok
 from ludics.fleetworker.takeover import row_of
 from ludics.fleetworker.wave import REVIEW_NAME
 from ludics.peerplan import transcript
@@ -328,19 +328,24 @@ def validate_board_target(wave: str, task: str, d: str) -> None:
     task_ok(task)
     done = proc.run_tool(str(FLEET_WORKER), ["board", "show", wave, "--json"],
                          stdin=subprocess.DEVNULL, timeout=60)
+    if done.rc == NO_BOARD_EXIT:
+        raise ValueError(f"no board for wave {shlex.quote(wave)} on the anchor")
     if done.rc != 0:
         detail = last_line(done.stderr.strip() or done.stdout)
-        raise ValueError(f"cannot read the board of {shlex.quote(wave)} (board show exit {done.rc}): {detail}")
+        raise cli.Exit(1, f"cannot read the board of {shlex.quote(wave)} (board show exit {done.rc}): {detail}")
     try:
         doc: object = json.loads(done.stdout)
     except ValueError:
-        raise ValueError(f"the board of {shlex.quote(wave)} is not JSON") from None
+        raise cli.Exit(1, f"the board of {shlex.quote(wave)} is not JSON") from None
     if not isinstance(doc, dict):
-        raise ValueError(f"the board of {shlex.quote(wave)} is not a JSON object")
+        raise cli.Exit(1, f"the board of {shlex.quote(wave)} is not a JSON object")
     row = row_of(cast(dict[str, object], doc), task)
     if row is None:
         raise ValueError(f"no task {json.dumps(task)} on the board of {shlex.quote(wave)}")
-    fields = string_map(row.get("fields"), "board row fields")
+    try:
+        fields = string_map(row.get("fields"), "board row fields")
+    except ValueError as err:
+        raise cli.Exit(1, f"cannot read the board of {shlex.quote(wave)}: {err}") from None
     planner_target_ok(task, fields.get("planning"), fields.get("plan_dir"), d)
 
 

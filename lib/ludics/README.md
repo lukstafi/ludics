@@ -813,9 +813,10 @@ fixes at `c310658f`. See the task's `runs/negative-base-final.log` and
 `runs/review-negative-final.log` on mac-studio.
 
 Agent notes (wave-20261125-ludics, t1337). `peer-plan.sh start` reads the board before allocation
-and shares the paired-mode and plan-directory guard with the leased write at dispatch. Explicit
-planner options use the wave profile grammar at both CLI entry points. The allocation and probe
-controls fail on base `9872447d` in `runs/negative-base.log` on mac-studio.
+and shares the paired-mode and plan-directory guard with the leased write at dispatch. Invalid
+targets return exit 2 and failed board reads return exit 1. Explicit planner options use the wave
+profile grammar at both CLI entry points. The allocation and probe controls fail on base
+`9872447d` in `runs/negative-base-final.log` on mac-studio.
 
 Every other far side of `fleet-worker.sh` -- the bash a worker verb runs on its box, local child or
 `ssh <box> bash -s` -- is still bash, the shell's heredocs byte for byte, in

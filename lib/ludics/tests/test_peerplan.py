@@ -191,13 +191,13 @@ class PeerPlan(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         return done.stdout.strip()
 
-    def assert_start_refused(self, diagnostic: str, *args: str) -> None:
+    def assert_start_refused(self, diagnostic: str, *args: str, status: int = 2) -> None:
         worktrees = git("-C", self.repo, "worktree", "list", "--porcelain")
         done = self.entry("start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main",
                           "--managed", *args)
         self.assertEqual((done.returncode, done.stdout, os.path.lexists(os.path.dirname(self.dir)),
                           git("-C", self.repo, "worktree", "list", "--porcelain")),
-                         (2, "", False, worktrees), done.stderr)
+                         (status, "", False, worktrees), done.stderr)
         self.assertIn(diagnostic, done.stderr)
         self.assertEqual(self.gh.calls(), [])
 
@@ -317,6 +317,16 @@ class PeerPlan(unittest.TestCase):
     def test_a_mistyped_task_refuses_before_allocation(self) -> None:
         self.paired_board("paired")
         self.assert_start_refused('no task "t77" on the board of w', "--wave", "w", "--task", "t77")
+
+    def test_a_missing_board_refuses_before_allocation(self) -> None:
+        self.paired_board("paired")
+        self.assert_start_refused("no board for wave other", "--wave", "other", "--task", "t7")
+
+    def test_an_unreadable_board_fails_before_allocation(self) -> None:
+        self.paired_board("paired")
+        with open(os.path.join(self.tmp, "fleet", "boards", "w.json"), "w", encoding="utf-8") as f:
+            f.write("invalid JSON\n")
+        self.assert_start_refused("cannot read the board of w", "--wave", "w", "--task", "t7", status=1)
 
     def test_a_mismatched_plan_dir_refuses_before_allocation(self) -> None:
         self.paired_board("paired")
