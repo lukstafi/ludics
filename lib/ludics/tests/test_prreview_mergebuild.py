@@ -334,6 +334,32 @@ class Log(unittest.TestCase):
         self.assertNotIn("FAILURE no", lines)
         self.assertNotIn("text FAIL no", lines)
 
+    def test_failure_evidence_retains_near_misses(self) -> None:
+        scan = mergebuild._failure_evidence  # pyright: ignore[reportPrivateUsage]
+        header = "HARNESS one.sh (shell; bash 3.2 /bin/bash)"
+        failed = "FAIL  shared check"
+        for literal in (
+            "       seven leading spaces",
+            "  real fleet run: relative/run; background record: /tmp/record",
+            "FAIL one separator space",
+        ):
+            with self.subTest(literal=literal):
+                self.assertEqual(scan([header, failed, literal]), {
+                    ("", header): 1, (header, failed): 1, ("", literal): 1,
+                })
+        footer = "HARNESS another.sh exit: 1"
+        self.assertEqual(scan([header, footer, failed]), {
+            ("", header): 1, ("", footer): 1, (header, failed): 1,
+        })
+
+    def test_failure_evidence_retains_slot_capacity_and_command(self) -> None:
+        scan = mergebuild._failure_evidence  # pyright: ignore[reportPrivateUsage]
+        shape = "EXECUTION SLOT fixture: inside slot {} of {}, held by an enclosing batch, for: {}"
+        base = scan([shape.format(1, 4, "sh a")])
+        for capacity, command in ((5, "sh a"), (4, "sh b")):
+            with self.subTest(capacity=capacity, command=command):
+                self.assertNotEqual(base, scan([shape.format(2, capacity, command)]))
+
     def test_overrun_keeps_middle_diagnostics(self) -> None:
         with tempfile.NamedTemporaryFile() as handle:
             handle.write(b"ordinary\n" * 300 + b"HARNESS overrun exit: 1\n" + b"ordinary\n" * 300)

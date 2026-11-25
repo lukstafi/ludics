@@ -340,13 +340,15 @@ recognised forms are:
   ignored as reporter detail (scratch paths, PIDs, slot numbers).
 * ``EXECUTION SLOT <box>: inside slot <index> of <capacity>, held by an enclosing batch, for: <command>``.
   Mask the positive decimal slot index, keeping box, capacity and command.
-* ``  real fleet run: <absolute path>; background record: <absolute path>``. Ignore this pair of
-  generated record paths, with exactly two leading spaces and no semicolon in either path.
+* ``  real fleet run: <absolute path>; background record: <absolute path>``. Ignore the line when
+  both generated record paths are absolute, with exactly two leading spaces and no semicolon in
+  either path. The writer is OCANNL's ``tools/test-test-run-last.sh:984`` at staging ``649c3d1f``.
 
-Every other line, including malformed markers, slot refusals, additional indented lines and
-unfamiliar failure wording, compares literally with multiplicity. With no recognised FAIL in
-the merge log, compare both logs literally as before. Two empty logs still match when their exit
-statuses agree.
+The harness delimiters are the OCANNL ``tools/test-harnesses.sh`` format. Every other line,
+including malformed markers, slot refusals, additional indented lines and unfamiliar failure
+wording, compares literally with multiplicity. A change only to a timing, SKIP line or test
+tally can still cause a refusal. With no recognised FAIL in the merge log, compare both logs
+literally as before. Two empty logs still match when their exit statuses agree.
 The override's reason names the failure for the reader (merge.py). The dry run (THE DRY RUN)
 takes no override, so a shared failure is its exit 1.
 """
