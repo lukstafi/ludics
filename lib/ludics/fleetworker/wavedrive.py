@@ -87,7 +87,7 @@ marker (an ``EXECUTION_REQUEST`` example) that is no request.
 
   re-prompt a Gemini final with no recognised or misplaced marker gets one automatic request
             to resend, per worker session. Explicit coordinator handoffs (``NEEDS_DESIGN``,
-            ``PENDING``, ``EXECUTION_REBIND``) and malformed markers still go to attention. The driver
+            ``PLAN_ESCALATION``, ``PENDING``, ``EXECUTION_REBIND``) and malformed markers go to attention. The driver
             persists the attempt before calling unstick. If interrupted before it records an
             outcome and the same turn is still returned, it raises attention for reconciliation.
             A later marker-less final in that session goes to attention.
@@ -97,7 +97,9 @@ THE ANSWERS:
             coordinator follows executions.md, Bounded native Windows verification.
   request   ``execution assign <reserve/<task>-base.json> <message> --message <file> --unstick <box>
             <worker> --status <file>``: it reserves, dispatches and resumes in one call, and its
-            input omits the excluded blocks above while the saved final remains whole. Its
+            input omits the excluded blocks above, retaining every line inside a live request
+            block for JSON validation. The saved final remains whole, and assignment attention
+            names the file that assign actually read. Its
             status file (assign.py, THE STATUS; removed before the call, unread when that removal
             fails, and read only when its ``exit`` is the call's) says what its unstick did.
             Exit ``LEASE_LOST_STATUS`` (6) ends the driver. All lease-gated verbs now report loss
@@ -163,7 +165,8 @@ THE ANSWERS:
   handback  the PR is the row's ``pr``, else the first ``/pull/<n>`` outside the excluded blocks. The message
             is saved as ``handbacks/<task>.md`` and the task closed with ``board close``, which
             verifies the merge on GitHub itself. Without a PR, each exact ``RUN /absolute/path``
-            line supplies a repeated ``--run`` to ``board close --no-pr``; no such line is attention.
+            line outside the excluded blocks supplies a repeated ``--run`` to ``board close --no-pr``;
+            no such line is attention.
             Trailing whitespace on the line (``str.rstrip()``: Markdown two-space line breaks, tabs,
             ``\r``) is trimmed; internal spaces stay, paths consume the rest of the line with no
             quoting, backslash stripping or prose, and leading whitespace, extra space after
@@ -334,7 +337,7 @@ from dataclasses import dataclass, replace
 from typing import Any, cast
 
 from ludics import bgrun, cli
-from ludics.fleetworker.assign import ACTION_REQUIRED_LINE
+from ludics.fleetworker.assign import ACTION_REQUIRED_LINE, CLOSE as REQUEST_CLOSE, OPEN as REQUEST_OPEN
 from ludics.fleetworker.boardstore import LAUNCH_ID
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.identity import die
@@ -389,9 +392,9 @@ RESULT = re.compile(r"EXECUTION_RESULT (\{.*\})")
 # Canonical line-leading marker tokens of THE MARKERS; farside.LOG_LAST_RESULT pins the same tuple.
 MARKER_TOKENS = (
     "PLAN_READY", "END_PLAN_READY", "WINDOWS_WITNESS_REQUEST",
-    "EXECUTION_REQUEST", "EXECUTION_RESULT", "REVIEW_REQUEST", "CONFIRM_REQUEST", "HANDBACK",
+    REQUEST_OPEN, "EXECUTION_RESULT", "REVIEW_REQUEST", "CONFIRM_REQUEST", "HANDBACK",
 )
-COORDINATOR_TOKENS = ("NEEDS_DESIGN", "PENDING", "EXECUTION_REBIND")
+COORDINATOR_TOKENS = ("NEEDS_DESIGN", "PLAN_ESCALATION", "PENDING", "EXECUTION_REBIND")
 MARKER_FENCE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)")
 MARKER_QUOTE = re.compile(r" {0,3}>")
 PULL = re.compile(r"/pull/([1-9][0-9]*)")
@@ -581,7 +584,13 @@ class Turn:
 def marker_lines(message: str) -> Iterator[str | None]:
     """THE MARKERS (the header). Keep line positions when excluding a block."""
     fence = ""
+    in_request = False
     for line in message.split("\n"):
+        if in_request:
+            # Assignment validates the worker's JSON verbatim, including malformed payload lines.
+            in_request = line.strip() != REQUEST_CLOSE
+            yield line
+            continue
         boundary = MARKER_FENCE.fullmatch(line)
         if fence:
             if boundary and boundary[1].startswith(fence) and not boundary[2].strip(" \t\r"):
@@ -593,6 +602,7 @@ def marker_lines(message: str) -> Iterator[str | None]:
         elif MARKER_QUOTE.match(line):
             yield None
         else:
+            in_request = line.strip() == REQUEST_OPEN
             yield line
 
 
@@ -610,7 +620,7 @@ def classify(message: str) -> Turn:
     found: list[Turn] = []
     if "WINDOWS_WITNESS_REQUEST" in lines:
         found.append(Turn("windows"))
-    if "EXECUTION_REQUEST" in lines:
+    if REQUEST_OPEN in lines:
         request_text = "\n".join(line or "" for line in marked) if None in marked else ""
         found.append(Turn("request", request_text=request_text))
     claimed = [line for line in lines if line.startswith("EXECUTION_RESULT")]
@@ -644,7 +654,7 @@ def classify(message: str) -> Turn:
     if found:
         return Turn("other", "a final message with more than one marker: " + ", ".join(t.kind for t in found))
     return Turn("other", f"no marker this driver answers; the last line starts {original[-1].split()[0][:40]!r}",
-                markerless=not any(line.startswith(MARKER_TOKENS + COORDINATOR_TOKENS) for line in lines))
+                markerless=not any(line.startswith((*MARKER_TOKENS, *COORDINATOR_TOKENS, REQUEST_CLOSE)) for line in lines))
 
 
 def rows_of(doc: dict[str, Any]) -> list[tuple[str, dict[str, str]]]:
@@ -862,11 +872,10 @@ class Driver:
             case "windows":
                 self.attention(worker, turn, "windows", "Windows witness needs the coordinator; no execution assign attempted", message)
             case "request":
-                requests = message
                 if what.request_text:
-                    requests = self.turn_file(worker, turn, "request.md")
-                    write_atomically(requests, what.request_text)
-                self.assign(worker, turn, message, last, requests=requests)
+                    message = self.turn_file(worker, turn, "request.md")
+                    write_atomically(message, what.request_text)
+                self.assign(worker, turn, message, last)
             case "result":
                 self.conclude(worker, turn, message, what)
             case "review" | "confirm":
@@ -938,7 +947,7 @@ class Driver:
         self.note(worker, turn, "reprompt", "reprompting", why, file=message, reply=reply)
         self.resume(worker, turn, "reprompt", reply, f"asked for the same final message with a marker first ({reply})")
 
-    def assign(self, worker: Worker, turn: int, message: str, last: dict[str, Any] | None, *, requests: str) -> None:
+    def assign(self, worker: Worker, turn: int, message: str, last: dict[str, Any] | None) -> None:
         out = self.turn_file(worker, turn, "assigned.md")
         status_file = self.turn_file(worker, turn, "assign-status.json")
         stale = False  # a file left by an earlier try of this turn, which this call cannot be told from
@@ -948,7 +957,7 @@ class Driver:
             pass
         except OSError:
             stale = True
-        done = self.call("execution", "assign", self.path("reserve", f"{worker.task}-base.json"), requests,
+        done = self.call("execution", "assign", self.path("reserve", f"{worker.task}-base.json"), message,
                          "--message", out, "--unstick", worker.box, worker.name, "--status", status_file)
         status = None if stale else assign_status(status_file, done.rc)
         if done.rc == LEASE_LOST_STATUS:
@@ -1125,8 +1134,9 @@ class Driver:
         with open(message, encoding="utf-8", errors="surrogateescape") as f:
             contents = f.read()
         write_atomically(kept, contents)
+        visible = "\n".join(line or "" for line in marker_lines(contents))
         runs = [
-            path for m in re.finditer(r"^RUN (/[^\r\n]+)\r?$", contents, re.MULTILINE)
+            path for m in re.finditer(r"^RUN (/[^\r\n]+)\r?$", visible, re.MULTILINE)
             if (path := m.group(1).rstrip()) != "/"
         ]
         if not pr and not runs:

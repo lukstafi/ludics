@@ -941,6 +941,8 @@ before unstick. An interrupted attempt on the same returned turn goes to coordin
 The worker's request block supplies its own `purpose`. The wave and assign fixtures exercise
 these paths, and removing the Gemini first-line sentence alone exercises its own prompt pin.
 All six regression tests fail with the production code at base `82b50835`.
+The review controls fail on `93185826` for the paired-plan escalation, assignment payload and
+recovery input, and fenced run evidence.
 
 Agent notes (wave-20261117-ludics, t1190): `wavedrive.py`'s exact
 `WINDOWS_WITNESS_REQUEST` marker goes directly to attention without parsing its payload or

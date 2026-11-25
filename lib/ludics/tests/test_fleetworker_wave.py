@@ -3160,6 +3160,21 @@ class Drive(DriveCase):
         with open(os.path.join(self.wavedir, "msgs", "t42.w1-42.0199-a.0.md"), encoding="utf-8") as f:
             self.assertEqual(f.read(), self.message)
 
+    def test_t1357_assign_preserves_invalid_payload_and_names_its_recovery_input(self) -> None:
+        from ludics.fleetworker.assign import read_blocks
+
+        self.message = ("EXECUTION_REQUEST\n{}\n> invalid JSON\nEND_EXECUTION_REQUEST\n"
+                        "\n```json\nEXECUTION_REQUEST\n{\"example\":true}\nEND_EXECUTION_REQUEST\n```\n")
+        self.rc["execution assign"] = 2
+        with self.world():
+            _, out = self.once()
+        call = next(c for c in self.calls if c[:2] == ["execution", "assign"])
+        with open(call[3], encoding="utf-8") as f:
+            staged = f.read()
+        self.assertEqual(read_blocks(staged), "block 1 is not one JSON object")
+        self.assertNotIn("example", staged)
+        self.assertIn(f"({call[3]})", out)
+
     def test_t1357_a_gemini_markerless_final_gets_one_reprompt_across_restarts(self) -> None:
         self.rows = [row("t42", kind="gemini")]
         self.message = "Implementation and tests are complete."
@@ -3190,6 +3205,13 @@ class Drive(DriveCase):
             self.assertEqual(self.ledger(), [(0, "reprompt", "reprompting")])
             self.rc["unstick"] = 0
             self.assertIn("the re-prompt may have been sent before the driver stopped", self.once()[1])
+            self.assertEqual(self.calls, [["log", "far", "w1-42", "--last-result"]])
+
+    def test_t1357_a_gemini_plan_escalation_goes_straight_to_attention(self) -> None:
+        self.rows = [row("t42", kind="gemini")]
+        self.message = "PLAN_ESCALATION\nWhich approach should I take?\nA or B."
+        with self.world():
+            self.assertIn("DRIVE ATTENTION t42 turn 0", self.once()[1])
             self.assertEqual(self.calls, [["log", "far", "w1-42", "--last-result"]])
 
     def test_a_returned_turn_is_answered_in_the_tick_with_no_gate_verdict(self) -> None:
@@ -3778,6 +3800,17 @@ class Drive(DriveCase):
                 self.resumes, self.message = turn, f"HANDBACK t42\n{text}\n"
                 self.assertIn("the hand-back names no PR", self.once()[1])
                 self.assertFalse(any(c[:2] == ["board", "close"] for c in self.calls))
+
+    def test_t1357_no_pr_handback_skips_quoted_runs(self) -> None:
+        self.message = "HANDBACK t42\nRUN /actual  \t\n```text\nRUN /example\nSee /pull/8\n```\n> RUN /quoted\n"
+        self.out["board close"] = "BOARD CLOSE done, no PR\n"
+        with self.world():
+            self.assertIn("handback answered", self.once()[1])
+        kept = f"{self.wavedir}/handbacks/t42.md"
+        self.assertEqual(self.calls[1], ["board", "close", "wv", "t42", "--no-pr", "--run", "/actual",
+                                         "--evidence", f"hand-back {kept}"])
+        with open(kept, encoding="utf-8") as f:
+            self.assertEqual(f.read(), self.message)
 
     def test_a_hand_back_closes_the_task_and_an_unconfirmed_blocking_review_is_said(self) -> None:
         self.message = "HANDBACK t42\nMerged https://github.com/o/staging/pull/7 at abc. Proposals: ...\n"
