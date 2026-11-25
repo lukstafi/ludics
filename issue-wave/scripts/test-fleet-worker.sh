@@ -3139,6 +3139,24 @@ for npcode in 0 1; do
     "${FNP[@]}" board close npw "$npid" --no-pr --run "$npdir"
   [ "$npbefore" = "$(git hash-object "$ISSUE_WAVE_STATE/boards/npw.json")" ] && ok "...no board write on retry" || ko "no-PR retry rewrote the board"
 done
+# #1354: hand-typed board close --no-pr --run trims trailing whitespace (e.g. a copied Markdown line).
+npid="np-r-ws"; npdir="$TMP/no-pr close runs/ws"; mkdir -p "$npdir"
+printf '0\n' > "$npdir/exit"; printf 'exit: 0\n' > "$npdir/log"
+printf '%s\n' "$npwt" > "$npdir/wt"; printf 'true\n' > "$npdir/cmd"
+printf '%s\n' "$nphead" > "$npdir/head"; : > "$npdir/dirty"
+jq -n --arg id "$npid" --arg co "$npwt" --arg rev "$nphead" \
+  '{request_id:$id, wave:"npw", worker:$id, transport:"subagent", issue:"o/r#1354", purpose:"no PR trailing space fixture",
+    agent_host:"testbox", execution_host:"testbox", repository:"o/r", requested_revision:$rev,
+    kind:"correctness", standing:true, checkout:$co}' > "$TMP/np-request.json"
+setup_step "could not reserve trailing-space no-PR record (setup)" "${FNP[@]}" execution run "$TMP/np-request.json"
+setup_step "could not create trailing-space no-PR row (setup)" "${FNP[@]}" board set --create --new-row npw "$npid" \
+  repository=o/r "worker=$npid" "standing=$npid" state=implementing
+expect "no-PR close trims trailing spaces on --run" 0 'done, no PR; 1 standing concluded' -- \
+  "${FNP[@]}" board close npw "$npid" --no-pr --run "$npdir  "
+"${FNP[@]}" execution list > "$TMP/np-records.json"
+jq -e --arg id "$npid" --arg co "$npwt" \
+  'any(.[]; .request_id == $id and .state == "concluded" and .verdict == "pass" and .remote_checkout == $co)' \
+  "$TMP/np-records.json" >/dev/null && ok "...the real registry concludes pass with the trimmed path" || ko "trailing-space no-PR record not concluded pass"
 # board takeover (ludics-lite#731): the stored brief, then the state at takeover from the row's keys and
 # the live sources; a read, so no lease and no identity; a missing key printed missing, never guessed.
 tkwt="$TMP/tk wt"; git init -q -b main "$tkwt" && git -C "$tkwt" -c user.name=t -c user.email=t@t commit -q --allow-empty -m tk
@@ -7321,6 +7339,23 @@ setup_step "could not close t89's row (setup)" "${FWK[@]}" board set wkv t89 sta
 "$FW" close testbox wk-89 >/dev/null 2>&1
 fixture_done wkv-t89-testbox-iterate
 unset SHIM_AGY_PROGRESS SHIM_AGY_SAY
+# #1354: a hand-back whose RUN line ends with two spaces (a Markdown line break) closes against its record.
+printf '# Task @@T@@\n' > "$K/tasks/t1354.md"
+run1354="$K/run-1354"; mkdir -p "$run1354"
+printf '0\n' > "$run1354/exit"; printf 'exit: 0\n' > "$run1354/log"
+printf '%s\n' "$cli_proj-worktrees/wk-1354" > "$run1354/wt"; printf 'true\n' > "$run1354/cmd"
+printf '%s\n' "$pbase" > "$run1354/head"; : > "$run1354/dirty"
+printf 'HANDBACK t1354\nRUN %s  \n' "$run1354" > "$K/say"
+jq -n '{capacity:{testbox:1}, tasks:[{task:"t1354", profile:"sol", host:"testbox"}]}' > "$K/queue.json"
+expect "wave drive launches the trailing-space RUN hand-back task" 0 "^DRIVE t1354 launch: launch answered: WAVE LAUNCH t1354: launched testbox/wk-1354 " -- \
+  "${FWD[@]}" wave drive "$K/wave.json" --once
+"$FW" attach testbox wk-1354 --interval 1 >/dev/null 2>&1
+expect "a hand-back with RUN /abs/path and trailing spaces closes against its real record" 0 \
+  '^DRIVE t1354 turn 0: handback answered: BOARD CLOSE wkv: "t1354" done, no PR; 1 standing concluded, 0 already; row set' -- \
+  "${FWD[@]}" wave drive "$K/wave.json" --once
+[ "$("${FWK[@]}" execution list | jq -r '.[] | select(.request_id == "wkv-t1354-testbox-iterate") | "\(.state) \(.verdict)"')" = "concluded pass" ] &&
+  ok "...and concludes its standing record as pass" || ko "t1354 standing record not concluded pass"
+"$FW" close testbox wk-1354 >/dev/null 2>&1
 # The queue's waits, end to end (#1130): a prepared task whose base the branch moved past is taken
 # back with wave unprep and prepared again under its own id; a task waiting on its host's one slot
 # starts when the task holding it merges; a task after a native task with no row is told once, and

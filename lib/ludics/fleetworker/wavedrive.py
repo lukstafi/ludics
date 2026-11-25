@@ -150,9 +150,12 @@ THE ANSWERS:
             is saved as ``handbacks/<task>.md`` and the task closed with ``board close``, which
             verifies the merge on GitHub itself. Without a PR, each exact ``RUN /absolute/path``
             line supplies a repeated ``--run`` to ``board close --no-pr``; no such line is attention.
-            Paths consume the whole line, with no quoting or prose; relative paths are not read. A close that refuses is attention. So is a merge
-            that THE CONFIRM does not cover: the coordinator is told, and then the row closes
-            (in that order: a closed row is served no more).
+            Trailing whitespace on the line (``str.rstrip()``: Markdown two-space line breaks, tabs,
+            ``\r``) is trimmed; internal spaces stay, paths consume the rest of the line with no
+            quoting, backslash stripping or prose, and leading whitespace, extra space after
+            ``RUN``, bare ``/`` and relative paths are not read. A close that refuses is attention.
+            So is a merge that THE CONFIRM does not cover: the coordinator is told, and then the
+            row closes (in that order: a closed row is served no more).
 
 THE CONFIRM, read off ``wave review``'s records of the PR that were posted (a record with no
 comment, a dry run's, is no review), the rounds ``--again`` set aside included (``<stem>.r<n>.json``:
@@ -1056,7 +1059,10 @@ class Driver:
         with open(message, encoding="utf-8", errors="surrogateescape") as f:
             contents = f.read()
         write_atomically(kept, contents)
-        runs = re.findall(r"^RUN (/[^\r\n]+)$", contents, re.MULTILINE)
+        runs = [
+            path for m in re.finditer(r"^RUN (/[^\r\n]+)\r?$", contents, re.MULTILINE)
+            if (path := m.group(1).rstrip()) != "/"
+        ]
         if not pr and not runs:
             return self.attention(worker, turn, "handback", "the hand-back names no PR (the row has none, the message no"
                                                             " /pull/<n>); close the task by hand", kept)
