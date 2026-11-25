@@ -845,8 +845,23 @@ class MixedWave(WaveDirCase):
         self.assertNotIn("WAVE PREP NOTE", err)
         self.assertIn(f"reassignment_reason={reason}", self.shim_calls[-1])
         self.assertEqual(self.manifest("t43")["reassignment"],
-                         {"reason": reason, "issue": "o/up#43", "source": "", "host": "mac", "transport": "cli",
+                         {"wave": "wv", "reason": reason, "issue": "o/up#43", "source": "", "host": "mac", "transport": "cli",
                           "kind": "gemini", "model": "", "effort": ""})
+
+    def test_reprep_rechecks_the_approval_against_its_own_wave_file(self) -> None:
+        self.issue_number_split()
+        approval = {"wave": "wv", "reason": "Needs this tool", "issue": "o/up#42", "source": "", "host": "far",
+                    "transport": "cli", "kind": "codex", "model": "gpt-6.1-sol", "effort": "medium"}
+        args = ["t42", "--base", "main", "--profile", "sol", "--host", "far", "--reassignment-approval"]
+        with self.world():
+            rc, out, err = self.prep(*args, json.dumps({**approval, "effort": "high"}))
+            self.assertEqual(rc, 1, out + err)
+            self.assertIn("the resolved inputs differ from the stored reassignment approval", out)
+            self.assertEqual(self.shim_calls, [])
+            rc, out, err = self.prep(*args, json.dumps(approval))
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(self.manifest()["reassignment"], approval)
+        self.assertIn("reassignment_reason=Needs this tool", self.shim_calls[-1])
 
     def test_wave_without_a_split_has_no_issue_number_note(self) -> None:
         with self.world():
@@ -1402,8 +1417,12 @@ class Unprep(MixedWave):
     def board(self, _cfg: Any, _wave: str) -> dict[str, Any] | int:
         return self.board_rc if self.board_rc is not None else ({"tasks": self.rows} if self.rows else NO_BOARD_EXIT)
 
-    def forget(self, _cfg: Any, _wave: str, task: str, worker: str, state: str = "pending") -> int:
+    def forget(self, _cfg: Any, _wave: str, task: str, worker: str, state: str = "pending",
+               *, expected: dict[str, str] | None = None) -> int:
         self.forget_calls.append((task, worker, state))
+        if expected is not None and any(r["task"] == task and any(r["fields"].get(key, "") != value for key, value in expected.items())
+                                        for r in self.rows):
+            return 1
         rc = self.forget_rc.pop(0) if self.forget_rc else 0
         if rc in (0, 4):  # 4: the removal landed and its acknowledgement was lost
             self.rows = [r for r in self.rows if not (r["task"] == task and r["fields"].get("worker") == worker
@@ -1476,6 +1495,19 @@ class Unprep(MixedWave):
             self.assertEqual(rc, 0, out)
             self.assertEqual(self.manifest()["base"], tip, "prepared again at the moved tip, under its own id")
             self.assertEqual(self.unprep()[0], 0, "and it can be taken back again")
+
+    def test_guarded_unprep_preserves_a_row_whose_approval_changed(self) -> None:
+        with self.world():
+            rc, out, err = self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far",
+                                     "--reassignment-reason", "Needs the far host")
+            self.assertEqual(rc, 0, out + err)
+            approval = self.manifest()["reassignment"]
+            self.rows[0]["fields"]["reassignment_reason"] = "A different approval"
+            rc, out, err = captured(waveunprep.cmd_unprep, self.cfg, [self.path, "t42", "--reassignment-approval", json.dumps(approval)])
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("the row's removal exited 1", out)
+        self.assertEqual(self.rows[0]["fields"]["reassignment_reason"], "A different approval")
+        self.assertTrue(self.files())
 
     def test_a_local_scratch_is_removed_when_empty_and_left_when_not(self) -> None:
         scratch = os.path.join(self.wavedir, "scratch", "t42")
@@ -3220,7 +3252,7 @@ class DriveCase(WaveDirCase):
 
     def setUp(self) -> None:
         super().setUp()
-        self.rows = [row("t42")]
+        self.rows: list[dict[str, Any]] = [row("t42")]
         self.state, self.resumes, self.session = "EXITED(0)", 0, "0199-a"
         self.message = ""
         self.rc: dict[str, int] = {}
@@ -4653,7 +4685,9 @@ class Queue(DriveCase):
         with self.world():
             rc, out = self.once()
             self.assertEqual(rc, 0, out)
-            self.assertEqual(self.launched(), [["wave", "unprep", self.path, "t50"]], out)
+            self.assertEqual([call[:4] for call in self.launched()], [["wave", "unprep", self.path, "t50"]], out)
+            [unprep] = self.launched()
+            self.assertEqual(unprep[:-1], ["wave", "unprep", self.path, "t50", "--reassignment-approval"], out)
             self.rows = []
             os.remove(path)  # unprep removed the row and archived the manifest
             with open(self.path) as f:
@@ -4665,8 +4699,10 @@ class Queue(DriveCase):
             rc, out = self.once()  # a fresh driver reads the ledger
             self.assertEqual(rc, 0, out)
             prep, launch = self.launched()
-            self.assertEqual(prep, ["wave", "prep", self.path, "t50", "--base", B, "--profile", "alias", "--host", "far",
-                                    "--issue", "50", "--reassignment-reason", "Needs the far host"])
+            self.assertEqual(prep[:-1], ["wave", "prep", self.path, "t50", "--base", B, "--profile", "alias", "--host", "far",
+                                         "--issue", "50", "--reassignment-approval"])
+            self.assertEqual(json.loads(prep[-1])["reason"], "Needs the far host")
+            self.assertEqual(prep[-1], unprep[-1])
             self.assertEqual(launch[:4], ["wave", "launch", self.path, "t50"])
         self.assertEqual(self.attention(), [])
 
@@ -4686,7 +4722,7 @@ class Queue(DriveCase):
                 self.once()
         with self.world():
             self.assertEqual(self.once()[0], 0)
-        self.assertEqual(self.launched()[0][-2:], ["--reassignment-reason", "Needs the far host"])
+        self.assertEqual(json.loads(self.launched()[0][-1])["reason"], "Needs the far host")
         self.assertEqual(self.attention(), [])
 
     def test_stale_reprep_leaves_conflicting_queue_inputs_for_the_coordinator(self) -> None:
@@ -4720,6 +4756,31 @@ class Queue(DriveCase):
         self.assertEqual(self.launched(), [])
         self.assertIn("DRIVE ATTENTION t50 launch: the stale re-prep has no matching reassignment approval", out)
 
+    def test_stale_reprep_checks_the_board_profile_before_unprep(self) -> None:
+        self.reassigned_prep()
+        self.queue({"task": "t50", "profile": "sol", "host": "far", "reassignment_reason": "Needs the far host"})
+        self.rows[0]["fields"]["model"] = "gpt-6.1-sol/high"
+        with self.world():
+            rc, out = self.once()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.launched(), [])
+        self.assertIn("DRIVE ATTENTION t50 launch: the stale re-prep has no matching reassignment approval", out)
+
+    def test_stale_reprep_does_not_reuse_a_checkpoint_from_another_wave(self) -> None:
+        path = self.reassigned_prep()
+        with self.world():
+            self.assertEqual(self.once()[0], 0)
+            self.rows = []
+            os.remove(path)
+            with open(self.path) as f:
+                edited = json.load(f)
+            edited["wave"] = "other"
+            self.write("wave.json", json.dumps(edited))
+            rc, out = self.once()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.launched(), [])
+        self.assertIn("DRIVE ATTENTION t50 launch: the stale re-prep has no matching reassignment approval", out)
+
     def test_stale_reprep_leaves_a_legacy_board_only_reason_for_the_coordinator(self) -> None:
         self.queue({"task": "t50", "profile": "sol", "host": "far"})
         self.rows = [row("t50", state="pending", reassignment_reason="Needs the far host")]
@@ -4730,6 +4791,21 @@ class Queue(DriveCase):
             self.assertIn("DRIVE ATTENTION t50 launch: the stale re-prep has no matching reassignment approval", out)
             self.assertEqual(self.launched(), [])
             self.assertEqual(self.ledger()[-1], (wavedrive.LAUNCH, "launch", "attention"))
+
+    def test_stale_reprep_accepts_an_explicit_matching_queue_reason_for_legacy_prep(self) -> None:
+        path = self.reassigned_prep()
+        with open(path) as f:
+            manifest = json.load(f)
+        approval = manifest.pop("reassignment")
+        self.write("prep/t50.json", json.dumps(manifest))
+        self.queue({"task": "t50", "profile": "sol", "host": "far", "reassignment_reason": approval["reason"]})
+        with self.world():
+            rc, out = self.once()
+        self.assertEqual(rc, 0, out)
+        [unprep] = self.launched()
+        self.assertEqual(unprep[:-1], ["wave", "unprep", self.path, "t50", "--reassignment-approval"])
+        self.assertEqual(json.loads(unprep[-1]), approval)
+        self.assertEqual(self.attention(), [])
 
     def test_a_stale_prepared_task_whose_unprep_refuses_is_final_and_an_unknown_one_is_the_next_ticks(self) -> None:
         self.queue({"task": "t51", "profile": "sol", "host": "far"})

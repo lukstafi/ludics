@@ -67,7 +67,9 @@ above: the fence never makes a refused read pass.
 THE TASK LOCK (waveprep.py): this verb holds ``prep/<task>.lock`` throughout, as ``wave prep`` and
 ``wave launch`` do, so none of them runs on the task meanwhile; a held lock refuses, nothing done.
 The driver (wavedrive.py) calls this verb for a stale prepared task it finds, and takes no task
-lock itself.
+lock itself. Its internal ``--reassignment-approval`` checks the saved manifest and compares the
+approved board fields under the deletion lock. A conflict preserves the row, with the fence
+left in place if it was already written.
 
 Exit: 0 unprepared or nothing recorded; 1 refused or failed; 2 usage; 4 unknown.
 """
@@ -87,15 +89,22 @@ from ludics.fleetworker.identity import die
 from ludics.fleetworker.lease import LEASE_LOST_STATUS, anchor_gate, mutation_failure_status
 from ludics.fleetworker.takeover import board_status, row_of
 from ludics.fleetworker.transport import prelude, run, run_on, substitution
-from ludics.fleetworker.wave import USAGE, Wave, load_wave
+from ludics.fleetworker.wave import USAGE, Profile, Wave, load_wave
 from ludics.fleetworker.wavebrief import write_atomically
 from ludics.fleetworker.wavelaunch import STATE, WORKTREE_STATE, Record, record_of
-from ludics.fleetworker.waveprep import READY, TASK, Stop, task_lock
+from ludics.fleetworker.waveprep import READY, TASK, Stop, parse_reassignment, reassignment_of, reassignment_row, task_lock
 
 FENCE = "unprepare"  # this verb's own step: a manifest that ends with it is no prep's ready one
 EXACT = ("manifest", READY, FENCE)  # the CLI prep steps (waveprep.write) a step may be, whole
 PREFIXES = ("scratch ", "standing payload ", "brief ", "board row ")  # ...or by its first words
 LAUNCH_TURN = -1  # wavedrive.LAUNCH (which imports this module), the ledger's turn for a queued task's launch
+
+
+def legacy_reassignment(wave: Wave, record: Record, approved_reason: str) -> dict[str, str]:
+    """An explicit queue approval can be checked against a prep predating the manifest field."""
+    profile = Profile(record.transport, record.kind, record.model, record.effort)
+    source = "" if record.issue_ref else f"{wave.issue_repository}#{record.number}"
+    return reassignment_of(record.wave, approved_reason, record.issue_ref, source, profile, record.host)
 
 
 def read(path: str, wave: Wave, task: str) -> tuple[dict[str, Any], Record, list[str]] | None:
@@ -236,7 +245,7 @@ def check_files(task: str, files: list[tuple[str, str, str]]) -> None:
                           " task's file of the same name (a task id that ends in a leg's suffix or in -base); nothing removed")
 
 
-def unprepared(cfg: Config, wave: Wave, task: str) -> int:
+def unprepared(cfg: Config, wave: Wave, task: str, approval: dict[str, str] | None = None) -> int:
     gated = anchor_gate(cfg, "WAVE UNPREP", task, False)
     if gated != 0:
         return gated
@@ -246,6 +255,11 @@ def unprepared(cfg: Config, wave: Wave, task: str) -> int:
         cli.say(f"WAVE UNPREP {task}: nothing recorded to undo (no prep manifest {shlex.quote(path)})")
         return 0
     manifest, record, done = read_back
+    if approval is not None:
+        legacy = "reassignment" not in manifest
+        saved = legacy_reassignment(wave, record, approval["reason"]) if legacy else manifest["reassignment"]
+        if saved != approval:
+            raise Stop(1, f"WAVE UNPREP REFUSED {shlex.quote(task)}: the stored reassignment approval changed. Nothing removed.")
     files = files_of(wave, task, record)
     check_ledger(wave, task)
     check_registry(cfg, task, [record.standing, *(leg.standing for leg in record.legs)])
@@ -264,13 +278,17 @@ def unprepared(cfg: Config, wave: Wave, task: str) -> int:
                 if done[-1:] == [FENCE] else f"WAVE UNPREP {task}: nothing removed")
         return rc
 
-    if done[-1:] != [FENCE]:
+    if done[-1:] != [FENCE] or (approval is not None and "reassignment" not in manifest):
+        fenced_steps = done if done[-1:] == [FENCE] else [*done, FENCE]
+        if approval is not None:
+            manifest["reassignment"] = approval
         try:
-            write_atomically(path, json.dumps({**manifest, "done": [*done, FENCE]}, indent=1) + "\n")
+            write_atomically(path, json.dumps({**manifest, "done": fenced_steps}, indent=1) + "\n")
         except OSError as exc:
             return failed("fence", f"cannot write {shlex.quote(path)} ({exc.strerror})")
-        done = [*done, FENCE]
-    rc = forget_row(cfg, wave.wave, task, record.worker)
+        done = fenced_steps
+    expected = {"branch": record.branch, **reassignment_row(approval)} if approval is not None else None
+    rc = forget_row(cfg, wave.wave, task, record.worker, expected=expected)
     if rc != 0:
         return failed("row", f"the row's removal exited {rc} (above)", mutation_failure_status(rc))
     removed.append(f"the board row {wave.wave} {task}, if it was there")
@@ -312,14 +330,16 @@ def unprepared(cfg: Config, wave: Wave, task: str) -> int:
 
 
 def cmd_unprep(cfg: Config, args: list[str]) -> int:
-    if len(args) != 2 or args[0].startswith("--") or args[1].startswith("--"):
+    bound = len(args) == 4 and args[2] == "--reassignment-approval"
+    if (len(args) != 2 and not bound) or args[0].startswith("--") or args[1].startswith("--"):
         die(f"wave unprep: name the wave file and the task; usage: {USAGE}")
     if not TASK.fullmatch(args[1]):
         die(f"wave unprep: task {args[1]!r} does not match {TASK.pattern}")
     wave = load_wave(args[0], "unprep")
+    approval = parse_reassignment(args[3]) if bound else None
     try:
         with task_lock(wave.directory, args[1], "WAVE UNPREP"):
-            return unprepared(cfg, wave, args[1])
+            return unprepared(cfg, wave, args[1], approval)
     except Stop as stop:
         cli.say(stop.line)
         return stop.rc

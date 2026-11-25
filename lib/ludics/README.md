@@ -1006,10 +1006,10 @@ resolved worker kind with the issue or source issue's parity. In board JSON, fie
 and shows prep's NOTE in its stderr stream.
 
 Agent notes (wave-20261125-ludics, t1339): the prep manifest binds the approved reason to the
-issue or source, effective profile and host. The driver checks those inputs before unprep and
-again after restart against its ledger checkpoint, written before unprep can remove the row.
-The Queue restart fixture fails on the original base at the attempted unprep. Conflicts go to
-coordinator attention.
+wave, issue or source, effective profile and host. The driver writes a ledger checkpoint before
+unprep can remove the row. Guarded unprep compares board fields under the deletion lock, and
+prep checks its own resolved inputs before writing. Conflicts go to coordinator attention.
+The Queue restart fixture fails on the original base at the attempted unprep.
 
 ### Safety state reads (#1092)
 

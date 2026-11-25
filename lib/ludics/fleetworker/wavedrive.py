@@ -240,7 +240,8 @@ it, one a tick (THE GATE and the halt are read once a tick, for the cues and the
             (a dependent starts from the base its prerequisite merged into), then ``wave launch``
             Prep's split NOTE is passed through on stderr, with no change to the launch decision.
             Stale re-prep carries the manifest's approval across a restart by recording it in the ledger before unprep.
-            It requires the same issue or source, effective profile and host, with any queue or pending-row reason in agreement.
+            It checks the wave, issue or source, effective profile, host and reason against the pending row and queue.
+            Unprep compares the approved board fields when removing the row. Prep rechecks its resolved configuration.
 A PAIRED LAUNCH, of an entry whose ``mode`` is not ``none``, is told once its launch answers: one
 non-final attention line, ``launched <mode> at <sha>: start its peer planner on that sha``. The
 notice gives the coordinator the board target flags for ``peer-plan.sh start``. Both plans must
@@ -353,9 +354,10 @@ from ludics.fleetworker.wave import USAGE, WORD, Wave, acquire_startup_lock, loa
 from ludics.fleetworker.wavebrief import write_atomically
 from ludics.fleetworker.wavelaunch import Record, read_manifest, read_wave_launch_status
 from ludics.fleetworker.waveprep import (
-    REASSIGNMENT_REASON_PROBLEM, TASK, TIERS, Stop, reassignment_of, resolve_subject, valid_reassignment_reason,
+    REASSIGNMENT_REASON_PROBLEM, TASK, TIERS, Stop, reassignment_of, reassignment_row, resolve_subject,
+    valid_reassignment_reason,
 )
-from ludics.fleetworker.waveunprep import FENCE
+from ludics.fleetworker.waveunprep import FENCE, legacy_reassignment
 
 sleep: Callable[[float], None] = time.sleep  # the tests' seam, as waveloop's
 now: Callable[[], float] = time.time
@@ -1285,7 +1287,7 @@ class Driver:
             _, issue, source = resolve_subject(self.wave, queued.task, queued.issue, queued.source)
         except ValueError:
             return None
-        expected = reassignment_of(reason, issue, source, self.wave.profiles[queued.profile], queued.host)
+        expected = reassignment_of(self.wave.wave, reason, issue, source, self.wave.profiles[queued.profile], queued.host)
         return expected if expected == approval else None
 
     def gate_open(self, slot: Worker) -> bool:
@@ -1347,30 +1349,32 @@ class Driver:
         steps: Any = manifest.get("done")
         fenced = isinstance(steps, list) and cast(list[Any], steps)[-1:] == [FENCE]
         stale = fenced or (record is not None and record.base != sha.strip())
-        checkpoint = last is not None and last.get("status") in ("unpreparing", "unprepared") and "reassignment" in last
+        checkpoint = (last if last is not None and last.get("status") in ("unpreparing", "unprepared")
+                      and "reassignment" in last else None)
         approval: dict[str, str] | None = None
-        if (stale and ("reassignment" in manifest or (row and row.get("reassignment_reason")))) or checkpoint:
-            if checkpoint and not manifest and row is None:
-                assert last is not None
-                approval = self.approved_reassignment(queued, last.get("reassignment"))
+        if (stale and ("reassignment" in manifest or (row and row.get("reassignment_reason")))) or checkpoint is not None:
+            if checkpoint is not None and not manifest and row is None:
+                approval = self.approved_reassignment(queued, checkpoint["reassignment"])
             elif manifest.get("task") == queued.task and manifest.get("wave") == self.wave.wave:
-                approval = self.approved_reassignment(queued, manifest.get("reassignment"))
+                saved = manifest.get("reassignment")
+                if "reassignment" not in manifest and record is not None and queued.reassignment_reason:
+                    saved = legacy_reassignment(self.wave, record, queued.reassignment_reason)
+                approval = self.approved_reassignment(queued, saved)
             if (approval is None
-                    or (checkpoint and last is not None and last.get("reassignment") != approval)
-                    or (row is not None and any(row.get(field, "") != approval[key] for field, key in
-                                                (("issue", "issue"), ("source", "source"), ("agent_host", "host"),
-                                                 ("reassignment_reason", "reason"))))):
+                    or (checkpoint is not None and checkpoint["reassignment"] != approval)
+                    or (row is not None and any(row.get(key, "") != value for key, value in reassignment_row(approval).items()))):
                 return self.attention(slot, LAUNCH, "launch", "the stale re-prep has no matching reassignment approval for its"
-                                      " issue or source, effective profile, host and reason; re-prep and launch are yours")
+                                      " wave, issue or source, effective profile, host and reason. Re-prep and launch are yours.")
+        bound = ["--reassignment-approval", json.dumps(approval)] if approval is not None else []
         if stale:
             # A STALE PREPARED TASK (the header): un-prepared here, prepared again at the tip on a later tick.
             # A fenced manifest, its row there or not, is an un-prepare that stopped: it is finished first.
             moved = (f"{main} moved since the task was prepared at {record.base[:12]} (now {sha.strip()[:12]})" if not fenced and record
                      else "an un-prepare of the task stopped before it ended (its manifest ends with the fence)")
-            if approval is not None and not checkpoint:
+            if approval is not None and checkpoint is None:
                 # Unprep may remove the row and manifest before this driver gets its exit status.
                 self.note(slot, LAUNCH, "launch", "unpreparing", moved, reassignment=approval)
-            done = self.call("wave", "unprep", self.wave.path, queued.task, gated=True)
+            done = self.call("wave", "unprep", self.wave.path, queued.task, *bound, gated=True)
             said = (substitution(done.out).splitlines() or [f"wave unprep exit {done.rc}"])[-1]
             if done.rc == 4:
                 return  # a read that did not answer: the next tick's
@@ -1385,7 +1389,7 @@ class Driver:
             # THE REFRESH (the header): the served checkout's prep code, brought to its origin first.
             refreshed = self.call("refresh", self.wave.agent_host)
             fresh = "" if refreshed.rc == 0 else (substitution(refreshed.out).splitlines() or [f"refresh exit {refreshed.rc}"])[-1]
-            reason = approval["reason"] if approval is not None else queued.reassignment_reason
+            manual = ["--reassignment-reason", queued.reassignment_reason] if queued.reassignment_reason else []
             done = self.call("wave", "prep", self.wave.path, queued.task, "--base", sha.strip(), "--profile", queued.profile,
                              *(["--host", queued.host] if queued.host != self.wave.agent_host else []),
                              *(["--legs", ",".join(queued.legs)] if queued.legs else []),
@@ -1393,7 +1397,7 @@ class Driver:
                              *(["--issue", queued.issue] if queued.issue else []),
                              *(["--source", queued.source] if queued.source else []),
                              *(["--tier", queued.tier] if queued.tier else []),
-                             *(["--reassignment-reason", reason] if reason else []), gated=True)
+                             *(bound or manual), gated=True)
             if done.rc == 4:
                 return
             if done.rc != 0:

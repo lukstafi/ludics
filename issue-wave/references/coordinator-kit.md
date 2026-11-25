@@ -134,9 +134,9 @@ to prep or give the CLI entry in `queue.json` a `reassignment_reason`. A nonblan
 printable text marks the row as `reassignment_reason=<reason>` and suppresses the NOTE. The field
 also appears in `status --json`. The driver carries the approval from the prep manifest across
 stale re-prep and restart when the issue or source, effective profile and host match and any
-queue reason agrees. If the driver reports a conflict or a legacy row-only approval, reconcile
-the inputs, then use `wave unprep` if the task is still prepared, prep at the current base with
-the approved reason, and launch by hand.
+queue reason agrees. Legacy preps need the reason explicitly in the queue. If the driver reports
+a conflict, reconcile the inputs, use `wave unprep` if the task is still prepared, then prep at
+the current base with the approved reason and launch by hand.
 
 `wave prep <wave.json> <task> --base <sha> --profile sol [--host rog-nv-linux]` prepares such a
 task. For a CLI task it makes nothing on the box and reserves nothing: `fleet-worker.sh launch`
