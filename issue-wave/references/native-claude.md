@@ -264,18 +264,21 @@ and a release through five PRs on 2026-09-15 with no stranded worker.
 
 6. **Count each message on the row.** Every message the coordinator sends a worker with
    `SendMessage`, a protocol answer or not, is saved to a file and counted beside the send:
-   `fleet-worker.sh board tally <wave> <task> --message <file>` (ludics#1214). The verb reads the
+   `fleet-worker.sh board tally <wave> <task> --message <file> [--turn-id <id>]` (ludics#1214,
+   ludics#1342). Pass a stable `--turn-id` per message — `<wave>-<task-slug>-<n>` (same token
+   grammar as `--launch-id`: `[A-Za-z0-9][A-Za-z0-9._-]*`, with `<n>` chosen before sending and
+   reused on every retry of that turn). The verb reads the
    message's first non-blank line: a protocol answer (`REVIEW_POSTED`, `EXECUTION_ASSIGNED`,
    `PEER_PLAN`, ... the closed list in `lib/ludics/fleetworker/tally.py`) counts in the row's
    `routine_answers`, anything else (an escalation's answer, a nudge, a forwarded finding) in its
    `interventions`, with one board log line. A CLI worker's `unstick` counts its own, so CLI and
    native rows carry the same two fields. Record a respawn or finisher with
    `fleet-worker.sh board spawned <wave> <task> --agent <id> --transport subagent [--model <m>] [--launch-id <id>]`.
-   The spawn verb counts it in `relaunches` as part of the same write (ludics#1264); with
-   `--launch-id`, replaying the same launch-attempt ID and runtime facts is a no-op that answers as
-   the first call did (ludics#1294), so an unacknowledged spawn report can be retried directly
-   without re-reading the board. A `board tally` that refuses or does not answer is still re-read
-   with `board show` before it is tried again; the message is never sent again to repair a count.
+   The spawn verb counts it in `relaunches` as part of the same write (ludics#1264). With
+   `--launch-id` on `board spawned` (ludics#1294) or `--turn-id` on `board tally` (ludics#1342),
+   replaying the same ID and facts is a no-op that answers as the first call did, so an
+   unacknowledged report can be retried directly without re-reading the board; without an ID,
+   re-read with `board show` first, and never send the message again to repair a count.
 
 The same request and result lines work for a Codex native worker that prefers them; what
 differs is only that Codex may keep its turn open and wait.

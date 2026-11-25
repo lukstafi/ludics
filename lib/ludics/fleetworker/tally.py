@@ -46,10 +46,13 @@ The turns: two writers, one classifier (``classify``):
                                                  driver's own (``wave drive``), and ``execution
                                                  assign --unstick``'s -- so the driver writes its
                                                  answers through the unstick it calls
-  fleet-worker.sh board tally <wave> <task> --message <file>
+  fleet-worker.sh board tally <wave> <task> --message <file> [--turn-id <id>]
                                                  a native worker's: the coordinator saves each
                                                  message it sends the worker (SendMessage, a Codex
-                                                 follow-up) to a file and calls this beside it
+                                                 follow-up) to a file and calls this beside it;
+                                                 with ``--turn-id <id>``, replaying the same ID
+                                                 and message is a no-op answering as the first did
+                                                 (ludics#1342)
 
 THE MESSAGE CLASSIFIES ITSELF. Recognised forms (closed): a message is ROUTINE when its first
 non-blank line, read as whitespace-separated words, begins with the words of one of ``ROUTINE``:
@@ -73,7 +76,9 @@ down) is routine for both transports alike.
 NOT COUNTED as a turn, deliberately: a launch, a relaunch or a finisher (``relaunches`` counts the
 last two, above), ``close``, board edits, the driver's attention lines, a decision ``wave decide`` posts, a hand-back's
 closure, PR comments and CI reruns, and an unstick that exits non-zero (it reached no worker, or not
-surely: its retry is the one counted). ``board tally`` counts what it is given, once per call.
+surely: its retry is the one counted). With ``--turn-id <id>``, ``board tally`` deduplicates
+replays of the same turn ID and message bytes (refusing conflicting facts); without an ID, it
+counts what it is given once per call.
 
 The board is best effort (boardstore.py's header): a tally that fails, or finds no row, is one
 ``BOARD TALLY WARNING`` or ``BOARD TALLY NOTE`` line on stderr, and the unstick's exit is its own;
@@ -83,21 +88,28 @@ unstick's own stderr alone, which assign's ``--status`` file carries: never a st
 ``answered`` notes, and the attention lines of a partly assigned turn (wavedrive.py's *request*
 answer names them), so a lost count is never silent; an unstick that exits non-zero prints no such
 line, so the answers that resumed nobody carry none.
-A lost acknowledgement and a retry may count twice: reconcile with ``board show``, never by sending
+With ``--turn-id <id>``, a lost acknowledgement on ``board tally`` can be retried directly without
+``board show``; without an ID (or on ``unstick``), reconcile with ``board show``, never by sending
 a worker a message again.
 """
 
+import hashlib
 import json
 import os
 
 from ludics import cli
 from ludics.fleetworker.board import mutate
+from ludics.fleetworker.boardstore import TURN_ID
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.takeover import DONE_STATES
 from ludics.fleetworker.transport import err, fleet_name, is_local, prelude, run_on
 
-USAGE = "board tally <wave> <task> --message <file>"
+USAGE = "board tally <wave> <task> --message <file> [--turn-id <id>]"
+TALLY_FLAGS = {
+    "--message": "message",
+    "--turn-id": "turn_id",
+}
 ROUTINE = ("REVIEW_POSTED", "MERGE CLEARED", "MERGE NOT CLEARED", "EXECUTION_ASSIGNED", "EXECUTION_CONCLUDED",
            "EXECUTION_REFUSED", "EXECUTION_PENDING", "EXECUTION_DEFERRED", "WINDOWS_WITNESS_RESULT", "PEER_PLAN",
            "PEER_PLAN_UNAVAILABLE", "PEER_CRITIQUE")
@@ -126,9 +138,13 @@ def classify(text: str, *, kill: bool = False, interrupt: bool = False) -> tuple
     return "interventions", shown
 
 
-def read_message(path: str) -> str:
+def read_message_bytes(path: str) -> bytes:
     with open(path, "rb") as f:
-        return f.read().decode("utf-8", errors="replace")
+        return f.read()
+
+
+def read_message(path: str) -> str:
+    return read_message_bytes(path).decode("utf-8", errors="replace")
 
 
 def tally(cfg: Config, payload: dict[str, object], *, stdout_to_stderr: bool) -> int:
@@ -209,19 +225,41 @@ def said(stderr: str) -> str:
     return suffix(said_lines(stderr))
 
 
+def tally_args(args: list[str]) -> tuple[str, str, str, str | None]:
+    if len(args) < 2 or not args[0] or not args[1]:
+        die(f"board tally: expected <wave> <task> --message <file> [--turn-id <id>] ({USAGE})")
+    wave, task = args[:2]
+    options = args[2:]
+    if len(options) % 2:
+        die(f"board tally: expected {USAGE}")
+    parsed: dict[str, str] = {}
+    for flag, value in zip(options[::2], options[1::2], strict=True):
+        key = TALLY_FLAGS.get(flag)
+        if key is None or key in parsed:
+            die(f"board tally: expected {USAGE}")
+        if key == "turn_id" and not TURN_ID.fullmatch(value):
+            die(f"board tally: --turn-id must be {TURN_ID.pattern} ({USAGE})")
+        parsed[key] = value
+    if "message" not in parsed:
+        die(f"board tally: expected {USAGE}")
+    return wave, task, parsed["message"], parsed.get("turn_id")
+
+
 def cmd_tally(cfg: Config, args: list[str]) -> int:
-    """``board tally <wave> <task> --message <file>``: a native message, classified and counted."""
-    if len(args) != 4 or args[2] != "--message" or not args[0] or not args[1]:
-        die(f"board tally: expected <wave> <task> --message <file> ({USAGE})")
-    wave, task, _, path = args
+    """``board tally <wave> <task> --message <file> [--turn-id <id>]``: a native message, classified and counted."""
+    wave, task, path, turn_id = tally_args(args)
     if not os.access(path, os.R_OK) or os.path.isdir(path):
         die(f"board tally: --message <readable file>, the message sent to the worker ({USAGE})")
     try:
-        text = read_message(path)
+        raw = read_message_bytes(path)
     except OSError as exc:
         die(f"board tally: cannot read {path}: {exc.strerror}")
-    counter, why = classify(text)
-    rc = tally(cfg, {"wave": wave, "task": task, "counter": counter, "why": f"message {why}"}, stdout_to_stderr=False)
+    counter, why = classify(raw.decode("utf-8", errors="replace"))
+    payload: dict[str, object] = {"wave": wave, "task": task, "counter": counter, "why": f"message {why}"}
+    if turn_id is not None:
+        payload["turn_id"] = turn_id
+        payload["message_sha256"] = hashlib.sha256(raw).hexdigest()
+    rc = tally(cfg, payload, stdout_to_stderr=False)
     if rc == 4:
         cli.say(f"BOARD UNREACHABLE {cfg.anchor}")
     return rc

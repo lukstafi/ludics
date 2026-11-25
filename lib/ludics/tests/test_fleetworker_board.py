@@ -672,6 +672,135 @@ class Tally(StoreCase):
         self.assertEqual(self.doc()["log"][-1]["text"], "t1 relaunches=1: launch --replace mac/w1-42")
         self.assertEqual(self.fields("t1")["interventions"], "0")
 
+    def test_tally_with_turn_id_replays_as_noop_and_new_id_counts(self) -> None:
+        """THE TURN IDENTITY (ludics#1342): replaying a recorded turn_id with matching facts writes
+        nothing, leaves counters/log/updated_at untouched, and answers as the first call did; a new
+        turn_id or unkeyed call counts one."""
+        self.set("t1", ("state", "launched"))
+        real_replace = os.replace
+        replaces: list[str] = []
+
+        def counting(src: str, dst: str) -> None:
+            replaces.append(str(dst))
+            real_replace(src, dst)
+
+        with mock.patch.object(boardstore.os, "replace", counting):
+            rc, out, err = self.tally("interventions", 'message "fix line 1"', wave="w", task="t1", turn_id="w-t1-1")
+        self.assertEqual((rc, out, err), (0, 'BOARD TALLY w: "t1" interventions=1\n', ""))
+        self.assertEqual(len(replaces), 1, "counter, log, and turn_id record publish atomically in one replace")
+        self.set("t1", ("state", "implementing"))
+        before_replay = self.doc()
+        with mock.patch.object(boardstore.os, "replace", side_effect=AssertionError("replay must not write")):
+            rc, out, err = self.tally("interventions", 'message "fix line 1"', wave="w", task="t1", turn_id="w-t1-1")
+        self.assertEqual((rc, out, err), (0, 'BOARD TALLY w: "t1" interventions=1\n', ""))
+        self.assertEqual(self.doc(), before_replay, "replay preserves later state, log, counter and updated_at")
+        rc, out, err = self.tally("interventions", 'message "fix line 1"', wave="w", task="t1", turn_id="w-t1-2")
+        self.assertEqual((rc, out, err), (0, 'BOARD TALLY w: "t1" interventions=2\n', ""))
+        rc, out, err = self.tally("routine_answers", 'message "REVIEW_POSTED 1"', wave="w", task="t1", turn_id="w-t1-3")
+        self.assertEqual((rc, out, err), (0, 'BOARD TALLY w: "t1" routine_answers=1\n', ""))
+        self.assertEqual(len(self.doc()["log"]), 2, "routine_answers still logs nothing")
+        before_late = self.doc()
+        with mock.patch.object(boardstore.os, "replace", side_effect=AssertionError("replay must not write")):
+            self.assertEqual(self.tally("routine_answers", 'message "REVIEW_POSTED 1"', wave="w", task="t1", turn_id="w-t1-3"),
+                             (0, 'BOARD TALLY w: "t1" routine_answers=1\n', ""))
+            self.assertEqual(self.tally("interventions", 'message "fix line 1"', wave="w", task="t1", turn_id="w-t1-1"),
+                             (0, 'BOARD TALLY w: "t1" interventions=1\n', ""), "late replay of an earlier turn_id is a no-op")
+        self.assertEqual(self.doc(), before_late)
+        self.assertEqual(self.tally("interventions", 'message "unkeyed"', wave="w", task="t1"),
+                         (0, 'BOARD TALLY w: "t1" interventions=3\n', ""), "unkeyed tally counts one as before")
+        before_after_unkeyed = self.doc()
+        with mock.patch.object(boardstore.os, "replace", side_effect=AssertionError("replay must not write")):
+            self.assertEqual(self.tally("interventions", 'message "fix line 1"', wave="w", task="t1", turn_id="w-t1-2"),
+                             (0, 'BOARD TALLY w: "t1" interventions=2\n', ""), "unkeyed tally retains replay history")
+        self.assertEqual(self.doc(), before_after_unkeyed)
+
+    def test_tally_replay_conflicts_and_invalid_turn_ids_refuse(self) -> None:
+        self.set("t1", ("state", "launched"))
+        digest_a, digest_b = "a" * 64, "b" * 64
+        self.assertEqual(self.tally("interventions", 'message "a"', wave="w", task="t1", turn_id="w-t1-1",
+                                    message_sha256=digest_a)[0], 0)
+        self.assertEqual(self.tally("routine_answers", 'message "b"', wave="w", task="t1", turn_id="w-t1-2")[0], 0)
+        before = self.doc()
+        conflicts: list[tuple[str, str, dict[str, Any]]] = [
+            ("routine_answers", 'message "a"', {"turn_id": "w-t1-1", "message_sha256": digest_a}),
+            ("interventions", 'message "other"', {"turn_id": "w-t1-1", "message_sha256": digest_a}),
+            ("interventions", 'message "a"', {"turn_id": "w-t1-1", "message_sha256": digest_b}),
+            ("interventions", 'message "a"', {"turn_id": "w-t1-1"}),
+            ("routine_answers", 'message "b"', {"turn_id": "w-t1-2", "message_sha256": digest_a}),
+            ("interventions", 'message "b"', {"turn_id": "w-t1-2"}),
+        ]
+        for counter, why, extra in conflicts:
+            with self.subTest(counter=counter, why=why, extra=extra):
+                rc, out, err = self.tally(counter, why, wave="w", task="t1", **extra)
+                self.assertEqual((rc, out), (1, ""))
+                self.assertIn("with different tally facts; nothing written", err)
+                self.assertEqual(self.doc(), before)
+        for bad in ("", " ", "-bad", "a/b", "a b", None, 7):
+            with self.subTest(turn_id=bad):
+                rc, out, err = self.tally("interventions", "x", wave="w", task="t1", turn_id=bad)
+                self.assertEqual((rc, out), (1, ""))
+                self.assertIn("a turn_id must be", err)
+                self.assertEqual(self.doc(), before)
+        for bad_sha in ("", "abc", "A" * 64, "g" * 64, None, 7):
+            with self.subTest(message_sha256=bad_sha):
+                rc, out, err = self.tally("interventions", "x", wave="w", task="t1", turn_id="w-t1-3",
+                                          message_sha256=bad_sha)
+                self.assertEqual((rc, out), (1, ""))
+                self.assertIn("must be 64 lowercase hex digits", err)
+                self.assertEqual(self.doc(), before)
+        rc, out, err = self.tally("interventions", "x", wave="w", task="t1", message_sha256=digest_a)
+        self.assertEqual((rc, out), (1, ""))
+        self.assertIn("message_sha256 requires turn_id", err)
+        self.assertEqual(self.doc(), before)
+        self.set("t1", ("interventions", "bad"))
+        before_bad = self.doc()
+        rc, out, err = self.tally("interventions", "x", wave="w", task="t1", turn_id="w-t1-4")
+        self.assertEqual((rc, out), (1, ""))
+        self.assertIn('holds interventions="bad", no count', err)
+        self.assertEqual(self.doc(), before_bad, "a failed counter bump never records turn_id")
+
+    def test_corrupt_tallies_record_refuses_without_overwriting(self) -> None:
+        path = os.path.join(self.root, "boards", "w.json")
+        self.set("t1", ("state", "launched"))
+        self.assertEqual(self.tally("interventions", "x", wave="w", task="t1", turn_id="w-t1-1")[0], 0)
+        with open(path, encoding="utf-8") as f:
+            valid = json.load(f)
+        bad_tallies: list[Any] = [
+            [],
+            {"-bad": {"counter": "interventions", "why": "x", "said": "ok"}},
+            {"ok": "not-a-dict"},
+            {"ok": {"counter": "interventions", "why": "x"}},
+            {"ok": {"counter": "interventions", "why": "x", "said": "ok", "extra": "y"}},
+            {"ok": {"counter": "rounds", "why": "x", "said": "ok"}},
+            {"ok": {"counter": "interventions", "why": 7, "said": "ok"}},
+            {"ok": {"counter": "interventions", "why": "x", "said": " "}},
+            {"ok": {"counter": "interventions", "why": "x", "said": "ok", "message_sha256": "short"}},
+        ]
+        for bad in bad_tallies:
+            with self.subTest(tallies=bad):
+                broken = json.loads(json.dumps(valid))
+                broken["tasks"][0]["tallies"] = bad
+                text = json.dumps(broken)
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(text)
+                rc, _, err = self.tally("interventions", "x", wave="w", task="t1", turn_id="w-t1-1")
+                self.assertEqual(rc, 1)
+                self.assertIn("is not a valid board", err)
+                with open(path, encoding="utf-8") as f:
+                    self.assertEqual(f.read(), text)
+
+    def test_tally_by_worker_refuses_turn_id_and_message_sha256(self) -> None:
+        done = list(takeover.DONE_STATES)
+        self.set("t1", ("worker", "w1-42"), ("agent_host", "mac"), ("state", "launched"))
+        before = self.doc()
+        for extra in ({"turn_id": "w-t1-1"}, {"message_sha256": "a" * 64},
+                      {"turn_id": "w-t1-1", "message_sha256": "a" * 64}):
+            with self.subTest(extra=extra):
+                rc, out, err = self.tally("interventions", "x", worker="w1-42", hosts=["mac"], done=done, **extra)
+                self.assertEqual((rc, out), (1, ""))
+                self.assertIn("turn_id requires an explicit wave and task", err)
+                self.assertEqual(self.doc(), before)
+
 
 class Classify(unittest.TestCase):
     """tally.py's closed list: the message classifies itself, by its first non-blank line's leading words."""
@@ -733,7 +862,11 @@ class TallyVerbs(StoreCase):
     def mutate(self, _cfg: Any, action: str, raw: str, *, stdout_to_stderr: bool = False) -> Done:
         self.payloads.append(json.loads(raw))
         rc, out, err = self.call(action, json.loads(raw))
-        (sys.stderr if stdout_to_stderr else sys.stdout).write(out + err)
+        if stdout_to_stderr:
+            sys.stderr.write(out + err)
+        else:
+            sys.stdout.write(out)
+            sys.stderr.write(err)
         return Done(rc, "")
 
     def run_verb(self, fn: Any, *args: Any, **kw: Any) -> tuple[Any, str, str]:
@@ -759,6 +892,58 @@ class TallyVerbs(StoreCase):
         self.assertEqual(self.doc()["log"][-1]["text"], 't1 interventions=1: message "Your plan\'s step 3 is wrong: read #1210 first."')
         for args in (["tally", "w", "t1"], ["tally", "w", "t1", "--message", self.root], ["tally", "w", "t1", "-m", self.message]):
             self.assertEqual(self.run_verb(board.cmd_board, self.cfg, args)[0], 2, args)
+
+    def test_board_tally_with_turn_id_replays_as_noop_and_refuses_conflicts(self) -> None:
+        self.write("REVIEW_POSTED 7 " + "a" * 40 + "\nVerdict: ok\n")
+        self.assertEqual(
+            self.run_verb(board.cmd_board, self.cfg, ["tally", "w", "t1", "--message", self.message, "--turn-id", "w-t1-1"])[:2],
+            (0, 'BOARD TALLY w: "t1" routine_answers=1\n'),
+        )
+        before = self.doc()
+        with mock.patch.object(boardstore.os, "replace", side_effect=AssertionError("replay must not write")):
+            self.assertEqual(
+                self.run_verb(board.cmd_board, self.cfg, ["tally", "w", "t1", "--turn-id", "w-t1-1", "--message", self.message])[:2],
+                (0, 'BOARD TALLY w: "t1" routine_answers=1\n'),
+                "reversed option order and identical message bytes replay as a no-op",
+            )
+        self.assertEqual(self.doc(), before)
+        self.write("Continue\nStep A\n")
+        self.assertEqual(
+            self.run_verb(board.cmd_board, self.cfg, ["tally", "w", "t1", "--message", self.message, "--turn-id", "w-t1-2"])[:2],
+            (0, 'BOARD TALLY w: "t1" interventions=1\n'),
+        )
+        before_conflict = self.doc()
+        self.write("Continue\nStep B\n")
+        rc, out, err = self.run_verb(board.cmd_board, self.cfg, ["tally", "w", "t1", "--message", self.message, "--turn-id", "w-t1-2"])
+        self.assertEqual((rc, out), (1, ""))
+        self.assertIn("with different tally facts; nothing written", err, "same first line with different body still conflicts")
+        self.assertEqual(self.doc(), before_conflict)
+        self.assertEqual(
+            self.run_verb(board.cmd_board, self.cfg, ["tally", "w", "t1", "--message", self.message, "--turn-id", "w-t1-3"])[:2],
+            (0, 'BOARD TALLY w: "t1" interventions=2\n'),
+            "a distinct turn_id counts one more",
+        )
+        self.assertEqual(
+            self.run_verb(board.cmd_board, self.cfg, ["tally", "w", "t1", "--message", self.message])[:2],
+            (0, 'BOARD TALLY w: "t1" interventions=3\n'),
+            "omitting --turn-id behaves as before",
+        )
+        self.assertNotIn("turn_id", self.payloads[-1])
+        self.assertNotIn("message_sha256", self.payloads[-1])
+        bad_cli = (
+            ["tally", "w", "t1", "--turn-id", "w-t1-9"],
+            ["tally", "w", "t1", "--message", self.message, "--turn-id"],
+            ["tally", "w", "t1", "--message", self.message, "--turn-id", "w-t1-9", "--turn-id", "w-t1-10"],
+            ["tally", "w", "t1", "--message", self.message, "--message", self.message],
+            ["tally", "w", "t1", "--message", self.message, "--turn-id", "-bad"],
+            ["tally", "w", "t1", "--message", self.message, "--turn-id", "a/b"],
+            ["tally", "w", "t1", "--message", self.message, "--turn-id", "a b"],
+            ["tally", "w", "t1", "--message", self.message, "--turn-id", ""],
+            ["tally", "w", "t1", "--message", self.message, "--extra", "x"],
+        )
+        for args in bad_cli:
+            with self.subTest(args=args):
+                self.assertEqual(self.run_verb(board.cmd_board, self.cfg, args)[0], 2)
 
     def test_unstick_counts_by_worker_on_stderr_and_a_failure_is_a_warning(self) -> None:
         self.write("PEER_PLAN /x/peer-plan.md\n")

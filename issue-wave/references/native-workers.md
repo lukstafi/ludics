@@ -115,10 +115,10 @@ other first word and on a `status` key, and writes both. The takeover keys are `
 `none`), `farside` (`<box>:<path>` far-side worktrees), `plan_dir` and `state`. Their grammars
 and the state words are `lib/ludics/fleetworker/takeover.py`'s. The writers check the lease
 themselves; check it before interventions. Re-read with `board show` before retrying a failed or
-unacknowledged `board set`, `board note`, `board log` or `board tally` write. For `board spawned`
-with `--launch-id <id>`, retrying with the same ID and runtime facts is a no-op that answers as the
-first call did, so no prior `board show` is needed; without `--launch-id`, re-read first because
-repeating a recorded spawn increments `relaunches` again.
+unacknowledged `board set`, `board note` or `board log` write. For `board spawned` with
+`--launch-id <id>` or `board tally` with `--turn-id <id>`, retrying with the same ID and facts is a
+no-op that answers as the first call did, so no prior `board show` is needed; without an ID,
+re-read first because repeating either call increments its counter again.
 
 When a worker died with its process (a coordinator restart kills every in-process worker), its
 replacement's brief is `fleet-worker.sh board takeover <wave> <task>`: the stored brief, then a

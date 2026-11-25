@@ -290,9 +290,11 @@
 #   fleet-worker.sh board takeover <wave> <task>   # the task's stored brief, then its state at
 #                          # takeover from the row's takeover keys and the live sources; no lease;
 #                          # exit 3 when the brief cannot be read (lib/ludics/fleetworker/takeover.py)
-#   fleet-worker.sh board tally <wave> <task> --message <file>   # one more of the row's coordinator
-#                          # turns, the message sent to a native worker counted as routine_answers
-#                          # or interventions by its first line; unstick counts its own (tally.py)
+#   fleet-worker.sh board tally <wave> <task> --message <file> [--turn-id <id>]
+#                          # one more of the row's coordinator turns, the message sent to a native
+#                          # worker counted as routine_answers or interventions by its first line;
+#                          # with --turn-id, a replay with the same id and message is a no-op
+#                          # answering as the first did; unstick counts its own (tally.py)
 #                          # (set/note --create starts the board; without it every writer refuses
 #                          # an unknown wave; the contract: lib/ludics/fleetworker/boardstore.py)
 #   fleet-worker.sh wave render [--set NAME=VALUE]... [--set-file NAME=<path>]... [--out <file>] <part>...
