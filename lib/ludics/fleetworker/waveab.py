@@ -405,7 +405,11 @@ def same_head(a: str | None, b: str | None) -> bool:
     return a.startswith(b) or b.startswith(a)
 
 
-_same_head = same_head
+def merge_agrees(board: str | None, github: str | None) -> bool:
+    """True unless both board and GitHub merge SHAs are present and disagree (7-char floor)."""
+    if board is None or github is None:
+        return True
+    return len(board) >= 7 and same_head(board.lower(), github.lower())
 
 
 def _login_matches(author: Any, reviewer: str) -> bool:
@@ -507,7 +511,7 @@ def _graphql_review_rounds(pr_obj: dict[str, Any], reviewer: str, round_gap: int
     cur: str | None = None
     last_t = 0
     for sha, when in sorted(events, key=lambda e: e[1]):
-        if not _same_head(sha, cur) or when - last_t > round_gap:
+        if not same_head(sha, cur) or when - last_t > round_gap:
             n += 1
             cur = sha
         last_t = when
@@ -689,9 +693,7 @@ def join_wave(
                 facts = github.get((repo, int(pr)))
                 if facts is None:
                     gh_status = "unread"
-                elif merge is not None and facts.merge_commit is not None and not (
-                    len(merge) >= 7 and _same_head(merge.lower(), facts.merge_commit.lower())
-                ):
+                elif not merge_agrees(merge, facts.merge_commit):
                     gh_status = "mismatch"
                     gh_state = facts.state
                     notes.append(

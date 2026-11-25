@@ -36,10 +36,13 @@ WHAT IT WRITES, AND THE KEY-SEPARATION BOUNDARY:
   ``--out <dir>``   ``manifest.json`` (blinded index: ``version``, ``pairs`` with ``pair``,
                     ``repository``, ``group``, ``dir`` only) and ``<pair_id>/{A-task.md, A.diff,
                     B-task.md, B.diff}`` (diffs written with ``surrogateescape`` and ``newline=""``
-                    to preserve non-UTF-8 bytes losslessly). No wave name, task ID, arm label, PR
-                    number, issue number (odd/even parity picks the arm under ``split:
-                    issue-number``), branch name, PR title, PR body, commit message, or seed
-                    appears anywhere under ``--out`` or on stdout.
+                    to preserve non-UTF-8 bytes losslessly). Generated headers, filenames, manifest,
+                    and stdout omit wave names, task IDs, arm labels, PR/issue numbers, branch
+                    names, PR titles, PR bodies, commit messages, and the seed; self-references to
+                    the selected task's own issue/PR/wave/task are redacted from both task prose
+                    and diff hunks (below). Residual: the surrounding local checkout
+                    (``@@CHECKOUT@@``) is not scrubbed and still contains merged files and project
+                    docs (see ``issue-wave/references/ab-judging.md``).
   ``--key <file>``  published exclusively (via temp file + hard link, never replacing an existing
                     key) apart from ``--out``, while pairs are staged and cleaned up on any write
                     failure. Refused (exit 2) before any network or board read — and re-checked via
@@ -71,11 +74,16 @@ SIDE RANDOMISATION:
     assignments and pair order are shuffled with the seeded RNG.
 
 SCRUBBING BOUNDARY (closed allowlist of forms):
-  - **What is scrubbed**: ``A-task.md`` and ``B-task.md`` (issue title, body, and pre-launch
-    comments) only.
+  - **What is scrubbed**:
+    - Model, profile, vendor, branch, and ``Co-Authored-By`` forms (1–6, 8) apply to
+      ``A-task.md`` and ``B-task.md`` (issue title, body, and pre-launch comments) only.
+    - Selected-task self-references (form 7: the task's own issue/PR refs, short ``<name>#N``
+      forms, GitHub ``/issues/<N>`` / ``/pull/<pr>`` URLs, wave ID, and task ID) apply to BOTH
+      ``A-task.md``/``B-task.md`` AND ``A.diff``/``B.diff`` so odd/even issue-number parity cannot
+      leak through comments or docstrings in exported diffs.
   - **Recognised forms (closed)**:
     1. ``Co-Authored-By:`` lines (``(?im)^Co-Authored-By:[^\\n]*$`` -> ``Co-Authored-By: [agent]``).
-    2. Arm-prefixed branch names (``(?i)(?<![A-Za-z0-9_])(?:codex|claude|gemini)/[A-Za-z0-9._-]+``
+    2. Arm-prefixed branch names (``(?i)(?<![A-Za-z0-9_])(?:codex|claude|gemini)/[A-Za-z0-9_-](?:[A-Za-z0-9._-]*[A-Za-z0-9_-])?``
        -> ``[branch]``).
     3. Dynamic terms (sorted longest-first, case-insensitive, bounded by ``(?<![A-Za-z0-9_])`` /
        ``(?![A-Za-z0-9_])`` -> ``[agent]``): each exported arm's ``model`` and ``model.split("/")[0]``,
@@ -88,17 +96,20 @@ SCRUBBING BOUNDARY (closed allowlist of forms):
        ``Anthropic``, ``Antigravity``, ``Claude``, ``Codex``, ``Gemini``, ``GPT``, ``Opus``,
        ``Sonnet``, ``Haiku``, ``Sol``, ``Astra``, ``Neon``, ``Fable``, ``agy``, case-insensitive,
        boundary-guarded -> ``[agent]``).
-    7. Selected-task self-references in task prose: the task's own ``<issue_repo>#<N>`` / ``#<N>``
-       (``[this-issue]``), its own ``<repo>#<pr>`` / ``#<pr>`` (``[this-pr]``), its wave ID
-       (``[wave]``), and its task ID (``[task]``). Unrelated cross-references stay intact.
+    7. Selected-task self-references (in both task prose and diffs): full GitHub URLs to the
+       selected issue or PR (``https?://github.com/<issue_repo>/issues/<N>...`` -> ``[this-issue]``,
+       ``https?://github.com/<repo>/pull/<pr>...`` -> ``[this-pr]``), ``<issue_repo>#<N>`` /
+       ``<issue_repo_name>#<N>`` / bare ``#<N>`` -> ``[this-issue]``, ``<repo>#<pr>`` /
+       ``<repo_name>#<pr>`` / bare ``#<pr>`` -> ``[this-pr]``, wave ID -> ``[wave]``, and task ID
+       -> ``[task]``. Unrelated cross-references stay intact.
     8. Adjacent ``[agent]`` tokens separated only by spaces, tabs, ``/``, ``:``, or ``-`` collapse
        to a single ``[agent]`` so multi-word and single-word names leave the same shape.
-  - **What is deliberately NOT scrubbed**: ``A.diff`` and ``B.diff`` (unified diffs from
-    ``gh pr diff`` carry no commit messages, branch names, or PR bodies, whereas scrubbing code
-    hunks corrupts identifiers such as ``sol`` or ``claude`` in real code and diff headers, and
-    withholding diffs that cite their own issue number in docstrings/comments would drop most
-    ludics PRs); prose style; unrelated cross-referenced issue numbers inside an issue body; names
-    outside the closed list and dynamic terms (pass ``--scrub <word>`` for one).
+  - **What is deliberately NOT scrubbed**: model/profile/vendor names inside ``A.diff`` and
+    ``B.diff`` (unified diffs carry no commit messages, branch names, or PR bodies, whereas
+    scrubbing model words in code hunks corrupts identifiers such as OCaml ``sol`` variables or
+    ludics ``claude``/``codex`` paths and identifiers); prose style; unrelated cross-referenced
+    issue numbers; names outside the closed list and dynamic terms (pass ``--scrub <word>``); and
+    the local checkout ``@@CHECKOUT@@`` read by judges for surrounding context.
 
 Exit: 0 exported cleanly; 1 refused (missing/refused board, existing output/key, invalid JSON
 input, <2 eligible arms, 0 matched pairs, or all selected pairs failed to fetch; nothing written);
@@ -236,6 +247,7 @@ class SidePayload:
     task_md: str
     diff_text: str
     scrub_hits: int
+    diff_scrub_hits: int
     comments_included: int
     comments_excluded: int
 
@@ -980,11 +992,22 @@ def scrub_text(text: str, dynamic_terms: tuple[str, ...] = ()) -> tuple[str, int
 
 
 def scrub_self_references(text: str, cand: Candidate) -> tuple[str, int]:
-    """Redact references to this task's own issue/PR/wave/task IDs from task prose."""
+    """Redact references to this task's own issue/PR/wave/task IDs (prose and diffs)."""
     hits = 0
+    issue_repo_name = cand.issue_repo.rsplit("/", 1)[-1]
+    pr_repo_name = cand.repository.rsplit("/", 1)[-1]
+    url_tail = r"(?:/[A-Za-z0-9._/%-]*)?(?:#[A-Za-z0-9._-]+)?"
     replacements: list[tuple[re.Pattern[str], str]] = [
+        # Canonical GitHub URLs first (before shorter owner/repo#N or #N patterns).
+        (re.compile(rf"(?i)https?://github\.com/{re.escape(cand.issue_repo)}/issues/{cand.issue_number}(?![0-9]){url_tail}"), "[this-issue]"),
+        (re.compile(rf"(?i)https?://github\.com/{re.escape(cand.repository)}/pull/{cand.pr}(?![0-9]){url_tail}"), "[this-pr]"),
+        # Full owner/repo#N references.
         (re.compile(rf"(?i){_NON_WORD_LEFT}{re.escape(cand.issue_ref)}(?![0-9])"), "[this-issue]"),
         (re.compile(rf"(?i){_NON_WORD_LEFT}{re.escape(f'{cand.repository}#{cand.pr}')}(?![0-9])"), "[this-pr]"),
+        # Short repo-name#N references (e.g. ludics#1274, proj#101).
+        (re.compile(rf"(?i){_NON_WORD_LEFT}{re.escape(issue_repo_name)}#{cand.issue_number}(?![0-9])"), "[this-issue]"),
+        (re.compile(rf"(?i){_NON_WORD_LEFT}{re.escape(pr_repo_name)}#{cand.pr}(?![0-9])"), "[this-pr]"),
+        # Bare #N references.
         (re.compile(rf"(?<![A-Za-z0-9_/])#{cand.issue_number}(?![0-9])"), "[this-issue]"),
         (re.compile(rf"(?<![A-Za-z0-9_/])#{cand.pr}(?![0-9])"), "[this-pr]"),
     ]
@@ -1074,13 +1097,15 @@ def fetch_side(
     raw_task = "".join(parts)
     scrubbed_task, hits = scrub_text(raw_task, dynamic_terms)
     scrubbed_task, self_hits = scrub_self_references(scrubbed_task, cand)
+    scrubbed_diff, diff_self_hits = scrub_self_references(diff_text, cand)
 
     return SidePayload(
         candidate=cand,
         pr_meta=meta,
         task_md=scrubbed_task,
-        diff_text=diff_text,
+        diff_text=scrubbed_diff,
         scrub_hits=hits + self_hits,
+        diff_scrub_hits=diff_self_hits,
         comments_included=len(included_bodies),
         comments_excluded=excluded_count,
     )
@@ -1115,6 +1140,7 @@ def _side_key_record(payload: SidePayload) -> dict[str, Any]:
         "merge": c.merge,
         "title": payload.pr_meta.title,
         "scrub_hits": payload.scrub_hits,
+        "diff_scrub_hits": payload.diff_scrub_hits,
         "comments_included": payload.comments_included,
         "comments_excluded": payload.comments_excluded,
         "task_row": c.task_dict,
@@ -1154,6 +1180,7 @@ def cmd_ab_pairs(cfg: Config, args: list[str]) -> int:
     raw_pr_meta = read_pr_files(session, targets, errors)
 
     valid_meta: dict[tuple[str, int], PrMeta] = {}
+    validated_candidates: list[Candidate] = []
     for c in selected_candidates:
         meta = raw_pr_meta.get((c.repository, c.pr))
         if meta is None:
@@ -1165,9 +1192,7 @@ def cmd_ab_pairs(cfg: Config, args: list[str]) -> int:
             )
             skipped.append({"wave": c.wave, "task": c.task, "why": f"GitHub PR state is {meta.state or 'unknown'}, not MERGED"})
             continue
-        if c.merge is not None and meta.merge_commit is not None and not (
-            len(c.merge) >= 7 and waveab.same_head(c.merge.lower(), meta.merge_commit.lower())
-        ):
+        if not waveab.merge_agrees(c.merge, meta.merge_commit):
             notes.append(
                 f"{c.wave}/{c.task}: board merge {c.merge} disagrees with GitHub {c.repository}#{c.pr}"
                 f" mergeCommit {meta.merge_commit}; excluded from pairing"
@@ -1178,13 +1203,14 @@ def cmd_ab_pairs(cfg: Config, args: list[str]) -> int:
             skipped.append({"wave": c.wave, "task": c.task, "why": "PR has no changed files"})
             continue
         valid_meta[(c.repository, c.pr)] = meta
+        validated_candidates.append(c)
 
-    matched, unpaired = match_pairs(selected_candidates, valid_meta, arm1_label, arm2_label, opts.max_pairs)
+    matched, unpaired = match_pairs(validated_candidates, valid_meta, arm1_label, arm2_label, opts.max_pairs)
     if not matched:
         err(f"WAVE AB-PAIRS REFUSED: no area-matched pairs found between {arm1_label!r} and {arm2_label!r}")
         return 1
 
-    dynamic_terms = collect_dynamic_scrub_terms(selected_candidates, profile_terms, opts.extra_scrub)
+    dynamic_terms = collect_dynamic_scrub_terms(validated_candidates, profile_terms, opts.extra_scrub)
 
     ready_pairs: list[tuple[MatchedPair, SidePayload, SidePayload]] = []
     for pair in matched:
@@ -1307,12 +1333,30 @@ def cmd_ab_pairs(cfg: Config, args: list[str]) -> int:
             err(f"WAVE AB-PAIRS REFUSED: key path already exists: {opts.key_path}")
             return 1
 
-        # Publish staged pairs into --out.
+        # Publish staged pairs into --out, rolling back moved entries if any rename fails so an
+        # existing empty --out never remains partially populated without a key.
+        moved_entries: list[str] = []
         if out_existed:
             if os.listdir(out_abs):
                 raise FileExistsError(f"output directory is not empty: {opts.out_dir}")
-            for entry in sorted(os.listdir(stage_dir)):
-                os.rename(os.path.join(stage_dir, entry), os.path.join(out_abs, entry))
+            try:
+                for entry in sorted(os.listdir(stage_dir)):
+                    os.rename(os.path.join(stage_dir, entry), os.path.join(out_abs, entry))
+                    moved_entries.append(entry)
+            except OSError:
+                for entry in reversed(moved_entries):
+                    src = os.path.join(out_abs, entry)
+                    try:
+                        os.rename(src, os.path.join(stage_dir, entry))
+                    except OSError:
+                        if os.path.isdir(src) and not os.path.islink(src):
+                            shutil.rmtree(src, ignore_errors=True)
+                        else:
+                            try:
+                                os.unlink(src)
+                            except OSError:
+                                pass
+                raise
             os.rmdir(stage_dir)
             stage_dir = None
         else:
@@ -1321,7 +1365,18 @@ def cmd_ab_pairs(cfg: Config, args: list[str]) -> int:
 
         # Final filesystem-identity check in case --out was created with an alias of key_parent.
         if _key_is_inside_out(out_abs, key_abs):
-            shutil.rmtree(out_abs, ignore_errors=True)
+            if out_existed:
+                for entry in reversed(moved_entries):
+                    target = os.path.join(out_abs, entry)
+                    if os.path.isdir(target) and not os.path.islink(target):
+                        shutil.rmtree(target, ignore_errors=True)
+                    else:
+                        try:
+                            os.unlink(target)
+                        except OSError:
+                            pass
+            else:
+                shutil.rmtree(out_abs, ignore_errors=True)
             die(f"wave ab-pairs: --key ({opts.key_path}) must live outside --out ({opts.out_dir})")
     except cli.Exit:
         if key_published:

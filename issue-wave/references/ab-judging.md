@@ -46,8 +46,12 @@ judges have finished every pair.
 `wave ab-pairs` writes `$RETRO/pairs/manifest.json` (blinded pair ID, repository, tier group) and,
 for each pair `<PAIR>`, `$RETRO/pairs/<PAIR>/{A-task.md, A.diff, B-task.md, B.diff}`. Issue titles,
 bodies, and pre-launch comments are scrubbed by the closed list in
-`lib/ludics/fleetworker/waveabpairs.py`; PR bodies, PR titles, PR/issue numbers, branch names, and
-commit messages are omitted.
+`lib/ludics/fleetworker/waveabpairs.py`, and self-references to each task's own issue/PR/wave/task
+(including short `<repo>#N` forms and GitHub issue/PR URLs) are redacted from both task prose and
+diffs; PR bodies, PR titles, branch names, and commit messages are omitted. **Blinding residual:**
+the local checkout (`$CO` / `$CLONE`) is not scrubbed, so merged files and repository docs (such as
+`issue-wave/SKILL.md`'s split rule in `ludics`) remain present if a judge ignores the prompt's
+blind rules; this residual is accepted by the procedure rather than masked away.
 
 ## 3. Render the judge prompt and run one judge per family
 
@@ -98,12 +102,19 @@ CLONE=$(mktemp -d "${TMPDIR:-/tmp}/ab-judge-clone.XXXXXX")
 rmdir "$CLONE"
 
 ~/ludics/scripts/py -c '
-import sys
+import subprocess, sys
 from ludics import agy
-why = agy.clone(sys.argv[1], sys.argv[2], sys.argv[3], "ab-judge")
+co, ref, dest = sys.argv[1], sys.argv[2], sys.argv[3]
+# Resolve the exact commit SHA in the source checkout first (agy.clone resolves refs inside the
+# fresh clone, where origin/<main> maps from the source local branch rather than its remote ref).
+res = subprocess.run(["git", "-C", co, "rev-parse", "--verify", f"{ref}^{{commit}}"],
+                     env=agy.environment(), capture_output=True, text=True)
+if res.returncode != 0:
+    sys.exit(f"cannot resolve {ref} in {co}: {res.stderr.strip()}")
+why = agy.clone(co, res.stdout.strip(), dest, "ab-judge")
 if why:
     sys.exit(why)
-' "$CO" "origin/$MAIN" "$CLONE" &&
+' "$CO" "HEAD" "$CLONE" &&
 ~/.claude/skills/issue-wave/scripts/fleet-worker.sh wave render \
   --set REPO="$REPO" --set CHECKOUT="$CLONE" --set DIR="$PAIR_DIR" --set PAIR="$PAIR" \
   --out "$OUT_GEMINI/prompt.md" \

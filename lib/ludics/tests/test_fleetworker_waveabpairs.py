@@ -587,16 +587,24 @@ class TestRefusalsAndEdgeCases(BaseWaveAbPairs):
             },
             "issues": {
                 "upstream/proj#10": {
-                    "title": "Fix upstream/proj#10 in w-guard (t1)",
-                    "body": "See #10 and fork/proj#10, unrelated #999 stays.",
+                    "title": "Fix upstream/proj#10 (proj#10) in w-guard (t1)",
+                    "body": (
+                        "See #10, fork/proj#10, https://github.com/upstream/proj/issues/10#issuecomment-12345,"
+                        " and https://github.com/fork/proj/pull/10/files; unrelated #999 and"
+                        " https://github.com/upstream/proj/issues/999 stay."
+                    ),
                     "comments": [
                         {"createdAt": "2026-11-24T09:00:00Z", "body": "OMITTED_WHEN_NO_LAUNCHED_AT"},
                     ],
                 },
-                "upstream/proj#20": {"title": "Fix sibling", "body": "Ref #20 and #888.", "comments": []},
+                "upstream/proj#20": {"title": "Fix sibling", "body": "Ref #20, proj#20, and #888.", "comments": []},
             },
             "diffs": {
-                "fork/proj#10": "diff --git a/pkg/m.py b/pkg/m.py\n+a = 1\n",
+                "fork/proj#10": (
+                    "diff --git a/pkg/m.py b/pkg/m.py\n"
+                    "+# fix proj#10 (https://github.com/upstream/proj/issues/10) ref #999\n"
+                    "+a = 1\n"
+                ),
             },
             "diffs_b64": {
                 "fork/proj#20": base64.b64encode(raw_non_utf8).decode("ascii"),
@@ -641,11 +649,98 @@ class TestRefusalsAndEdgeCases(BaseWaveAbPairs):
                 diff_blobs.append(f.read())
         self.assertNotIn("OMITTED_WHEN_NO_LAUNCHED_AT", all_tasks)
         self.assertNotIn("upstream/proj#10", all_tasks)
+        self.assertNotIn("proj#10", all_tasks)
+        self.assertNotIn("issues/10", all_tasks)
+        self.assertNotIn("pull/10", all_tasks)
+        self.assertNotIn("proj#20", all_tasks)
         self.assertNotIn("w-guard", all_tasks)
         self.assertIn("[this-issue]", all_tasks)
+        self.assertIn("[this-pr]", all_tasks)
         self.assertIn("#999", all_tasks)
+        self.assertIn("https://github.com/upstream/proj/issues/999", all_tasks)
         self.assertIn("#888", all_tasks)
         self.assertIn(raw_non_utf8, diff_blobs)
+        # Diff self-references (short form and URL) are redacted too while unrelated #999 stays.
+        decoded_diffs = "".join(b.decode("utf-8", "surrogateescape") for b in diff_blobs)
+        self.assertNotIn("proj#10", decoded_diffs)
+        self.assertNotIn("issues/10", decoded_diffs)
+        self.assertIn("[this-issue]", decoded_diffs)
+        self.assertIn("#999", decoded_diffs)
+        self.assertGreater(kd["pairs"][0]["A"]["diff_scrub_hits"] + kd["pairs"][0]["B"]["diff_scrub_hits"], 0)
+
+    def test_duplicate_pr_mismatch_excluded_and_partial_rename_rolls_back(self) -> None:
+        w1 = self.make_wave("w-dup1")
+        w2 = self.make_wave("w-dup2")
+        # Both w-dup1/t1 (mismatched merge SHA) and w-dup2/t1b (matching SHA) point to fork/proj#10.
+        self.write_board("w-dup1", [
+            self.merged_row("t1", 10, 10, SOL_ARM, tier="D2", extra={"merge": "f" * 40}),
+            self.merged_row("t2", 20, 20, NEON_ARM, tier="D2"),
+        ])
+        self.write_board("w-dup2", [
+            self.merged_row("t1b", 10, 10, SOL_ARM, tier="D2"),
+            self.merged_row("t3", 30, 30, SOL_ARM, tier="D2"),
+            self.merged_row("t4", 40, 40, NEON_ARM, tier="D2"),
+        ])
+        fixture: dict[str, Any] = {
+            "prs": {
+                "fork/proj#10": _pr_files_node(10, [("pkg/a.py", 10, 0)]),
+                "fork/proj#20": _pr_files_node(20, [("pkg/a.py", 10, 0)]),
+                "fork/proj#30": _pr_files_node(30, [("pkg/b.py", 10, 0)]),
+                "fork/proj#40": _pr_files_node(40, [("pkg/b.py", 10, 0)]),
+            },
+            "issues": {
+                f"upstream/proj#{n}": {"title": f"T{n}", "body": "Spec", "comments": []}
+                for n in (10, 20, 30, 40)
+            },
+            "diffs": {
+                f"fork/proj#{n}": f"diff --git a/pkg/f b/pkg/f\n+{n}\n" for n in (10, 20, 30, 40)
+            },
+        }
+        out_dir = os.path.join(self.root, "dup-out")
+        key_path = os.path.join(self.root, "dup-key.json")
+        with FakeTool("gh") as gh:
+            _install_gh_fake(gh, fixture)
+            rc, _, stderr = self.run_cmd(
+                ["ab-pairs", w1, w2, "--out", out_dir, "--key", key_path, "--seed", "9"],
+                gh_dir=gh.dir,
+            )
+        self.assertEqual(rc, 0, stderr)
+        with open(key_path, encoding="utf-8") as f:
+            kd = json.load(f)
+        paired_tasks = {
+            (p["A"]["wave"], p["A"]["task"]) for p in kd["pairs"]
+        } | {
+            (p["B"]["wave"], p["B"]["task"]) for p in kd["pairs"]
+        }
+        # w-dup1/t1 had a merge-commit mismatch and must appear ONLY in skipped, never in pairs.
+        self.assertNotIn(("w-dup1", "t1"), paired_tasks)
+        self.assertIn(("w-dup2", "t1b"), paired_tasks)
+        self.assertTrue(any(s["wave"] == "w-dup1" and s["task"] == "t1" and "mismatch" in s["why"] for s in kd["skipped"]))
+
+        # Existing empty --out: inject OSError on the second os.rename -> rolls back first entry and key.
+        empty_out = os.path.join(self.root, "empty-rollback")
+        os.makedirs(empty_out)
+        rb_key = os.path.join(self.root, "rollback-key.json")
+        real_rename = os.rename
+        calls = {"n": 0}
+
+        def failing_rename(src: str, dst: str) -> None:
+            if dst.startswith(empty_out + os.sep):
+                calls["n"] += 1
+                if calls["n"] == 2:
+                    raise OSError("simulated ENOSPC")
+            real_rename(src, dst)
+
+        with FakeTool("gh") as gh, mock.patch.object(os, "rename", side_effect=failing_rename):
+            _install_gh_fake(gh, fixture)
+            rc, _, stderr = self.run_cmd(
+                ["ab-pairs", w1, w2, "--out", empty_out, "--key", rb_key, "--seed", "9"],
+                gh_dir=gh.dir,
+            )
+        self.assertEqual(rc, 1)
+        self.assertIn("simulated ENOSPC", stderr)
+        self.assertEqual(os.listdir(empty_out), [])
+        self.assertFalse(os.path.exists(rb_key))
 
     def test_arms_group_max_pairs_and_zero_matches(self) -> None:
         wpath = self.make_wave("w-multi")
