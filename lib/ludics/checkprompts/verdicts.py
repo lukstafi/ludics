@@ -76,7 +76,7 @@ EXCLUDED = frozenset(
         "issue-wave/scripts/test-bg-run.sh",
         # This scanner and its fixtures, which spell the forms they are about.
         "lib/ludics/checkprompts/verdicts.py",
-        "lib/ludics/tests/test_checkprompts_cli.py",
+        "lib/ludics/tests/test_checkprompts_cli_checks.py",
     }
 )
 

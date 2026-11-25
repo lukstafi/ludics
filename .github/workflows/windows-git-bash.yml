@@ -24,7 +24,7 @@ on:
   workflow_dispatch:
     inputs:
       suite:
-        description: One ship-pr suite by file name, test_fleetworker_winwitness_staging.py, or test_checkprompts_cli.py; empty runs all
+        description: One ship-pr suite by file name, test_fleetworker_winwitness_staging.py, test_checkprompts_cli.py, or test_checkprompts_cli_checks.py; empty runs all
         required: false
         default: ''
 
@@ -87,9 +87,9 @@ jobs:
           echo "jq:            $(jq --version), and jq -r ends a line with: $(printf '"x"' | jq -r . | od -An -c | tr -s ' ')"
           # A suite name that matches no step would skip them all and read green.
           case "$SUITE" in
-          '' | test_fleetworker_winwitness_staging.py | test_checkprompts_cli.py) ;;
+          '' | test_fleetworker_winwitness_staging.py | test_checkprompts_cli.py | test_checkprompts_cli_checks.py) ;;
           test-*.sh) [ -f "ship-pr/scripts/$SUITE" ] || { echo "::error title=No such suite::ship-pr/scripts/$SUITE does not exist"; exit 1; } ;;
-          *) printf '::error title=No such suite::suite accepts a ship-pr/scripts/test-*.sh filename, test_fleetworker_winwitness_staging.py, or test_checkprompts_cli.py. Got %q\n' "$SUITE"; exit 1 ;;
+          *) printf '::error title=No such suite::suite accepts a ship-pr/scripts/test-*.sh filename, test_fleetworker_winwitness_staging.py, test_checkprompts_cli.py, or test_checkprompts_cli_checks.py. Got %q\n' "$SUITE"; exit 1 ;;
           esac
       # Every suite step below runs whether or not an earlier suite failed, but only once the
       # proof passed, and only the named suite when one was dispatched; a failure names its suite
@@ -174,6 +174,10 @@ jobs:
         continue-on-error: true
         if: ${{ !cancelled() && steps.platform.outcome == 'success' && (!inputs.suite || inputs.suite == 'test_checkprompts_cli.py') }}
         run: scripts/py -m unittest ludics.tests.test_checkprompts_cli || { echo '::error title=Git Bash suite failed::test_checkprompts_cli.py'; exit 1; }
+      - name: prompt checker fixtures (links, readings, templates)
+        continue-on-error: true
+        if: ${{ !cancelled() && steps.platform.outcome == 'success' && (!inputs.suite || inputs.suite == 'test_checkprompts_cli_checks.py') }}
+        run: scripts/py -m unittest ludics.tests.test_checkprompts_cli_checks || { echo '::error title=Git Bash suite failed::test_checkprompts_cli_checks.py'; exit 1; }
       - name: Keep the cleanup suite's per-case logs
         if: failure() || cancelled() || steps.cleanup.outcome == 'failure'
         uses: actions/upload-artifact@v4

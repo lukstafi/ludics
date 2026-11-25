@@ -208,6 +208,9 @@ jobs:
       - name: prompt checker fixtures
         if: ${{ !cancelled() }}
         run: scripts/py -m unittest ludics.tests.test_checkprompts_cli || { echo '::error title=macOS suite failed::test_checkprompts_cli.py'; exit 1; }
+      - name: prompt checker fixtures (links, readings, templates)
+        if: ${{ !cancelled() }}
+        run: scripts/py -m unittest ludics.tests.test_checkprompts_cli_checks || { echo '::error title=macOS suite failed::test_checkprompts_cli_checks.py'; exit 1; }
       - name: jq shape guard fixtures
         if: ${{ !cancelled() }}
         run: scripts/test-check-jq-shapes.sh || { echo '::error title=macOS suite failed::test-check-jq-shapes.sh'; exit 1; }

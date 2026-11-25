@@ -54,6 +54,8 @@
 #                          root README and the other skills. Also on the checker's code and the
 #                          live scripts the suite reads: fleet-worker.sh's SLOTS, sync-routines.sh's
 #                          LOCAL_ROUTINES, post-merge-cleanup's usage (the table names them)
+#   - prompt-checks-fixtures lib/ludics/tests/test_checkprompts_cli_checks.py, the same triggers,
+#                          for the second half of the prompt-checker CLI suite (#1336)
 #   - routines-fixtures    scripts/test-sync-routines.sh, on routines/*.md: its pin compares the
 #                          routines table with sync-routines.sh; and on that script and the checker
 #   - reporters            scripts/test-workflow-reporters.py   } no file trigger: a Markdown
@@ -154,7 +156,8 @@ STEPS=(
 # CHECKER: what check-prompts.sh runs, which both prompt suites run -- its whole import chain.
 CHECKER='scripts/check-prompts.sh scripts/py lib/ludics/__init__.py lib/ludics/cli.py lib/ludics/proc.py lib/ludics/checkprompts/*'
 GUARDS=(
-  "prompt-fixtures:lib/ludics/tests/test_checkprompts_cli.py:*.md lib/ludics/tests/test_checkprompts_cli.py lib/ludics/tests/__init__.py $CHECKER issue-wave/scripts/fleet-worker.sh scripts/sync-routines.sh ship-pr/scripts/post-merge-cleanup.sh lib/ludics/postmergecleanup/*"
+  "prompt-fixtures:lib/ludics/tests/test_checkprompts_cli.py:*.md lib/ludics/tests/test_checkprompts_cli.py lib/ludics/tests/checkprompts_cli_harness.py lib/ludics/tests/__init__.py $CHECKER issue-wave/scripts/fleet-worker.sh scripts/sync-routines.sh ship-pr/scripts/post-merge-cleanup.sh lib/ludics/postmergecleanup/*"
+  "prompt-checks-fixtures:lib/ludics/tests/test_checkprompts_cli_checks.py:*.md lib/ludics/tests/test_checkprompts_cli_checks.py lib/ludics/tests/checkprompts_cli_harness.py lib/ludics/tests/__init__.py $CHECKER issue-wave/scripts/fleet-worker.sh scripts/sync-routines.sh ship-pr/scripts/post-merge-cleanup.sh lib/ludics/postmergecleanup/*"
   "routines-fixtures:scripts/test-sync-routines.sh:routines/*.md scripts/test-sync-routines.sh scripts/sync-routines.sh $CHECKER"
   'reporters:scripts/test-workflow-reporters.py:'
   'nudge-fixtures:ship-pr/hooks/test-ship-pr-nudge.py:'

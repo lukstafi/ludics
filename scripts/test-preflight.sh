@@ -1202,6 +1202,8 @@ if gtree guards_clean && grep -q -- '^  --base [^ ]* --regenerable ' "$T/ship-pr
   printf '# edited\n' >>"$T/lib/ludics/checkprompts/tree.py"
   expect "a change to the checker's code runs the prompt guard, though no Markdown changed" \
     0 'ran-prompt-fixtures' -- "$PF" --root "$T" --guards changed --base main syntax
+  expect "...and its split companion prompt guard" \
+    0 'ran-prompt-checks-fixtures' -- "$PF" --root "$T" --guards changed --base main syntax
   expect "...and the routines guard, whose suite runs the same checker" \
     0 'ran-routines-fixtures' -- "$PF" --root "$T" --guards changed --base main syntax
   git -C "$T" checkout -q -- lib/ludics/checkprompts/tree.py
@@ -1210,6 +1212,8 @@ if gtree guards_clean && grep -q -- '^  --base [^ ]* --regenerable ' "$T/ship-pr
     0 'ran-routines-fixtures' -- "$PF" --root "$T" --guards changed --base main syntax
   expect "...and the prompt guard, whose suite reads its LOCAL_ROUTINES" \
     0 'ran-prompt-fixtures' -- "$PF" --root "$T" --guards changed --base main syntax
+  expect "...and its split companion prompt guard" \
+    0 'ran-prompt-checks-fixtures' -- "$PF" --root "$T" --guards changed --base main syntax
   git -C "$T" checkout -q -- scripts/sync-routines.sh
   expect "...and with both reverted, neither runs" \
     0 'routines-fixtures: not run' -- "$PF" --root "$T" --guards changed --base main syntax
@@ -1293,7 +1297,7 @@ if gtree guards_scope; then
     expect "--guards all runs every guard, the Python ones under python3" \
       0 'ran-reporters' -- "$PF" --root "$T" --guards all syntax
     expect "...the last of them included" 0 'ran-python-shards' -- "$PF" --root "$T" --guards all syntax
-    expect "...and each one is a step of the summary" 0 '8 passed, 0 failed' -- "$PF" --root "$T" --guards all syntax
+    expect "...and each one is a step of the summary" 0 '9 passed, 0 failed' -- "$PF" --root "$T" --guards all syntax
   else
     ok "SKIP: no python3, so the --guards all controls do not run here (CI runs them)"
   fi

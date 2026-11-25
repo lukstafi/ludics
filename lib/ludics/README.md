@@ -250,6 +250,7 @@ cli.py proc.py
     ship-pr/scripts/test-pr-review-*.sh
     ship-pr/scripts/test-post-merge-cleanup.sh
     lib/ludics/tests/test_checkprompts_cli.py
+    lib/ludics/tests/test_checkprompts_cli_checks.py
     lib/ludics/tests/test_peerplan.py
     scripts/test-py.sh
 
@@ -278,6 +279,7 @@ checkprompts/drift.py checkprompts/frontmatter.py checkprompts/links.py checkpro
 checkprompts/roster.py checkprompts/slots.py checkprompts/suitemap.py checkprompts/tree.py
 checkprompts/verdicts.py
     lib/ludics/tests/test_checkprompts_cli.py
+    lib/ludics/tests/test_checkprompts_cli_checks.py
 
 fleetworker/__main__.py fleetworker/config.py fleetworker/identity.py fleetworker/transport.py
     issue-wave/scripts/test-fleet-worker.sh
@@ -455,6 +457,7 @@ fleetworker/wave.py fleetworker/wavebrief.py fleetworker/waveprep.py fleetworker
     issue-wave/scripts/test-fleet-worker.sh "wave kit"
     lib/ludics/tests/test_fleetworker_wave.py
     lib/ludics/tests/test_checkprompts_cli.py
+    lib/ludics/tests/test_checkprompts_cli_checks.py
 
 fleetworker/waveab.py
     issue-wave/scripts/test-fleet-worker.sh "wave kit"
@@ -777,8 +780,9 @@ Evidence is in `wave-20261119-ludics/scratch/t1245/runs/negative.log`.
 Python unit sharding (#1164): `scripts/run-python-tests.py` partitions sorted `lib/`
 `test_*.py` module paths at `PYTHON_TEST_CUTS`. CI passes job-index/job-total, so losing
 one matrix row refuses against the cut count; new modules enter a range automatically.
-`scripts/test-python-shards.py` pins the workflow's shard rows, cut count and complete
-module coverage. Its module-path boundary is stated in the checker header. Pyright runs
+`scripts/test-python-shards.py` pins the workflow's shard rows, cut count, complete
+module coverage, and >= 30 s headroom at 1.4x slow-runner scale under `LUDICS_TEST_WATCHDOG`
+(#1336). Its module-path boundary is stated in the checker header. Pyright runs
 in one independent job; the checker is registered among preflight's guards, with triggers
 for the checker, runner, workflow and package paths.
 The tmux setup is shared by fleet jobs through `.github/actions/setup-tmux`, retaining
@@ -791,12 +795,13 @@ npx --yes pyright@1.1.414 --pythonplatform Darwin                 # (CI runs bot
 scripts/py -m unittest discover -s lib -t lib -p 'test_*.py'     # the package's unit tests
 scripts/test-py.sh                                                # the wrapper
 ship-pr/scripts/test-pr-review-<suite>.sh                         # the conformance suites
-scripts/py -m unittest ludics.tests.test_checkprompts_cli         # ...and the ported ones
+scripts/py -m unittest ludics.tests.test_checkprompts_cli         # ...and the ported ones (part 1)
+scripts/py -m unittest ludics.tests.test_checkprompts_cli_checks  # ...and part 2 (links, readings, templates)
 ```
 
 CI runs pyright in the `python` job and the unit tests in the `python-unit` matrix of `.github/workflows/skill-scripts.yml`,
 and the shell suites where they always ran. A ported conformance suite runs where its shell suite
-did as well, named as a module: `test_checkprompts_cli` in the small-guards job, whatever the diff,
+did as well, named as a module: `test_checkprompts_cli` and `test_checkprompts_cli_checks` in the small-guards job, whatever the diff,
 and in macos-weekly.yml's repo-guards job. `scripts/fleet-peers.py` is not behind `scripts/py`
 yet: its callers and its tests run it with `python3` and by path.
 

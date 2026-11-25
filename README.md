@@ -514,6 +514,7 @@ scripts/test-wake-lab.sh
 scripts/test-wake-lab-linux.sh
 scripts/py -m unittest -v ludics.tests.test_fleetworker_winwitness_staging.StagedScripts.test_staging_line_endings_on_the_first_checkout
 scripts/py -m unittest ludics.tests.test_checkprompts_cli
+scripts/py -m unittest ludics.tests.test_checkprompts_cli_checks
 scripts/test-check-jq-shapes.sh
 scripts/test-check-scratch-dirs.sh
 scripts/test-check-parse-guards.sh
@@ -640,7 +641,9 @@ using a monotonic clock. A module's final class/module teardown is counted in th
 line, and the last module's in none. Imports and `load_tests` are excluded. All modules still
 load before any tests run, with one shared result and the same failure exit. The fake-clock
 case in `test-python-shards.py` pins loading order, class fixtures, continued execution after an
-import error, and elapsed lines.
+import error, and elapsed lines. `run-python-tests.py --check-headroom` (and `test-python-shards.py`)
+also scales each shard's recorded Ubuntu baseline total by `1.4` and refuses any plan that leaves
+less than 30 s headroom under `LUDICS_TEST_WATCHDOG` (#1336).
 
 The GitHub Actions workflow in `.github/workflows/skill-scripts.yml` runs the shell suites and
 shared Python fixtures on Ubuntu, on every pull request and every push to `main`. No job there
@@ -764,7 +767,9 @@ brief template `wave prep` renders, `issue-wave/templates/`, with this repositor
 every placeholder is a NAME prep gives that part; every `~/.claude/skills/`, `~/ludics/` or
 tree-rooted path in a backticked span exists, as does the heading a `.md` path followed by
 `, *Heading*` names; and no line holds a step a PR retired from SKILL.md's *The brief* (the list
-and the boundary are in its `brieftemplate` module's header). Its suite, `lib/ludics/tests/test_checkprompts_cli.py`, runs it
+and the boundary are in its `brieftemplate` module's header). Its CLI suite — split across
+`lib/ludics/tests/test_checkprompts_cli.py` and `lib/ludics/tests/test_checkprompts_cli_checks.py`
+(where the link, verdict, suite-map, brief-template, and live-checkout probes live) — runs it
 against scratch trees, one per defect (native Codex own-part placeholders without planning
 parts among them), with the well-formed tree as the control, and ends by
 running it on this checkout.
