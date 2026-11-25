@@ -27,21 +27,26 @@ WHAT IT READS (fail-closed allowlist):
   issue & diff  ONLY for tasks chosen into a pair: ``gh issue view <N> --repo <irepo> --json
                 title,body,comments`` and ``gh pr diff <pr> --repo <repo>``, all through
                 ``ludics.prreview.core.GhSession.retry("read", ...)``. Only issue comments whose
-                ``createdAt`` is strictly earlier than the task's ``launched_at`` (falling back to
-                PR ``createdAt``) are included, keeping pre-launch decisions while excluding the
-                worker's own reconciled plan and landing comments.
+                ``createdAt`` is strictly earlier than the task's parseable ``launched_at`` are
+                included, keeping pre-launch decisions while excluding the worker's own reconciled
+                plan and landing comments (when ``launched_at`` is absent or unparseable, issue
+                comments are omitted with a note rather than falling back to PR ``createdAt``).
 
 WHAT IT WRITES, AND THE KEY-SEPARATION BOUNDARY:
   ``--out <dir>``   ``manifest.json`` (blinded index: ``version``, ``pairs`` with ``pair``,
                     ``repository``, ``group``, ``dir`` only) and ``<pair_id>/{A-task.md, A.diff,
-                    B-task.md, B.diff}``. No wave name, task ID, arm label, PR number, issue
-                    number (odd/even parity picks the arm under ``split: issue-number``), branch
-                    name, PR title, PR body, commit message, or seed appears anywhere under
-                    ``--out`` or on stdout.
-  ``--key <file>``  written atomically apart from ``--out``. Refused (exit 2) before any network
-                    or board read whenever ``realpath(--key)`` lies inside or equals
-                    ``realpath(--out)``. Refused (exit 1) if ``--key`` already exists or ``--out``
-                    already exists as a file, symlink, or non-empty directory.
+                    B-task.md, B.diff}`` (diffs written with ``surrogateescape`` and ``newline=""``
+                    to preserve non-UTF-8 bytes losslessly). No wave name, task ID, arm label, PR
+                    number, issue number (odd/even parity picks the arm under ``split:
+                    issue-number``), branch name, PR title, PR body, commit message, or seed
+                    appears anywhere under ``--out`` or on stdout.
+  ``--key <file>``  published exclusively (via temp file + hard link, never replacing an existing
+                    key) apart from ``--out``, while pairs are staged and cleaned up on any write
+                    failure. Refused (exit 2) before any network or board read — and re-checked via
+                    filesystem identity (``samefile``) before publication — whenever ``--key`` lies
+                    inside or equals ``--out`` (including through symlinks or case-insensitive
+                    spellings). Refused (exit 1) if ``--key`` already exists or ``--out`` already
+                    exists as a file, symlink, or non-empty directory.
 
 AREA MATCHING (project-neutral, before reading any diff):
   - Each changed file is classified into ``src`` vs non-``src`` (``*.md``, ``docs/``,
@@ -83,13 +88,17 @@ SCRUBBING BOUNDARY (closed allowlist of forms):
        ``Anthropic``, ``Antigravity``, ``Claude``, ``Codex``, ``Gemini``, ``GPT``, ``Opus``,
        ``Sonnet``, ``Haiku``, ``Sol``, ``Astra``, ``Neon``, ``Fable``, ``agy``, case-insensitive,
        boundary-guarded -> ``[agent]``).
-    7. Adjacent ``[agent]`` tokens separated only by spaces, tabs, ``/``, ``:``, or ``-`` collapse
+    7. Selected-task self-references in task prose: the task's own ``<issue_repo>#<N>`` / ``#<N>``
+       (``[this-issue]``), its own ``<repo>#<pr>`` / ``#<pr>`` (``[this-pr]``), its wave ID
+       (``[wave]``), and its task ID (``[task]``). Unrelated cross-references stay intact.
+    8. Adjacent ``[agent]`` tokens separated only by spaces, tabs, ``/``, ``:``, or ``-`` collapse
        to a single ``[agent]`` so multi-word and single-word names leave the same shape.
   - **What is deliberately NOT scrubbed**: ``A.diff`` and ``B.diff`` (unified diffs from
     ``gh pr diff`` carry no commit messages, branch names, or PR bodies, whereas scrubbing code
-    hunks corrupts identifiers such as ``sol`` or ``claude`` in real code and diff headers); prose
-    style; cross-referenced issue numbers inside an issue body; names outside the closed list and
-    dynamic terms (pass ``--scrub <word>`` for one).
+    hunks corrupts identifiers such as ``sol`` or ``claude`` in real code and diff headers, and
+    withholding diffs that cite their own issue number in docstrings/comments would drop most
+    ludics PRs); prose style; unrelated cross-referenced issue numbers inside an issue body; names
+    outside the closed list and dynamic terms (pass ``--scrub <word>`` for one).
 
 Exit: 0 exported cleanly; 1 refused (missing/refused board, existing output/key, invalid JSON
 input, <2 eligible arms, 0 matched pairs, or all selected pairs failed to fetch; nothing written);
@@ -103,6 +112,8 @@ import os
 import random
 import re
 import secrets
+import shutil
+import tempfile
 from dataclasses import dataclass
 from fractions import Fraction
 from typing import Any, assert_never, cast
@@ -113,7 +124,6 @@ from ludics.fleetworker.config import Config
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.transport import err
 from ludics.fleetworker.wave import USAGE as WAVE_USAGE, Wave
-from ludics.fleetworker.wavebrief import write_atomically
 from ludics.prreview import core as prcore
 
 VERSION = 1
@@ -343,15 +353,80 @@ def parse_args(args: list[str]) -> Options:
     )
 
 
-def validate_targets(out_dir: str, key_path: str) -> int | None:
-    """Enforce key separation (exit 2) and non-overwrite (exit 1) before any read."""
+def _deepest_existing_ancestor(path: str) -> tuple[str, tuple[str, ...]]:
+    """Split ``path`` into (deepest existing ancestor, remaining non-existent path components)."""
+    cur = os.path.realpath(path)
+    tail: list[str] = []
+    while not os.path.exists(cur):
+        parent, name = os.path.split(cur)
+        if parent == cur:
+            break
+        if name:
+            tail.append(name)
+        cur = parent
+    return os.path.realpath(cur), tuple(reversed(tail))
+
+
+def dir_is_case_insensitive(existing_dir: str) -> bool:
+    """Probe whether ``existing_dir`` lies on a case-insensitive filesystem."""
+    cur = existing_dir
+    while True:
+        parent, name = os.path.split(cur)
+        if name and name.swapcase() != name:
+            swapped = os.path.join(parent, name.swapcase())
+            try:
+                if os.path.exists(swapped) and os.path.samefile(cur, swapped):
+                    return True
+                return False
+            except OSError:
+                return False
+        if parent == cur:
+            return False
+        cur = parent
+
+
+def _key_is_inside_out(out_dir: str, key_path: str) -> bool:
     out_real = os.path.realpath(out_dir)
     key_real = os.path.realpath(key_path)
     try:
-        inside = os.path.commonpath([out_real, key_real]) == out_real
+        if os.path.commonpath([out_real, key_real]) == out_real:
+            return True
     except ValueError:
-        inside = False
-    if inside:
+        pass
+
+    # If out_dir already exists, check filesystem identity against every existing ancestor of key_path.
+    if os.path.exists(out_real):
+        anc = key_real
+        while True:
+            if os.path.exists(anc):
+                try:
+                    if os.path.samefile(out_real, anc):
+                        return True
+                except OSError:
+                    pass
+            parent = os.path.dirname(anc)
+            if parent == anc:
+                break
+            anc = parent
+
+    # Handle not-yet-created path segments on case-insensitive volumes (e.g. macOS APFS).
+    out_anc, out_tail = _deepest_existing_ancestor(out_dir)
+    key_anc, key_tail = _deepest_existing_ancestor(key_path)
+    try:
+        same_anc = os.path.samefile(out_anc, key_anc)
+    except OSError:
+        same_anc = False
+    if same_anc and dir_is_case_insensitive(out_anc):
+        out_cf = tuple(p.casefold() for p in out_tail)
+        key_cf = tuple(p.casefold() for p in key_tail)
+        if len(key_cf) >= len(out_cf) and key_cf[: len(out_cf)] == out_cf:
+            return True
+    return False
+
+
+def validate_targets(out_dir: str, key_path: str) -> int | None:
+    """Enforce key separation (exit 2) and non-overwrite (exit 1) before any read."""
+    if _key_is_inside_out(out_dir, key_path):
         die(f"wave ab-pairs: --key ({key_path}) must live outside --out ({out_dir})")
     if os.path.isdir(key_path):
         die(f"wave ab-pairs: --key ({key_path}) is a directory")
@@ -489,20 +564,15 @@ def select_candidates(
             continue
 
         issue_ref = waveab.text_or_none(td.get("issue"))
-        issue_num_raw = td.get("issue_number")
         if issue_ref and waveab.ISSUE_REF.fullmatch(issue_ref):
             irepo, inum_s = issue_ref.rsplit("#", 1)
             inum = int(inum_s)
-        elif isinstance(issue_num_raw, int) and not isinstance(issue_num_raw, bool) and issue_num_raw > 0:
-            # Older v1 wave ab --json document without the additive "issue" field.
-            irepo = repo
-            inum = issue_num_raw
-            issue_ref = f"{irepo}#{inum}"
-            notes.append(
-                f"{wave_name}/{task_name}: input JSON lacks 'issue' ref; assumed issue repo {irepo}#{inum}"
-            )
         else:
-            skipped.append({"wave": wave_name, "task": task_name, "why": "missing valid issue reference"})
+            skipped.append({
+                "wave": wave_name,
+                "task": task_name,
+                "why": "missing full issue reference (<owner>/<repo>#<N>); regenerate wave ab --json",
+            })
             continue
 
         eligible.append(Candidate(
@@ -909,6 +979,25 @@ def scrub_text(text: str, dynamic_terms: tuple[str, ...] = ()) -> tuple[str, int
     return text, hits
 
 
+def scrub_self_references(text: str, cand: Candidate) -> tuple[str, int]:
+    """Redact references to this task's own issue/PR/wave/task IDs from task prose."""
+    hits = 0
+    replacements: list[tuple[re.Pattern[str], str]] = [
+        (re.compile(rf"(?i){_NON_WORD_LEFT}{re.escape(cand.issue_ref)}(?![0-9])"), "[this-issue]"),
+        (re.compile(rf"(?i){_NON_WORD_LEFT}{re.escape(f'{cand.repository}#{cand.pr}')}(?![0-9])"), "[this-pr]"),
+        (re.compile(rf"(?<![A-Za-z0-9_/])#{cand.issue_number}(?![0-9])"), "[this-issue]"),
+        (re.compile(rf"(?<![A-Za-z0-9_/])#{cand.pr}(?![0-9])"), "[this-pr]"),
+    ]
+    if cand.wave and cand.wave != "<unknown>":
+        replacements.append((re.compile(rf"{_NON_WORD_LEFT}{re.escape(cand.wave)}{_NON_WORD_RIGHT}"), "[wave]"))
+    if cand.task and cand.task != "<unnamed>" and len(cand.task) >= 2:
+        replacements.append((re.compile(rf"{_NON_WORD_LEFT}{re.escape(cand.task)}{_NON_WORD_RIGHT}"), "[task]"))
+    for pat, repl in replacements:
+        text, n = pat.subn(repl, text)
+        hits += n
+    return text, hits
+
+
 # --- issue & diff fetching for selected pairs -----------------------------------------------------
 
 def fetch_side(
@@ -960,13 +1049,15 @@ def fetch_side(
     title = title_raw.strip() if isinstance(title_raw, str) else ""
     body = body_raw if isinstance(body_raw, str) else ""
 
-    cutoff = waveab.parse_iso(cand.launched_at) or waveab.parse_iso(meta.created_at)
+    # Only include comments strictly before launched_at; never fall back to PR createdAt, which is
+    # after the worker's own pre-PR reconciled plan comment.
+    cutoff = waveab.parse_iso(cand.launched_at)
     comments_raw: Any = iss.get("comments")
     comments_list = [cast(dict[str, Any], c) for c in cast(list[Any], comments_raw) if isinstance(c, dict)] if isinstance(comments_raw, list) else []
     included_bodies: list[str] = []
     excluded_count = 0
     if cutoff is None and comments_list:
-        notes.append(f"{cand.wave}/{cand.task}: no parseable launch or PR timestamp; {len(comments_list)} issue comment(s) omitted")
+        notes.append(f"{cand.wave}/{cand.task}: no parseable launched_at; {len(comments_list)} issue comment(s) omitted")
         excluded_count = len(comments_list)
     else:
         for cm in comments_list:
@@ -982,13 +1073,14 @@ def fetch_side(
         parts.append(f"\n---\n## Issue comment (before work started)\n\n{cm_body}\n")
     raw_task = "".join(parts)
     scrubbed_task, hits = scrub_text(raw_task, dynamic_terms)
+    scrubbed_task, self_hits = scrub_self_references(scrubbed_task, cand)
 
     return SidePayload(
         candidate=cand,
         pr_meta=meta,
         task_md=scrubbed_task,
         diff_text=diff_text,
-        scrub_hits=hits,
+        scrub_hits=hits + self_hits,
         comments_included=len(included_bodies),
         comments_excluded=excluded_count,
     )
@@ -1067,6 +1159,12 @@ def cmd_ab_pairs(cfg: Config, args: list[str]) -> int:
         if meta is None:
             skipped.append({"wave": c.wave, "task": c.task, "why": "PR metadata/files unread"})
             continue
+        if meta.state != "MERGED":
+            notes.append(
+                f"{c.wave}/{c.task}: GitHub {c.repository}#{c.pr} state is {meta.state or 'unknown'}, not MERGED; excluded"
+            )
+            skipped.append({"wave": c.wave, "task": c.task, "why": f"GitHub PR state is {meta.state or 'unknown'}, not MERGED"})
+            continue
         if c.merge is not None and meta.merge_commit is not None and not (
             len(c.merge) >= 7 and waveab.same_head(c.merge.lower(), meta.merge_commit.lower())
         ):
@@ -1108,78 +1206,152 @@ def cmd_ab_pairs(cfg: Config, args: list[str]) -> int:
     order, arm1_is_a = assign_sides(len(ready_pairs), seed)
     width = max(2, len(str(len(ready_pairs))))
 
-    # Re-check targets immediately before writing to prevent races.
+    # Re-check targets immediately before staging and publishing.
     recheck = validate_targets(opts.out_dir, opts.key_path)
     if recheck is not None:
         return recheck
 
-    os.makedirs(opts.out_dir, exist_ok=True)
-    manifest_pairs: list[dict[str, Any]] = []
-    key_pairs: list[dict[str, Any]] = []
-    summary_lines: list[str] = []
+    out_abs = os.path.abspath(opts.out_dir)
+    out_parent = os.path.dirname(out_abs) or "."
+    key_abs = os.path.abspath(opts.key_path)
+    key_parent = os.path.dirname(key_abs) or "."
+    out_existed = os.path.isdir(out_abs)
 
-    for out_idx, (src_idx, first_is_a) in enumerate(zip(order, arm1_is_a), 1):
-        pair, s1, s2 = ready_pairs[src_idx]
-        pid = f"P{out_idx:0{width}d}"
-        side_a, side_b = (s1, s2) if first_is_a else (s2, s1)
-        pdir = os.path.join(opts.out_dir, pid)
-        os.makedirs(pdir, exist_ok=False)
-        for fname, content in (
-            ("A-task.md", side_a.task_md),
-            ("A.diff", side_a.diff_text),
-            ("B-task.md", side_b.task_md),
-            ("B.diff", side_b.diff_text),
-        ):
-            with open(os.path.join(pdir, fname), "w", encoding="utf-8") as f:
-                f.write(content)
-
-        manifest_pairs.append({
-            "pair": pid,
-            "repository": pair.repository,
-            "group": pair.group,
-            "dir": pid,
-        })
-        key_pairs.append({
-            "pair": pid,
-            "repository": pair.repository,
-            "group": pair.group,
-            "area_score": round(float(pair.area_score), 4),
-            "file_score": round(float(pair.file_score), 4),
-            "dir_score": round(float(pair.dir_score), 4),
-            "shared_files": list(pair.shared_files),
-            "shared_dirs": list(pair.shared_dirs),
-            "A": _side_key_record(side_a),
-            "B": _side_key_record(side_b),
-        })
-        summary_lines.append(
-            f"  {pid}  {pair.group}  {pair.repository}  area={float(pair.area_score):.3f}"
-            f" (file={float(pair.file_score):.3f}, dir={float(pair.dir_score):.3f})"
-        )
-
-    manifest_doc = {"version": VERSION, "pairs": manifest_pairs}
-    write_atomically(os.path.join(opts.out_dir, "manifest.json"), json.dumps(manifest_doc, ensure_ascii=False, indent=2) + "\n")
-
-    key_parent = os.path.dirname(os.path.abspath(opts.key_path))
-    if key_parent:
+    stage_dir: str | None = None
+    tmp_key: str | None = None
+    key_published = False
+    try:
+        os.makedirs(out_parent, exist_ok=True)
         os.makedirs(key_parent, exist_ok=True)
-    key_doc = {
-        "version": VERSION,
-        "seed": seed,
-        "arms": [arm1_label, arm2_label],
-        "scrub_words": list(dynamic_terms),
-        "out_dir": os.path.realpath(opts.out_dir),
-        "readings": readings,
-        "pairs": key_pairs,
-        "unpaired": unpaired,
-        "skipped": skipped,
-        "notes": notes,
-        "errors": errors,
-    }
-    write_atomically(opts.key_path, json.dumps(key_doc, ensure_ascii=False, indent=2) + "\n")
+        # Re-verify key separation now that both parents exist on the real filesystem.
+        if _key_is_inside_out(opts.out_dir, opts.key_path):
+            die(f"wave ab-pairs: --key ({opts.key_path}) must live outside --out ({opts.out_dir})")
 
+        stage_dir = tempfile.mkdtemp(prefix=".wave-ab-pairs-stage.", dir=out_parent)
+        manifest_pairs: list[dict[str, Any]] = []
+        key_pairs: list[dict[str, Any]] = []
+        summary_lines: list[str] = []
+
+        for out_idx, (src_idx, first_is_a) in enumerate(zip(order, arm1_is_a), 1):
+            pair, s1, s2 = ready_pairs[src_idx]
+            pid = f"P{out_idx:0{width}d}"
+            side_a, side_b = (s1, s2) if first_is_a else (s2, s1)
+            pdir = os.path.join(stage_dir, pid)
+            os.makedirs(pdir, exist_ok=False)
+            for fname, content in (("A-task.md", side_a.task_md), ("B-task.md", side_b.task_md)):
+                with open(os.path.join(pdir, fname), "w", encoding="utf-8", errors="surrogateescape") as f:
+                    f.write(content)
+            for fname, content in (("A.diff", side_a.diff_text), ("B.diff", side_b.diff_text)):
+                with open(os.path.join(pdir, fname), "w", encoding="utf-8", errors="surrogateescape", newline="") as f:
+                    f.write(content)
+
+            manifest_pairs.append({
+                "pair": pid,
+                "repository": pair.repository,
+                "group": pair.group,
+                "dir": pid,
+            })
+            key_pairs.append({
+                "pair": pid,
+                "repository": pair.repository,
+                "group": pair.group,
+                "area_score": round(float(pair.area_score), 4),
+                "file_score": round(float(pair.file_score), 4),
+                "dir_score": round(float(pair.dir_score), 4),
+                "shared_files": list(pair.shared_files),
+                "shared_dirs": list(pair.shared_dirs),
+                "A": _side_key_record(side_a),
+                "B": _side_key_record(side_b),
+            })
+            summary_lines.append(
+                f"  {pid}  {pair.group}  {pair.repository}  area={float(pair.area_score):.3f}"
+                f" (file={float(pair.file_score):.3f}, dir={float(pair.dir_score):.3f})"
+            )
+
+        manifest_doc = {"version": VERSION, "pairs": manifest_pairs}
+        with open(os.path.join(stage_dir, "manifest.json"), "w", encoding="utf-8") as f:
+            f.write(json.dumps(manifest_doc, ensure_ascii=False, indent=2) + "\n")
+
+        # Publish the key exclusively (no-replace hard link) BEFORE exposing --out, so an
+        # unwritable key path or concurrent exporter never leaves an unkeyed --out behind.
+        fd, tmp_key = tempfile.mkstemp(prefix=".wave-ab-pairs-key.", dir=key_parent)
+        try:
+            key_doc = {
+                "version": VERSION,
+                "seed": seed,
+                "arms": [arm1_label, arm2_label],
+                "scrub_words": list(dynamic_terms),
+                "out_dir": os.path.realpath(out_abs),
+                "readings": readings,
+                "pairs": key_pairs,
+                "unpaired": unpaired,
+                "skipped": skipped,
+                "notes": notes,
+                "errors": errors,
+            }
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(json.dumps(key_doc, ensure_ascii=False, indent=2) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+        except Exception:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            raise
+
+        try:
+            os.link(tmp_key, key_abs)
+            key_published = True
+        except FileExistsError:
+            err(f"WAVE AB-PAIRS REFUSED: key path already exists: {opts.key_path}")
+            return 1
+
+        # Publish staged pairs into --out.
+        if out_existed:
+            if os.listdir(out_abs):
+                raise FileExistsError(f"output directory is not empty: {opts.out_dir}")
+            for entry in sorted(os.listdir(stage_dir)):
+                os.rename(os.path.join(stage_dir, entry), os.path.join(out_abs, entry))
+            os.rmdir(stage_dir)
+            stage_dir = None
+        else:
+            os.rename(stage_dir, out_abs)
+            stage_dir = None
+
+        # Final filesystem-identity check in case --out was created with an alias of key_parent.
+        if _key_is_inside_out(out_abs, key_abs):
+            shutil.rmtree(out_abs, ignore_errors=True)
+            die(f"wave ab-pairs: --key ({opts.key_path}) must live outside --out ({opts.out_dir})")
+    except cli.Exit:
+        if key_published:
+            try:
+                os.unlink(key_abs)
+            except OSError:
+                pass
+        raise
+    except OSError as exc:
+        if key_published:
+            try:
+                os.unlink(key_abs)
+            except OSError:
+                pass
+        err(f"WAVE AB-PAIRS REFUSED: failed to write export ({exc})")
+        return 1
+    finally:
+        if tmp_key is not None:
+            try:
+                os.unlink(tmp_key)
+            except OSError:
+                pass
+        if stage_dir is not None:
+            shutil.rmtree(stage_dir, ignore_errors=True)
+
+    # Never print the seed, arm labels, PR numbers, or issue numbers on stdout so the terminal log
+    # cannot unblind the comparison; the seed is recorded in key.json only.
     cli.say(
         f"WAVE AB-PAIRS: exported {len(key_pairs)} pair(s) to {opts.out_dir}"
-        f" (key: {opts.key_path}, seed: {seed}, unpaired: {len(unpaired)}, skipped: {len(skipped)})"
+        f" (key: {opts.key_path}, unpaired: {len(unpaired)}, skipped: {len(skipped)})"
     )
     for line in summary_lines:
         cli.say(line)

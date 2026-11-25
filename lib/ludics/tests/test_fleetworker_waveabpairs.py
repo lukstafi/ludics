@@ -5,6 +5,7 @@ separation, ``--from-json`` consumption, GraphQL/REST fallback, and error handli
 ``boardstore`` boards under a scratch anchor and faked ``gh`` responses.
 """
 
+import base64
 import contextlib
 import io
 import json
@@ -76,9 +77,14 @@ if argv[:2] == ["issue", "view"]:
     sys.exit(1)
 
 if argv[:2] == ["pr", "diff"]:
+    import base64
     num = argv[2]
     repo = argv[argv.index("--repo") + 1]
     key = f"{repo}#{num}"
+    diffs_b64 = fx.get("diffs_b64", {})
+    if key in diffs_b64:
+        sys.stdout.buffer.write(base64.b64decode(diffs_b64[key]))
+        sys.exit(0)
     diffs = fx.get("diffs", {})
     if key in diffs:
         sys.stdout.write(diffs[key])
@@ -403,8 +409,8 @@ class TestFixtureWaveExport(BaseWaveAbPairs):
 
         self.assertEqual(rc, 0, stderr)
         self.assertIn("WAVE AB-PAIRS: exported 2 pair(s)", stdout)
-        # Stdout must not unblind.
-        for secret in ("gpt-6.2-sol", "gemini-4-neon-high", "201", "202", "203", "204", "t101", "t102"):
+        # Stdout must not unblind (no seed, arm names, PR numbers, issue numbers, or task IDs).
+        for secret in ("987654", "seed:", "gpt-6.2-sol", "gemini-4-neon-high", "201", "202", "203", "204", "t101", "t102"):
             self.assertNotIn(secret, stdout)
 
         with open(os.path.join(out_dir, "manifest.json"), encoding="utf-8") as f:
@@ -501,29 +507,23 @@ class TestFixtureWaveExport(BaseWaveAbPairs):
         issues_used = {p["A"]["issue"] for p in key["pairs"]} | {p["B"]["issue"] for p in key["pairs"]}
         self.assertEqual(issues_used, {"upstream/proj#101", "upstream/proj#102", "upstream/proj#103", "upstream/proj#104"})
 
-        # Legacy v1 wave ab --json lacking the additive "issue" field falls back to repository with a note.
+        # Legacy v1 wave ab --json lacking the additive "issue" field skips those tasks rather than
+        # guessing the issue repository (which is wrong on cross-repository waves).
         legacy_doc = json.loads(ab_json_text)
         for t in legacy_doc["tasks"]:
             t.pop("issue", None)
         legacy_path = os.path.join(self.root, "legacy.json")
         with open(legacy_path, "w", encoding="utf-8") as f:
             json.dump(legacy_doc, f)
-        legacy_fx = {
-            **fixture,
-            "issues": {k.replace("upstream/proj#", "fork/proj#"): v for k, v in fixture["issues"].items()},
-        }
         out2 = os.path.join(self.root, "legacy", "pairs")
         key2 = os.path.join(self.root, "legacy", "key.json")
-        with FakeTool("gh") as gh:
-            _install_gh_fake(gh, legacy_fx)
-            rc, _, stderr = self.run_cmd(
-                ["ab-pairs", "--from-json", legacy_path, "--out", out2, "--key", key2, "--seed", "7"],
-                gh_dir=gh.dir,
-            )
-        self.assertEqual(rc, 0, stderr)
-        with open(key2, encoding="utf-8") as f:
-            kd2 = json.load(f)
-        self.assertTrue(any("input JSON lacks 'issue' ref" in n for n in kd2["notes"]))
+        rc, _, stderr = self.run_cmd(
+            ["ab-pairs", "--from-json", legacy_path, "--out", out2, "--key", key2, "--seed", "7"],
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("need two eligible complete arms", stderr)
+        self.assertFalse(os.path.exists(out2))
+        self.assertFalse(os.path.exists(key2))
 
 
 class TestRefusalsAndEdgeCases(BaseWaveAbPairs):
@@ -558,6 +558,94 @@ class TestRefusalsAndEdgeCases(BaseWaveAbPairs):
         rc, _, stderr = self.run_cmd(["ab-pairs", wpath, "--out", os.path.join(self.root, "fresh"), "--key", existing_key])
         self.assertEqual(rc, 1)
         self.assertIn("key path already exists", stderr)
+
+        # Case-insensitive filesystem key-separation refusal (when supported by the host volume).
+        if waveabpairs.dir_is_case_insensitive(self.root):
+            rc, _, stderr = self.run_cmd([
+                "ab-pairs", wpath,
+                "--out", os.path.join(self.root, "casepairs"),
+                "--key", os.path.join(self.root, "CasePairs", "key.json"),
+            ])
+            self.assertEqual(rc, 2)
+            self.assertIn("must live outside --out", stderr)
+
+    def test_unmerged_pr_missing_launched_at_self_ref_staging_and_non_utf8_diff(self) -> None:
+        wpath = self.make_wave("w-guard")
+        self.write_board("w-guard", [
+            # Valid pair; t1 lacks launched_at -> comments omitted (never falls back to PR createdAt)
+            self.merged_row("t1", 10, 10, SOL_ARM, tier="D2", launched_at=""),
+            self.merged_row("t2", 20, 20, NEON_ARM, tier="D2"),
+            # Board says merged, GitHub says OPEN -> must be excluded
+            self.merged_row("t3", 30, 30, SOL_ARM, tier="D2"),
+        ])
+        raw_non_utf8 = b"diff --git a/pkg/m.py b/pkg/m.py\n+latin1=\xff\r\n"
+        fixture: dict[str, Any] = {
+            "prs": {
+                "fork/proj#10": _pr_files_node(10, [("pkg/m.py", 10, 0)]),
+                "fork/proj#20": _pr_files_node(20, [("pkg/m.py", 10, 0)]),
+                "fork/proj#30": _pr_files_node(30, [("pkg/m.py", 10, 0)], state="OPEN", merge_oid=None),
+            },
+            "issues": {
+                "upstream/proj#10": {
+                    "title": "Fix upstream/proj#10 in w-guard (t1)",
+                    "body": "See #10 and fork/proj#10, unrelated #999 stays.",
+                    "comments": [
+                        {"createdAt": "2026-11-24T09:00:00Z", "body": "OMITTED_WHEN_NO_LAUNCHED_AT"},
+                    ],
+                },
+                "upstream/proj#20": {"title": "Fix sibling", "body": "Ref #20 and #888.", "comments": []},
+            },
+            "diffs": {
+                "fork/proj#10": "diff --git a/pkg/m.py b/pkg/m.py\n+a = 1\n",
+            },
+            "diffs_b64": {
+                "fork/proj#20": base64.b64encode(raw_non_utf8).decode("ascii"),
+            },
+        }
+        # Unwritable key parent (regular file where key parent dir would be) -> exit 1, --out not left behind.
+        blocker = os.path.join(self.root, "not-a-dir")
+        with open(blocker, "w", encoding="utf-8") as f:
+            f.write("file\n")
+        bad_out = os.path.join(self.root, "staged-fail")
+        with FakeTool("gh") as gh:
+            _install_gh_fake(gh, fixture)
+            rc, _, stderr = self.run_cmd(
+                ["ab-pairs", wpath, "--out", bad_out, "--key", os.path.join(blocker, "key.json"), "--seed", "3"],
+                gh_dir=gh.dir,
+            )
+        self.assertEqual(rc, 1)
+        self.assertIn("failed to write export", stderr)
+        self.assertFalse(os.path.exists(bad_out))
+
+        # Good run: OPEN PR skipped, missing launched_at omits comments, self-refs redacted, non-UTF-8 diff preserved.
+        out_dir = os.path.join(self.root, "guard-out")
+        key_path = os.path.join(self.root, "guard-key.json")
+        with FakeTool("gh") as gh:
+            _install_gh_fake(gh, fixture)
+            rc, _, stderr = self.run_cmd(
+                ["ab-pairs", wpath, "--out", out_dir, "--key", key_path, "--seed", "3"],
+                gh_dir=gh.dir,
+            )
+        self.assertEqual(rc, 0, stderr)
+        with open(key_path, encoding="utf-8") as f:
+            kd = json.load(f)
+        self.assertEqual(len(kd["pairs"]), 1)
+        self.assertTrue(any(s["task"] == "t3" and "not MERGED" in s["why"] for s in kd["skipped"]))
+        self.assertTrue(any("no parseable launched_at" in n for n in kd["notes"]))
+        all_tasks = ""
+        diff_blobs: list[bytes] = []
+        for side in ("A", "B"):
+            with open(os.path.join(out_dir, "P01", f"{side}-task.md"), encoding="utf-8") as f:
+                all_tasks += f.read()
+            with open(os.path.join(out_dir, "P01", f"{side}.diff"), "rb") as f:
+                diff_blobs.append(f.read())
+        self.assertNotIn("OMITTED_WHEN_NO_LAUNCHED_AT", all_tasks)
+        self.assertNotIn("upstream/proj#10", all_tasks)
+        self.assertNotIn("w-guard", all_tasks)
+        self.assertIn("[this-issue]", all_tasks)
+        self.assertIn("#999", all_tasks)
+        self.assertIn("#888", all_tasks)
+        self.assertIn(raw_non_utf8, diff_blobs)
 
     def test_arms_group_max_pairs_and_zero_matches(self) -> None:
         wpath = self.make_wave("w-multi")

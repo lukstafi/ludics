@@ -28,7 +28,8 @@ Read `agent_host` balance and ten-per-arm readiness before drawing conclusions f
 
 Export pairs to a directory **separate** from the unblinding key (`wave ab-pairs` refuses any
 `--key` inside `--out`, never overwrites an existing key or non-empty output directory, balances
-A/B sides within ±1 under a recorded seed, and prints no arm labels or PR/issue numbers on stdout):
+A/B sides within ±1 under a recorded seed kept in `key.json` only, and prints no seed, arm labels,
+or PR/issue numbers on stdout):
 
 ```sh
 ~/.claude/skills/issue-wave/scripts/fleet-worker.sh wave ab-pairs \
@@ -55,6 +56,10 @@ The judge prompt template ships at `issue-wave/templates/ab/judge.md` (beside
 inline the diffs into the prompt (large inlined diffs exceed `agy`'s ~191 KB message cut; see
 `lib/ludics/agy.py`).
 
+**Keep `$PAIR_DIR` read-only and separate from judge outputs.** Never write a judge's prompt, log,
+or verdict inside `$RETRO/pairs/$PAIR`; write each judge family's outputs under its own directory
+(`$RETRO/judges/<family>/$PAIR/`) so a later judge cannot read an earlier judge's verdict.
+
 ### GPT (Codex) judge — read-only sandbox
 
 Check `~/.codex/models_cache.json` on the box for the current model ID. Always pass **`< /dev/null`**
@@ -63,60 +68,88 @@ the first judge for ten minutes):
 
 ```sh
 PAIR_DIR="$RETRO/pairs/$PAIR"
+OUT_CODEX="$RETRO/judges/codex/$PAIR"
+mkdir -p "$OUT_CODEX"
+
 ~/.claude/skills/issue-wave/scripts/fleet-worker.sh wave render \
   --set REPO="$REPO" --set CHECKOUT="$CO" --set DIR="$PAIR_DIR" --set PAIR="$PAIR" \
-  --out "$PAIR_DIR/codex-prompt.md" \
+  --out "$OUT_CODEX/prompt.md" \
   ~/ludics/issue-wave/templates/ab/judge.md
 
 codex exec -m gpt-6.2-sol -c model_reasoning_effort=high -s read-only \
-  -C "$CO" --ephemeral -o "$PAIR_DIR/codex-verdict.json" \
-  "$(cat "$PAIR_DIR/codex-prompt.md")" < /dev/null > "$PAIR_DIR/codex.log" 2>&1
+  -C "$CO" --ephemeral -o "$OUT_CODEX/verdict.json" \
+  "$(cat "$OUT_CODEX/prompt.md")" < /dev/null > "$OUT_CODEX/codex.log" 2>&1
 ```
 
 ### Gemini (`agy`) judge — disposable local clone
 
-`agy`'s permission rules cannot hold a headless turn to read-only (`lib/ludics/agy.py`), so run it
-in a disposable local clone of `$CO` with hooks disabled and no `origin` remote — never in the
-served checkout (`~/ludics` or `~/ocannl-staging`). Render `CHECKOUT` pointing at that clone, feed
-the prompt as one `stream-json` user message on stdin, extract the final `result.response` JSON,
-and remove the clone afterward:
+`agy`'s permission rules cannot hold a headless turn to read-only (`lib/ludics/agy.py`), so create
+a disposable local clone through `ludics.agy.clone` (which scrubs Git's repository-selection
+variables before every git command, disables hooks, and removes `origin` — never run `agy` in the
+served checkout `~/ludics` or `~/ocannl-staging`). Stop immediately if clone setup fails, render
+`CHECKOUT` pointing at that clone, feed the prompt as one `stream-json` user message on stdin,
+extract the final `result.response` JSON, and remove the clone afterward:
 
 ```sh
+PAIR_DIR="$RETRO/pairs/$PAIR"
+OUT_GEMINI="$RETRO/judges/gemini/$PAIR"
+mkdir -p "$OUT_GEMINI"
 CLONE=$(mktemp -d "${TMPDIR:-/tmp}/ab-judge-clone.XXXXXX")
-git -c core.hooksPath=/dev/null clone -q --no-checkout --no-hardlinks "$CO" "$CLONE"
-git -C "$CLONE" -c core.hooksPath=/dev/null -c advice.detachedHead=false checkout -q --detach "origin/$MAIN"
-git -C "$CLONE" remote remove origin
+rmdir "$CLONE"
 
+~/ludics/scripts/py -c '
+import sys
+from ludics import agy
+why = agy.clone(sys.argv[1], sys.argv[2], sys.argv[3], "ab-judge")
+if why:
+    sys.exit(why)
+' "$CO" "origin/$MAIN" "$CLONE" &&
 ~/.claude/skills/issue-wave/scripts/fleet-worker.sh wave render \
   --set REPO="$REPO" --set CHECKOUT="$CLONE" --set DIR="$PAIR_DIR" --set PAIR="$PAIR" \
-  --out "$PAIR_DIR/gemini-prompt.md" \
-  ~/ludics/issue-wave/templates/ab/judge.md
-
-~/ludics/scripts/py -c 'import json, sys; print(json.dumps({"event": "user", "message": {"content": open(sys.argv[1], encoding="utf-8").read()}}))' \
-  "$PAIR_DIR/gemini-prompt.md" \
-  | (cd "$CLONE" && env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
-      agy --model gemini-4-neon-high --input-format stream-json --output-format stream-json \
-      --dangerously-skip-permissions) \
-  > "$PAIR_DIR/gemini-stream.jsonl" 2> "$PAIR_DIR/gemini.err"
-
-~/ludics/scripts/py -c 'import sys; from ludics import agy; text, _, why = agy.result(open(sys.argv[1], encoding="utf-8").read()); sys.exit(why) if why else print(text)' \
-  "$PAIR_DIR/gemini-stream.jsonl" > "$PAIR_DIR/gemini-verdict.json"
+  --out "$OUT_GEMINI/prompt.md" \
+  ~/ludics/issue-wave/templates/ab/judge.md &&
+~/ludics/scripts/py -c '
+import os, subprocess, sys
+from ludics import agy
+prompt = open(sys.argv[1], encoding="utf-8").read()
+if agy.size(prompt) > agy.MESSAGE_BOUND:
+    sys.exit(f"prompt exceeds agy.MESSAGE_BOUND ({agy.MESSAGE_BOUND})")
+with open(sys.argv[3], "w", encoding="utf-8") as out, open(sys.argv[4], "w", encoding="utf-8") as err:
+    rc = subprocess.run(["agy", *agy.argv(sys.argv[5])], cwd=sys.argv[2], input=agy.message(prompt),
+                        env=agy.environment(), stdout=out, stderr=err).returncode
+sys.exit(rc)
+' "$OUT_GEMINI/prompt.md" "$CLONE" "$OUT_GEMINI/stream.jsonl" "$OUT_GEMINI/gemini.err" "gemini-4-neon-high" &&
+~/ludics/scripts/py -c '
+import sys
+from ludics import agy
+text, _, why = agy.result(open(sys.argv[1], encoding="utf-8").read())
+if why:
+    sys.exit(why)
+print(text)
+' "$OUT_GEMINI/stream.jsonl" > "$OUT_GEMINI/verdict.json"
 
 rm -rf "$CLONE"
 ```
 
 ### Claude judge (when an arm is Claude, or as a third-family check)
 
+Use `--tools Read,Grep,Glob` (removing all write/shell built-ins rather than only preapproving a
+subset) with `--strict-mcp-config`:
+
 ```sh
+PAIR_DIR="$RETRO/pairs/$PAIR"
+OUT_CLAUDE="$RETRO/judges/claude/$PAIR"
+mkdir -p "$OUT_CLAUDE"
+
 ~/.claude/skills/issue-wave/scripts/fleet-worker.sh wave render \
   --set REPO="$REPO" --set CHECKOUT="$CO" --set DIR="$PAIR_DIR" --set PAIR="$PAIR" \
-  --out "$PAIR_DIR/claude-prompt.md" \
+  --out "$OUT_CLAUDE/prompt.md" \
   ~/ludics/issue-wave/templates/ab/judge.md
 
-(cd "$CO" && claude -p "$(cat "$PAIR_DIR/claude-prompt.md")" --model opus \
-  --strict-mcp-config --allowedTools "Read" "Grep" "Glob" \
+(cd "$CO" && claude -p "$(cat "$OUT_CLAUDE/prompt.md")" --model opus \
+  --strict-mcp-config --tools Read,Grep,Glob \
   --add-dir "$PAIR_DIR" --output-format json < /dev/null) \
-  > "$PAIR_DIR/claude-run.json" 2> "$PAIR_DIR/claude.err"
+  > "$OUT_CLAUDE/run.json" 2> "$OUT_CLAUDE/claude.err"
 ```
 
 ## 4. Unblind and read the result
