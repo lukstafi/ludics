@@ -1051,8 +1051,9 @@ native tasks it cues (*Launch*), and stopping it (*Close out*).
     already is: the loop never wakes a box - and no sweep lane holds it (`wake-lab.sh status
     <box>`); `execution tip-run` (below) checks the rest, and starts nothing where it would
     take from a worker or a measurement: anything outstanding on the box but a standing
-    reservation (a worker's assigned leg, a measurement or its window, another loop run) and
-    it yields, reserving nothing; and it takes the box's GPU token only if one is free at that
+    reservation (a worker's assigned leg, a measurement or its window, another loop run) or a live
+    pending measurement window mark on the box (ludics#1356) and it yields, reserving nothing; and
+    it takes the box's GPU token only if one is free at that
     moment (`execution slot --wait 0`, no `--wait-window`), never waiting behind or among the
     workers' batches. A standing reservation, a worker's on its GPU home box included, does not
     turn it away: a record is not load (ludics-lite#160), and like another worker's batch the

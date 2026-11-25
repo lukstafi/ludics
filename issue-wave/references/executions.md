@@ -191,8 +191,8 @@ Current listings project the separate hold deadline. A failure to publish a know
 command starts; an unreadable initial registry retains the hold's existing warning and fail-open
 behaviour, so its waiters retain the pending bound. It bounds the waiters and nothing else.
 A window that non-standing correctness records on the box (a worker's leg, a loop run) keep from
-opening is answered *pending*, exit 3, leaving a mark a reserved loop run yields to (the loop run,
-[below](#reserve-launch-observe-conclude); ludics#1187). `execution window --wait-pending <seconds>`
+opening is answered *pending*, exit 3, leaving a mark a loop run's next start yields to (the loop run,
+[below](#reserve-launch-observe-conclude); ludics#1187, #1356). `execution window --wait-pending <seconds>`
 (after `--deadline`) asks again by itself every `FLEET_WINDOW_PENDING_POLL` seconds (60) until the
 window opens or the bound, counted from the first pending answer, runs out; then it answers pending
 as the plain form does, its last ask having renewed the mark (ludics#1208). The bound spends none
@@ -777,7 +777,8 @@ rerun never advances the backend's last green. A checkout whose filesystem has u
 free-space floor, below; ludics#991), naming the box, the free space and the floor, and a read that
 fails is a `TIP-RUN NOTE <box>:` on stderr and the run goes on. Without `--reserved` (a GPU loop's
 run) it yields, reserving nothing, to anything outstanding on the box but standing reservations
-(read again once its own is published). With `--reserved <id>` (the cc loop's, ludics#1187) it is a
+(read again once its own is published) and to a live **pending window** on the box (read before
+reserving, as for `--reserved` below; ludics#1356). With `--reserved <id>` (the cc loop's, ludics#1187) it is a
 correctness batch like a worker's, in the slot its loop owns: `<id>` is the loop's standing slot
 reservation on the box (`"slot_reservation": true` beside its `run` payload, one per box, which
 `wave loop` takes for a loop whose entry says `reserve_slot`), and while it stands workers' batches
@@ -789,7 +790,7 @@ measurement: a measurement outstanding on the box (an open window suspends the r
 an assigned suite does not turn it away. A window a non-standing correctness record keeps from
 opening is answered pending (`execution window` exit 3, `{"pending": ...}`) and leaves a mark on
 the anchor for 1800 s, renewed by each retry (`--wait-pending` retries by itself, above) and
-removed when the window opens; a reserved run reads the marks before it reserves, so the window
+removed when the window opens; a loop run reads the marks before it reserves, so the window
 opens at the first retry after the loop's current run, which is never stopped. Then it runs
 `execution run`, starts nothing on a remote box whose skills checkout the refresh did not bring
 current, checks the SHA out detached in the clean checkout on the box (fetching only when it lacks

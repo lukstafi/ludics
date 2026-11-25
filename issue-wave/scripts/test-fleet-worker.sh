@@ -3720,6 +3720,23 @@ wait "$twait"; trc=$?
   ok "...and one whose blocker concludes within the bound opens the window" || ko "the pending wait (exit $trc): $(cat "$TMP/tip-wait.log")"
 [ -z "$(state_of tip-m)" ] || fixture_done tip-m   # a window that never opened has no record
 fixture_done tip-slot
+# ludics#1356: an unreserved (GPU) loop run also yields to a live pending measurement window on
+# its box (reserving nothing) once the prior run has concluded, while a lapsed mark does not stop it.
+setup_step "could not dispatch the prior GPU loop record (setup)" "${FWT[@]}" execution run "$(loopreq tip-p0 "$pinned" cuda)"
+jq -n '{request_id:"tip-pm", wave:"w", worker:"w2", transport:"subagent", issue:"o/r#1", purpose:"timing", agent_host:"testbox",
+  execution_host:"testbox", repository:"o/r", requested_revision:"origin/main", kind:"measurement"}' > "$TMP/tip-pm.json"
+expect "a window behind a GPU loop record is pending" 3 "window tip-pm pending: tip-p0 outstanding on testbox" -- \
+  "${FWT[@]}" execution window --no-gap testbox "$TMP/tip-pm.json"
+fixture_done tip-p0
+expect "an unreserved GPU loop run yields to the live pending window mark" 1 "^TIP-RUN NOT STARTED tip-p1: pending window tip-pm (w2, [0-9]*s left) waits for testbox; a loop run starts no new run before it opens" -- \
+  "${FWT[@]}" execution tip-run "$(loopreq tip-p1 "$pinned" cuda)" --checkout "$tco" -- env OCANNL_BACKEND=cuda echo never
+[ -z "$(state_of tip-p1)" ] && ok "...reserving nothing" || ko "tip-p1 was reserved: $(state_of tip-p1)"
+jq '.expires = "2020-01-01T00:00:00+00:00"' "$ISSUE_WAVE_STATE/pending-windows/tip-pm.json" > "$TMP/tip-pm-expired.json" &&
+  mv "$TMP/tip-pm-expired.json" "$ISSUE_WAVE_STATE/pending-windows/tip-pm.json" || ko "could not expire tip-pm mark (setup)"
+expect "...while a lapsed pending mark does not stop the GPU loop run" 0 "^TIP-RUN STARTED tip-p2 testbox $pinned /" -- \
+  "${FWT[@]}" execution tip-run "$(loopreq tip-p2 "$pinned" cuda)" --checkout "$tco" --runs "$TMP/tip runs" -- env OCANNL_BACKEND=cuda sh -c 'echo "exit: 0"'
+expect "...and --wait concludes it" 0 "^TIP-RUN CONCLUDED tip-p2 pass testbox $pinned /" -- \
+  "${FWT[@]}" execution tip-run --wait tip-p2 --within 60
 # The token taken only if free now: a batch holding the box's one GPU token turns the run away, and
 # what was reserved is concluded not-launched.
 "${FWT[@]}" execution slot -- sleep 30 > "$TMP/tip-holder.log" 2>&1 &
