@@ -31,15 +31,29 @@ agy keeps about the first 191 KB of one message (a 400 KB message kept 191,391 b
 ``status`` is ``SUCCESS``, the response is not blank and nothing was denied. Its
 ``conversation_id`` resumes the conversation (``--conversation``), and a resumed turn runs in the
 same directory, since agy scopes conversations to their workspace.
+
+RESPONSE TRIMMING shares the turn resets, delta assembly, completion order and exact LF-boundary
+suffix check of farside.LOG_LAST_RESULT (#1308). An ``init`` or ``result`` clears the step state.
+Only string ``text_delta`` fields on ``agent_response`` updates with finite numeric indices contribute
+to the last nonblank step seen reaching ``DONE``. In Python the finite check excludes non-JSON
+numbers accepted by the decoder. Preserve the whole response if the removed prefix starts a
+plan or a checkpoint review on any LF-delimited line. After optional spaces or tabs, the only
+protected lines are those starting with ``PLAN_READY`` or ``END_PLAN_READY``, and whole checkpoint
+headings as defined by ``prreview.checkpoint.HEADING``, with trailing whitespace allowed.
+This protects the envelopes these callers save. The jq reader protects wave driver markers for
+CLI worker handoffs. Other event types, marker words and prose play no part in this selection.
 """
 
 import json
+import math
 import os
 import shutil
 import subprocess
 from typing import Any, cast
 
 from ludics import proc
+from ludics.peerplan.transcript import CLOSE as PLAN_CLOSE, OPEN as PLAN_OPEN
+from ludics.prreview.checkpoint import HEADING as CHECKPOINT_HEADING
 
 MARK = "ludics-clone"
 NO_HOOKS = ["-c", f"core.hooksPath={os.devnull}", "-c", "advice.detachedHead=false"]
@@ -64,10 +78,25 @@ def message(prompt: str) -> bytes:
     return (json.dumps({"event": "user", "message": {"content": prompt}}) + "\n").encode("ascii")
 
 
+def _response_text(response: str, step: str) -> str:
+    if not step or not response.endswith(step):
+        return response
+    prefix = response[:-len(step)]
+    if prefix and not (prefix.endswith("\n") or step.startswith("\n")):
+        return response
+    for line in prefix.split("\n"):
+        start = line.lstrip(" \t")
+        if start.startswith((PLAN_OPEN, PLAN_CLOSE)) or CHECKPOINT_HEADING.fullmatch(start.rstrip()):
+            return response
+    return step
+
+
 def result(stdout: str) -> tuple[str, str, str]:
     """The turn's final message, its conversation id, and "" or why there is no message."""
     final: dict[str, Any] = {}
     conversation = ""
+    buffers: dict[int | float, list[str]] = {}
+    completed = last_completed = ""
     for raw in stdout.split("\n"):  # one event per LF line (never splitlines: U+0085 is JSON text)
         try:
             event: Any = json.loads(raw)
@@ -79,9 +108,34 @@ def result(stdout: str) -> tuple[str, str, str]:
         cid = fields.get("conversation_id")
         if isinstance(cid, str) and cid:
             conversation = cid
-        if fields.get("event") == "result":
+        kind = fields.get("event")
+        if kind == "init":
+            buffers.clear()
+            completed = ""
+        elif kind == "step_update":
+            step = fields.get("step_update")
+            if not isinstance(step, dict):
+                continue
+            update = cast(dict[str, Any], step)
+            index, delta = update.get("step_index"), update.get("text_delta")
+            if update.get("step_type") != "agent_response":
+                continue
+            if type(index) is not int and type(index) is not float:
+                continue
+            if type(index) is float and not math.isfinite(index):
+                continue
+            if isinstance(delta, str):
+                buffers.setdefault(index, []).append(delta)
+            if update.get("state") == "DONE":
+                whole = "".join(buffers.get(index, ()))
+                if whole.strip():
+                    completed = whole
+        elif kind == "result":
             found: Any = fields.get("result")
             final = cast(dict[str, Any], found) if isinstance(found, dict) else {}
+            last_completed = completed
+            buffers.clear()
+            completed = ""
             cid = final.get("conversation_id")
             if isinstance(cid, str) and cid:
                 conversation = cid
@@ -91,7 +145,7 @@ def result(stdout: str) -> tuple[str, str, str]:
         return "", conversation, f"agy refused it a permission ({', '.join(names) or 'unnamed'}), which ends its turn"
     if final.get("status") != "SUCCESS" or not (isinstance(text, str) and text.strip()):
         return "", conversation, f"its result is {final.get('status') or 'missing'} with no response"
-    return text, conversation, ""
+    return _response_text(text, last_completed), conversation, ""
 
 
 def environment() -> dict[str, str]:
