@@ -32,10 +32,10 @@ agy keeps about the first 191 KB of one message (a 400 KB message kept 191,391 b
 ``conversation_id`` resumes the conversation (``--conversation``), and a resumed turn runs in the
 same directory, since agy scopes conversations to their workspace.
 
-RESPONSE TRIMMING follows farside.LOG_LAST_RESULT (#1308). Between ``init`` and ``result`` resets,
-only string ``text_delta`` fields on ``agent_response`` step updates with numeric indices contribute
-to step text. The last nonblank step observed reaching ``DONE`` can replace the full response only
-if it is an exact LF-boundary suffix. If a removed line would start with ``PLAN_READY`` or
+RESPONSE TRIMMING follows farside.LOG_LAST_RESULT (#1308). An ``init`` or ``result`` clears the
+step state. Only string ``text_delta`` fields on ``agent_response`` step updates with finite numeric
+indices contribute to step text. The last nonblank step observed reaching ``DONE`` can replace the
+full response only if it is an exact LF-boundary suffix. If a removed line would start with ``PLAN_READY`` or
 ``END_PLAN_READY`` after optional spaces or tabs, keep the whole response so a plan can span steps.
 Other event types, other marker words and the meaning of prose play no part in trimming.
 """
@@ -88,7 +88,7 @@ def result(stdout: str) -> tuple[str, str, str]:
     """The turn's final message, its conversation id, and "" or why there is no message."""
     final: dict[str, Any] = {}
     conversation = ""
-    buffers: dict[int | float, str] = {}
+    buffers: dict[int | float, list[str]] = {}
     completed = last_completed = ""
     for raw in stdout.split("\n"):  # one event per LF line (never splitlines: U+0085 is JSON text)
         try:
@@ -111,15 +111,18 @@ def result(stdout: str) -> tuple[str, str, str]:
                 continue
             update = cast(dict[str, Any], step)
             index, delta = update.get("step_index"), update.get("text_delta")
-            if update.get("step_type") != "agent_response" or type(index) not in (int, float):
+            if update.get("step_type") != "agent_response":
+                continue
+            if type(index) is not int and type(index) is not float:
                 continue
             if type(index) is float and not math.isfinite(index):
                 continue
             if isinstance(delta, str):
-                buffers[index] = buffers.get(index, "") + delta
-            whole = buffers.get(index, "")
-            if update.get("state") == "DONE" and whole.strip():
-                completed = whole
+                buffers.setdefault(index, []).append(delta)
+            if update.get("state") == "DONE":
+                whole = "".join(buffers.get(index, ()))
+                if whole.strip():
+                    completed = whole
         elif kind == "result":
             found: Any = fields.get("result")
             final = cast(dict[str, Any], found) if isinstance(found, dict) else {}
