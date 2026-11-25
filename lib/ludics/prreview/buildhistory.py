@@ -44,6 +44,7 @@ It is advice in the refusal's words, never a gate: nothing refuses a re-run.
 import hashlib
 import json
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal, cast
@@ -64,11 +65,16 @@ class Row:
     bound: int
 
 
+def state_dir(env: Mapping[str, str]) -> str | None:
+    """The shared root of merge-build receipts and artifacts, when state is enabled."""
+    state = budget_dir(env)
+    return os.path.join(state, "merge-builds") if state else None
+
+
 def _path(repo: str) -> str | None:
-    """The repository's file; None with no state directory (``budget_dir``: a fixture suite that
-    named none) or no repository (a dry run under ``--config`` alone): no history, then."""
-    state = budget_dir(os.environ)
-    return os.path.join(state, "merge-builds", repo.replace("/", "--") + ".jsonl") if state and repo else None
+    """The repository's receipt file, when both state and the repository are known."""
+    state = state_dir(os.environ)
+    return os.path.join(state, repo.replace("/", "--") + ".jsonl") if state and repo else None
 
 
 def _digest(command: str) -> str:
@@ -111,12 +117,6 @@ def read(repo: str, command: str) -> list[Row]:
     lines = data.decode("utf-8", "replace").split("\n")
     digest = _digest(command)
     return [row for line in (lines[1:] if size > READ_BYTES else lines) if (row := _row(line, digest))]
-
-
-def state_root(repo: str) -> str | None:
-    """The repository's merge-build state directory, or None when history is disabled."""
-    path = _path(repo)
-    return os.path.dirname(path) if path is not None else None
 
 
 def record(repo: str, command: str, outcome: Recorded, seconds: int,

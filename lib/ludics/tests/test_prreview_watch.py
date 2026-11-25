@@ -10,13 +10,16 @@ fold of duplicated threads -- and the binary path, where no shell function exist
 
 import json
 import os
+import select
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 from collections.abc import Sequence
+from pathlib import Path
 
 from ludics import proc
 from ludics.prreview.core import GhSession, Json, load_config
@@ -269,6 +272,117 @@ class EndToEnd(unittest.TestCase):
                 )
                 with open(self.clock) as f:
                     self.assertEqual(int(f.read()), 1790000000 + 60, "two 30s pauses, on the file clock")
+
+    @unittest.skipUnless(os.name == "posix", "retention locking and SIGKILL need POSIX")
+    def test_abandoned_merge_build_staging_is_reaped(self) -> None:
+        import fcntl
+
+        head, tip = "e" * 40, "f" * 40
+        state = Path(self.tmp) / "state" / "merge-builds"
+        logs = state / "logs"
+        command = logs / "other--repo" / "8" / head / tip / "build"
+        source = Path(self.dir) / "source"
+        source.write_text("evidence\n")
+        # Leave a stage the real writer acquired the lock for and started filling.
+        code = """
+import shutil, sys
+from unittest import mock
+from ludics.prreview.mergebuild import _retain
+
+copyfile = shutil.copyfile
+def stop_after_copy(source, destination):
+    copyfile(source, destination)
+    print('staged', flush=True)
+    sys.stdin.read()
+
+head, tip, source = sys.argv[1:]
+with mock.patch.object(shutil, 'copyfile', stop_after_copy):
+    with _retain('other/repo', '8', head, tip, 'build', source, source):
+        pass
+"""
+        lib = Path(__file__).resolve().parents[2]
+        with subprocess.Popen(
+            [sys.executable, "-B", "-c", code, head, tip, str(source)],
+            env={**os.environ, "PYTHONPATH": str(lib), "SHIP_PR_STATE_DIR": str(state.parent)},
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+        ) as writer:
+            assert writer.stdout is not None
+            try:
+                self.assertTrue(select.select([writer.stdout], [], [], 10)[0], "writer reached staging")
+                self.assertEqual(writer.stdout.readline(), "staged\n")
+            finally:
+                writer.kill()
+                writer.wait(timeout=10)
+
+        old = time.time() - 8 * 86400
+
+        def age(*paths: Path) -> None:
+            for path in paths:
+                os.utime(path, (old, old))
+
+        def stage(directory: Path, leaf: str) -> Path:
+            staging = directory / leaf
+            staging.mkdir(parents=True)
+            (staging / "build.log").write_text("evidence\n")
+            (directory / ".lock").touch()
+            age(staging / "build.log", staging, directory)
+            return staging
+
+        pending = command / ".pending"
+        self.assertEqual((pending / "build.log").read_text(), "evidence\n")
+        published = command / ("a" * 32)
+        published.mkdir()
+        (published / "build.log").write_text("published\n")
+        legacy = command.parent / "build.log"
+        legacy.write_text("legacy\n")
+        receipt = state / "other--repo.jsonl"
+        receipt.write_text(json.dumps({"log_dir": str(published)}) + "\n")
+        retired = stage(command, ".retired")
+        age(pending / "build.log", pending)
+        fresh_retirement = stage(command.parent.with_name("a" * 40) / "build", ".retired")
+        os.utime(fresh_retirement.parent)  # A just-retired directory can still carry old pair mtimes.
+        fresh_stage = stage(command.parent.with_name("1" * 40) / "build", ".pending")
+        os.utime(fresh_stage)
+        fresh_log = stage(command.parent.with_name("2" * 40) / "build", ".pending")
+        os.utime(fresh_log / "build.log")
+        locked = stage(command.parent.with_name("b" * 40) / "build", ".pending")
+        foreign = stage(command.parent.with_name("c" * 40) / "build", ".pending")
+        (foreign / "keep").write_text("outside the pair\n")
+        age(foreign)
+        alias = command.parent.with_name("d" * 40)
+        target = Path(self.dir) / "target"
+        linked = stage(target / "build", ".pending")
+        alias.symlink_to(target, target_is_directory=True)
+
+        def sweep() -> None:
+            self.quiet_pr()
+            done = self.run_cmd([PR_REVIEW], "watch", "o/r#7", "--no-nudge", WATCH_INTERVAL="1", WATCH_TIMEOUT="1")
+            self.assertEqual(done.returncode, 1, done.stderr)
+            self.assertIn("no reviewer activity", done.stdout)
+
+        with (locked.parent / ".lock").open("ab") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            sweep()
+
+        self.assertFalse(pending.exists(), "the killed writer's old staging was reaped")
+        self.assertFalse(retired.exists(), "the old retirement directory was reaped")
+        self.assertTrue((command / ".lock").is_file(), "the lock inode stays available for retries")
+        for reason, kept in (
+            ("recent retirement", fresh_retirement), ("fresh directory", fresh_stage),
+            ("fresh file", fresh_log), ("held lock", locked), ("extra file", foreign), ("symlink", linked),
+        ):
+            with self.subTest(reason=reason):
+                self.assertTrue(kept.is_dir(), "the stage survived the sweep")
+                self.assertEqual((kept / "build.log").read_text(), "evidence\n")
+        self.assertEqual((published / "build.log").read_text(), "published\n")
+        self.assertEqual(legacy.read_text(), "legacy\n")
+        self.assertEqual(json.loads(receipt.read_text())["log_dir"], str(published))
+
+        sweep()
+        self.assertTrue(locked.exists(), "another watch within the daily interval skips the sweep")
+        age(logs / ".staging-sweep")
+        sweep()
+        self.assertFalse(locked.exists(), "the next sweep can take the released lock")
 
     def test_a_pr_without_a_repository_is_refused_before_any_read(self) -> None:
         self.quiet_pr()
