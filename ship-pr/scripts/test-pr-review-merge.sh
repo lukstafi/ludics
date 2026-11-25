@@ -4976,6 +4976,66 @@ test_a_merge_build_with_a_failure_of_its_own_is_refused_under_override() {
   assert_clone_untouched
 }
 
+run_harness_failure_override() { # <extra line on merge, if any>
+  reset
+  build_fixture base-red
+  export BUILD_HARNESS_PROBE="$TEST_ROOT/build-harness-probe.sh" BUILD_HARNESS_EXTRA="$1"
+  cat >"$BUILD_HARNESS_PROBE" <<'EOF'
+printf '%s\n' 'HARNESS tools/test-suite.sh (shell; bash 3.2 /bin/bash)'
+if git diff --quiet HEAD^1 HEAD; then
+  printf '%s\n' 'FAIL  shared check' '      tmp=/tmp/probe.base12 pid=412 slot=1'
+else
+  printf '%s\n' 'PASS  a check added by the PR' 'FAIL  shared check' '      tmp=/tmp/probe.head34 pid=823 slot=2'
+  if [ -n "$BUILD_HARNESS_EXTRA" ]; then
+    printf '%s\n' "$BUILD_HARNESS_EXTRA"
+  fi
+fi
+printf '%s\n' 'HARNESS tools/test-suite.sh exit: 1'
+exit 1
+EOF
+  MERGE_BUILD_CONFIG=$'command sh "$BUILD_HARNESS_PROBE"\ninput *.sh\ntimeout 120'
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge --override "$BASE_RED_WHY"
+}
+
+test_a_shared_harness_check_is_overridden_with_different_details_and_new_passes() {
+  run_harness_failure_override ""
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "a merge build that fails a shared harness check"
+    return 0
+  fi
+  assert_eq "$MERGE_RC" 0 "the failing check identity is shared ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDOUT" 'every failing check and remaining literal line' "the base comparison used failing identities"
+  assert_contains "$MERGE_STDOUT" 'tmp=/tmp/probe.head34 pid=823 slot=2' "the detail is still visible in the build log"
+  assert_contains "$MERGE_CALLS" "--match-head-commit $BUILD_HEAD " "the merge is bound to the gated head"
+  assert_clone_untouched
+}
+
+test_an_extra_harness_check_is_refused_under_override() {
+  run_harness_failure_override "FAIL  a check that fails only on the merge"
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "a merge build with an extra failing harness check"
+    return 0
+  fi
+  assert_eq "$MERGE_RC" 1 "the merge has a failing check of its own ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDOUT" "1 line(s) of the merge's failure evidence are not in main's" "one check differs"
+  assert_contains "$MERGE_STDOUT" '  + tools/test-suite.sh: FAIL  a check that fails only on the merge' "the new failure is named"
+  assert_no_merge_call
+  assert_clone_untouched
+}
+
+test_an_unrecognised_harness_line_is_compared_literally_under_override() {
+  run_harness_failure_override "      unfamiliar detail tmp=/tmp/probe.head34 pid=823 slot=2"
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "a merge build with an unfamiliar failure line"
+    return 0
+  fi
+  assert_eq "$MERGE_RC" 1 "an extra detail line still needs a literal match ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDOUT" "1 line(s) of the merge's failure evidence are not in main's" "only the first detail was ignored"
+  assert_contains "$MERGE_STDOUT" '  +       unfamiliar detail tmp=/tmp/probe.head34 pid=823 slot=2' "the unfamiliar line is shown verbatim"
+  assert_no_merge_call
+  assert_clone_untouched
+}
+
 # #861: a build input both sides changed, one side in comments alone, under a `comments` glob: the
 # merge proceeds with no build (the command would fail, so a merge proves none ran). The control:
 # the base editing code there too, which builds. Under Windows both are the POSIX-only refusal:
@@ -5384,6 +5444,9 @@ tests=(
   test_plan_only_reports_the_shared_no_verdict_reason
   test_a_merge_build_failure_the_base_shares_merges_under_override
   test_a_merge_build_with_a_failure_of_its_own_is_refused_under_override
+  test_a_shared_harness_check_is_overridden_with_different_details_and_new_passes
+  test_an_extra_harness_check_is_refused_under_override
+  test_an_unrecognised_harness_line_is_compared_literally_under_override
   test_a_comment_only_shared_change_merges_without_a_build
   test_a_code_change_on_both_sides_still_builds
   test_a_wait_from_no_clone_refuses_before_the_wait

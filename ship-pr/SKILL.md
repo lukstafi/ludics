@@ -1418,7 +1418,7 @@ build that does not finish is exit 4, one that could not run (the fetch, the slo
 that moved exit 5, a textual conflict exit 1. A failed build is followed by the same command on the
 base alone (the base tip's tree, with the merge's parents and environment), so a red the base
 already has is told from the merge's own (#860). When the base alone passes, or fails with another
-status or with any line of the merge's output missing from its own (shown as `+` lines), the merge is
+status or without every failing check and remaining literal line from the merge (shown as `+` lines), the merge is
 refused whatever the flags: merge the base in, fix the clash, push. When it fails the same way, the
 refusal says the failure is the base's, and only `--override` goes over it (*The override*); without
 the flag that merge waits for the base's fix. By default the boundary is the intersection: a clash across paths only one side
@@ -1554,7 +1554,8 @@ waiting for the fix, and do not chase it: its attribution is the owner's. It cov
 fails, never a build that breaks. Where the repository has a merge build (*How stale the base has
 grown*) that runs the red check too, the merge build fails on it as well; `merge` then builds the
 base alone, and the override goes over the merge build's failure only when the base alone fails
-the same way, line for line (#860). A clash in the merge itself is still refused. The reason cites the check and test, the base
+the same way (#860, #1359). The comparison skips recognised passing checks and failure details, and compares other lines literally.
+A clash in the merge itself is still refused. The reason cites the check and test, the base
 SHA and the owner, so every merge in the red span names the red it rode over:
 
 ```bash

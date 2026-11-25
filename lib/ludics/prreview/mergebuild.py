@@ -314,8 +314,8 @@ are the merge's (THE COMMAND'S CONTRACT), so a command that picks its tiers by w
 changed picks the same ones. Its verdict:
 
   passed                    the failure is the merge's own: refused (exit 1), as before.
-  failed the same way       the same exit status, and every line of the merge's log (counted:
-                            a line twice in it must be twice in the base's) is in the base's:
+  failed the same way       the same exit status, and every failing-check identity and remaining
+                            literal line from the merge's log is in the base's:
                             the failure is the base's. Without ``--override`` refused (exit 1),
                             saying so and naming the flag; with it, the merge proceeds, and merge
                             announces what it went over with the gate's override, before the call.
@@ -326,12 +326,20 @@ changed picks the same ones. Its verdict:
                             without ``--override``; with it, 4 past the timeout and 3 otherwise,
                             since what decides the merge was not read.
 
-The boundary: "the same way" is what the command says, line for line, and nothing else. A command
-that prints nothing on failure tells nothing apart, so two failures of one status read as the
-same; a line that differs only by a timing or a count (a test runner's tally) reads as an extra
-failure, a false refusal that leaves the merge waiting for the base's fix. Which failure the
-override was meant for is not checked against its reason: a reason is words (merge.py), and the
-log is the evidence. The dry run (THE DRY RUN) takes no override, so a shared failure is its exit 1.
+Recognised forms (closed, #1359). When the merge log has a ``FAIL  <label>`` line (two spaces and a
+label that starts with a nonspace), compare the set of failing labels verbatim. A label belongs
+to the current member when introduced by ``HARNESS <path> (<tier>; bash <major>.<minor>
+<interpreter>)`` (optionally with `` --only '<selector>'`` after the path). Paths use ASCII letters,
+digits, underscores, dots, slashes and hyphens; tiers omit dots and slashes. The scope ends at the matching
+``HARNESS <path> exit: <digits>``. Keep both delimiter lines literally too. Ignore ``PASS  <label>``
+and the one detail line immediately after a recognised FAIL with exactly six leading spaces and
+a nonblank payload. That line carries observations such as random scratch paths, PIDs and slot
+numbers. No substitutions are made inside labels or other lines. Every other line, including a
+malformed marker, additional indented lines, and unfamiliar failure wording, compares literally
+with multiplicity. With no recognised FAIL in the merge log, compare both logs literally with
+multiplicity as before. Two empty logs still match when their exit statuses agree.
+The override's reason names the failure for the reader (merge.py). The dry run (THE DRY RUN)
+takes no override, so a shared failure is its exit 1.
 """
 
 import contextlib
@@ -1968,8 +1976,8 @@ def _no_verdict(label: str, stop: str, config: BuildConfig, ran: _Ran, what: str
     )
 
 
-def _log_lines(log: str) -> Counter[str] | None:
-    """The log's lines, counted (THE BASE ALONE), or None when it is over ``COMPARED_BYTES`` or
+def _log_lines(log: str) -> list[str] | None:
+    """The log's lines (THE BASE ALONE), or None when it is over ``COMPARED_BYTES`` or
     cannot be read: a log not read whole is never "the same"."""
     try:
         with open(log, "rb") as handle:
@@ -1978,7 +1986,35 @@ def _log_lines(log: str) -> Counter[str] | None:
         return None
     if len(data) > COMPARED_BYTES:
         return None
-    return Counter(proc.decode(data).splitlines())
+    return proc.decode(data).splitlines()
+
+
+_FAILED_CHECK = re.compile(r"FAIL  \S.*")
+_PASSED_CHECK = re.compile(r"PASS  \S.*")
+_CHECK_DETAIL = re.compile(r" {6}\S.*")
+_MEMBER_START = re.compile(r"HARNESS ([A-Za-z0-9_./-]+)(?: --only '.+')? \([A-Za-z0-9_-]+; bash [0-9]+\.[0-9]+ .+\)")
+_MEMBER_END = re.compile(r"HARNESS ([A-Za-z0-9_./-]+) exit: [0-9]+")
+
+
+def _failure_evidence(lines: list[str]) -> Counter[tuple[str, str]]:
+    """The set of failing checks, with a multiset of all unrecognised lines."""
+    evidence: Counter[tuple[str, str]] = Counter()
+    member = ""
+    after_fail = False
+    for line in lines:
+        if after_fail and _CHECK_DETAIL.fullmatch(line):
+            after_fail = False
+            continue
+        after_fail = _FAILED_CHECK.fullmatch(line) is not None
+        if after_fail:
+            evidence[member, line] = 1
+        elif not _PASSED_CHECK.fullmatch(line):
+            if start := _MEMBER_START.fullmatch(line):
+                member = start[1]
+            elif (end := _MEMBER_END.fullmatch(line)) and end[1] == member:
+                member = ""
+            evidence["", line] += 1
+    return evidence
 
 
 def _against_base(
@@ -2030,14 +2066,20 @@ def _against_base(
         cli.say(f"merge build {label}: {base_ref} alone PASSED in {base.took}s: the failure is the merge's own")
         fail(1, *plain, f"though each side is green on its own. Merge {base_ref} in, fix the clash, push, and merge again.")
     mine, theirs = _log_lines(merged.log), _log_lines(base.log)
+    evidence = "every line of the merge's output in its own"
     if base.status != rc:
         differs = f"{base_ref} alone exits {base.status}, the merge {rc}"
         extra: list[str] = []
     elif mine is None or theirs is None:
         differs = f"a log is over {COMPARED_BYTES} bytes or could not be read, so the two were not compared"
         extra = []
+    elif any(_FAILED_CHECK.fullmatch(line) for line in mine):
+        extra = [f"{member}: {line}" if member else line
+                 for member, line in (_failure_evidence(mine) - _failure_evidence(theirs)).elements()]
+        differs = f"{len(extra)} line(s) of the merge's failure evidence are not in {base_ref}'s" if extra else ""
+        evidence = "every failing check and remaining literal line of the merge's output in its own"
     else:
-        extra = list((mine - theirs).elements())
+        extra = list((Counter(mine) - Counter(theirs)).elements())
         differs = f"{len(extra)} line(s) of the merge's output are not in {base_ref}'s" if extra else ""
     if differs:
         cli.say(f"merge build {label}: {base_ref} alone FAILED (exit {base.status}) after {base.took}s, not the same way: {differs}")
@@ -2051,8 +2093,8 @@ def _against_base(
             "push, and merge again" + ("; --override goes over only a failure the base alone shares." if override else "."),
         )
     cli.say(
-        f"merge build {label}: {base_ref} alone FAILED the same way (exit {rc}, every line of the merge's output in"
-        f" its own) after {base.took}s: the failure is the base's"
+        f"merge build {label}: {base_ref} alone FAILED the same way (exit {rc}, {evidence}) after {base.took}s:"
+        " the failure is the base's"
     )
     shared = f"a merge-build failure {base_ref} at {tip8} alone shares ({config.command}: exit {rc})"
     if override:

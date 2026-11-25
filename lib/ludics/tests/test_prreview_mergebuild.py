@@ -1284,6 +1284,21 @@ class BaseAlone(Repo):
         self.assertIn("its failure is not only main's", out)
         self.assertIn("--override goes over only a failure the base alone shares", out)
 
+    def test_failing_checks_are_bound_to_their_harness_members(self) -> None:
+        head, _ = self.sides("keep", RED)
+        command = (
+            "if git diff --quiet HEAD^1 HEAD; then first=alpha; second=beta;"
+            " else first=beta; second=alpha; fi;"
+            " printf '%s\n' 'HARNESS first.sh (shell; bash 3.2 /bin/bash)' \"FAIL  $first\""
+            " 'HARNESS first.sh exit: 1' \"HARNESS second.sh --only 'alpha|beta' (shell; bash 3.2 /bin/bash)\""
+            " \"FAIL  $second\" 'HARNESS second.sh exit: 1'; exit 1"
+        )
+        rc, out, shared = self.build_over(head, command, WHY)
+        self.assertEqual(rc, 1, out)
+        self.assertIsNone(shared)
+        self.assertIn("  + first.sh: FAIL  beta\n", out)
+        self.assertIn("  + second.sh: FAIL  alpha\n", out)
+
     def test_another_status_is_refused_under_override(self) -> None:
         """No line differs (the PR's `false` prints nothing), only the status: not the same way."""
         head, _ = self.sides("false", RED)
