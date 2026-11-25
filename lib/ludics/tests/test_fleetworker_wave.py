@@ -844,6 +844,9 @@ class MixedWave(WaveDirCase):
         self.assertEqual(rc, 0, out + err)
         self.assertNotIn("WAVE PREP NOTE", err)
         self.assertIn(f"reassignment_reason={reason}", self.shim_calls[-1])
+        self.assertEqual(self.manifest("t43")["reassignment"],
+                         {"reason": reason, "issue": "o/up#43", "source": "", "host": "mac", "transport": "cli",
+                          "kind": "gemini", "model": "", "effort": ""})
 
     def test_wave_without_a_split_has_no_issue_number_note(self) -> None:
         with self.world():
@@ -4632,21 +4635,101 @@ class Queue(DriveCase):
                              "a task prepared at the tip is launched, not prepared again")
         self.assertEqual(len(self.attention()), 2)
 
-    def test_stale_prep_keeps_a_reassignment_reason_absent_from_the_queue(self) -> None:
-        self.queue({"task": "t50", "profile": "sol", "host": "far"},
-                   {"task": "t52", "profile": "sol", "host": "far", "reassignment_reason": "Needs the far host"})
-        self.rows = [row(task, state="pending", reassignment_reason="Needs the far host") for task in ("t50", "t52")]
-        for task in ("t50", "t52"):
-            self.manifest(task, "far", A)
+    def reassigned_prep(self) -> str:
+        data = wave_data(self.dir, vars={"COORD": "s", "MAIN": "main"}, split="issue-number", **MIXED)
+        data["profiles"] = {**MIXED["profiles"], "neon": {"transport": "cli", "kind": "gemini"}}
+        self.write("wave.json", json.dumps(data))
+        path, task, opts = waveprep.parse([self.path, "t50", "--base", A, "--profile", "sol",
+                                           "--host", "far", "--reassignment-reason", "Needs the far host"])
+        prep = waveprep.build(self.cfg, path, task, opts)
+        waveprep.record(prep, "ready")
+        fields = dict(field.split("=", 1) for field in waveprep.board_fields(prep, "/brief"))
+        self.rows = [{"task": task, "fields": fields}]
+        self.queue({"task": task, "profile": "sol", "host": "far"})
+        return prep.manifest
+
+    def test_stale_reprep_keeps_the_approval_after_a_driver_restart(self) -> None:
+        path = self.reassigned_prep()
         with self.world():
             rc, out = self.once()
             self.assertEqual(rc, 0, out)
-            self.assertIn("DRIVE ATTENTION t50 launch: the base moved and the pending row records a reassignment reason"
-                          " absent from the queue; the row is kept", out)
+            self.assertEqual(self.launched(), [["wave", "unprep", self.path, "t50"]], out)
+            self.rows = []
+            os.remove(path)  # unprep removed the row and archived the manifest
+            with open(self.path) as f:
+                edited = json.load(f)
+            edited["profiles"]["alias"] = edited["profiles"]["sol"]
+            with open(self.path, "w") as f:
+                json.dump(edited, f)
+            self.queue({"task": "t50", "profile": "alias", "host": "far", "issue": "50"})
+            rc, out = self.once()  # a fresh driver reads the ledger
+            self.assertEqual(rc, 0, out)
+            prep, launch = self.launched()
+            self.assertEqual(prep, ["wave", "prep", self.path, "t50", "--base", B, "--profile", "alias", "--host", "far",
+                                    "--issue", "50", "--reassignment-reason", "Needs the far host"])
+            self.assertEqual(launch[:4], ["wave", "launch", self.path, "t50"])
+        self.assertEqual(self.attention(), [])
+
+    def test_stale_reprep_can_restart_before_recording_the_result_of_unprep(self) -> None:
+        path = self.reassigned_prep()
+        execute = self.execute
+
+        def interrupted(argv: list[str], timeout: float | None = None) -> tuple[int, str, str]:
+            if "unprep" in argv:
+                self.rows = []
+                os.remove(path)
+                raise RuntimeError("driver stopped after unprep")
+            return execute(argv, timeout)
+
+        with mock.patch.object(self, "execute", side_effect=interrupted), self.world():
+            with self.assertRaisesRegex(RuntimeError, "driver stopped after unprep"):
+                self.once()
+        with self.world():
+            self.assertEqual(self.once()[0], 0)
+        self.assertEqual(self.launched()[0][-2:], ["--reassignment-reason", "Needs the far host"])
+        self.assertEqual(self.attention(), [])
+
+    def test_stale_reprep_leaves_conflicting_queue_inputs_for_the_coordinator(self) -> None:
+        for change in ({"profile": "neon"}, {"host": "mac"}, {"issue": "51"}, {"source": "50"},
+                       {"reassignment_reason": "Different reason"}):
+            with self.subTest(change=change):
+                path = self.reassigned_prep()
+                entry = {"task": "t50", "profile": "sol", "host": "far", "reassignment_reason": "Needs the far host"}
+                self.queue({**entry, **change})
+                with self.world():
+                    rc, out = self.once()
+                self.assertEqual(rc, 0, out)
+                self.assertIn("DRIVE ATTENTION t50 launch:", out)
+                self.assertEqual(self.launched(), [])
+                self.assertTrue(os.path.isfile(path))
+                os.remove(os.path.join(self.wavedir, "logs", "drive.jsonl"))
+
+    def test_stale_reprep_checks_the_profile_again_after_unprep(self) -> None:
+        path = self.reassigned_prep()
+        with self.world():
+            self.assertEqual(self.once()[0], 0)
+            self.rows = []
+            os.remove(path)
+            with open(self.path) as f:
+                edited = json.load(f)
+            edited["profiles"]["sol"]["effort"] = "high"
+            with open(self.path, "w") as f:
+                json.dump(edited, f)
+            rc, out = self.once()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.launched(), [])
+        self.assertIn("DRIVE ATTENTION t50 launch: the stale re-prep has no matching reassignment approval", out)
+
+    def test_stale_reprep_leaves_a_legacy_board_only_reason_for_the_coordinator(self) -> None:
+        self.queue({"task": "t50", "profile": "sol", "host": "far"})
+        self.rows = [row("t50", state="pending", reassignment_reason="Needs the far host")]
+        self.manifest("t50", "far", A)
+        with self.world():
+            rc, out = self.once()
+            self.assertEqual(rc, 0, out)
+            self.assertIn("DRIVE ATTENTION t50 launch: the stale re-prep has no matching reassignment approval", out)
             self.assertEqual(self.launched(), [])
             self.assertEqual(self.ledger()[-1], (wavedrive.LAUNCH, "launch", "attention"))
-            self.assertEqual(self.once()[0], 0)
-            self.assertEqual(self.launched(), [["wave", "unprep", self.path, "t52"]])
 
     def test_a_stale_prepared_task_whose_unprep_refuses_is_final_and_an_unknown_one_is_the_next_ticks(self) -> None:
         self.queue({"task": "t51", "profile": "sol", "host": "far"})

@@ -29,7 +29,7 @@ NOTE on stderr for a worker whose resolved kind differs from the issue's arm: od
 (``codex``), even is Neon (``gemini``). It uses the resolved decimal issue number (the source
 for a post-wave task) and kind, so profile aliases work. The check reads neither model nor tier
 nor prose. A ``--reassignment-reason <reason>`` is a nonblank single line of printable text;
-it suppresses the NOTE and is stored verbatim as the board row's ``reassignment_reason`` field.
+it suppresses the NOTE and is stored verbatim on the board row and with its resolved prep inputs.
 Presence of that field marks the reassignment. The comparison changes neither the worker nor
 the prep exit status.
 
@@ -355,22 +355,34 @@ def parse(args: list[str]) -> tuple[str, str, dict[str, Any]]:
     return args[0], args[1], opts
 
 
-def subject(wave: Wave, task: str, issue: str, source: str, verb: str) -> tuple[str, str, str]:
+def resolve_subject(wave: Wave, task: str, issue: str, source: str) -> tuple[str, str, str]:
     """What a task is about, as ``(number, issue_ref, source_ref)``: the issue of a ``t<N>`` task or of
     ``--issue``, or the issue a ``--source`` task came from; one ref is empty. ``wave review`` reads a
     task the same way."""
     if issue and source:
-        die(f"wave {verb}: --issue and --source exclude each other")
+        raise ValueError("--issue and --source exclude each other")
     for given in (issue, source):
         if given and not given.isdigit():
-            die(f"wave {verb}: an issue number is digits, not {given!r}")
+            raise ValueError(f"an issue number is digits, not {given!r}")
     issue_task = ISSUE_TASK.fullmatch(task)
     if source:
         return source, "", f"{wave.issue_repository}#{source}"
     if issue or issue_task:
         number = issue or (issue_task.group(1) if issue_task else "")
         return number, f"{wave.issue_repository}#{number}", ""
-    die(f"wave {verb}: task {task} is no t<N>: name its issue with --issue <N>, or with --source <N> the issue a no-issue task came from")
+    raise ValueError(f"task {task} is no t<N>: name its issue with --issue <N>, or with --source <N> the issue a no-issue task came from")
+
+
+def subject(wave: Wave, task: str, issue: str, source: str, verb: str) -> tuple[str, str, str]:
+    try:
+        return resolve_subject(wave, task, issue, source)
+    except ValueError as exc:
+        die(f"wave {verb}: {exc}")
+
+
+def reassignment_of(reason: str, issue_ref: str, source_ref: str, profile: Profile, host: str) -> dict[str, str]:
+    return {"reason": reason, "issue": issue_ref, "source": source_ref, "host": host, "transport": profile.transport,
+            "kind": profile.kind, "model": profile.model, "effort": profile.effort}
 
 
 def build(cfg: Config, path: str, task: str, opts: dict[str, Any]) -> Prep:
@@ -766,6 +778,9 @@ def reservations(prep: Prep) -> list[tuple[str, dict[str, Any]]]:
 def record(prep: Prep, step: str) -> None:
     prep.done.append(step)
     os.makedirs(os.path.dirname(prep.manifest), exist_ok=True)
+    reassignment = ({"reassignment": reassignment_of(prep.reassignment_reason, prep.issue_ref, prep.source_ref,
+                                                    Profile(prep.transport, prep.kind, prep.model, prep.effort), prep.host)}
+                    if prep.reassignment_reason else {})
     write_atomically(prep.manifest, json.dumps({
         "task": prep.task, "wave": prep.wave.wave, "worker": prep.worker, "branch": prep.branch, "base": prep.base,
         "worktree": prep.worktree, "standing": [prep.standing_id(b) for b in prep.boxes], "task_section": prep.task_section,
@@ -781,7 +796,7 @@ def record(prep: Prep, step: str) -> None:
             "standing": prep.standing_id(prep.host),
             "legs": [{"box": leg.box, "suffix": leg.suffix, "worktree": prep.leg_worktree(leg), "standing": prep.standing_id(leg.box)}
                      for leg in prep.legs]},
-        "done": prep.done}, indent=1) + "\n")
+        **reassignment, "done": prep.done}, indent=1) + "\n")
 
 
 def board_fields(prep: Prep, brief: str) -> list[str]:
