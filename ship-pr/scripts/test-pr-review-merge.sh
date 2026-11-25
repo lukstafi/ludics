@@ -4983,9 +4983,13 @@ run_harness_failure_override() { # <extra line on merge, if any>
   cat >"$BUILD_HARNESS_PROBE" <<'EOF'
 printf '%s\n' 'HARNESS tools/test-suite.sh (shell; bash 3.2 /bin/bash)'
 if git diff --quiet HEAD^1 HEAD; then
-  printf '%s\n' 'FAIL  shared check' '      tmp=/tmp/probe.base12 pid=412 slot=1'
+  printf '%s\n' 'EXECUTION SLOT fixture: inside slot 1 of 4, held by an enclosing batch, for: sh ./api.sh' \
+    '  real fleet run: /tmp/probe.base12/run-412; background record: /tmp/probe.base12/run-1' \
+    'FAIL  shared check' '      tmp=/tmp/probe.base12 pid=412 slot=1'
 else
-  printf '%s\n' 'PASS  a check added by the PR' 'FAIL  shared check' '      tmp=/tmp/probe.head34 pid=823 slot=2'
+  printf '%s\n' 'EXECUTION SLOT fixture: inside slot 2 of 4, held by an enclosing batch, for: sh ./api.sh' \
+    '  real fleet run: /tmp/probe.head34/run-823; background record: /tmp/probe.head34/run-2' \
+    'PASS  a check added by the PR' 'FAIL  shared check' '      tmp=/tmp/probe.head34 pid=823 slot=2'
   if [ -n "$BUILD_HARNESS_EXTRA" ]; then
     printf '%s\n' "$BUILD_HARNESS_EXTRA"
   fi
@@ -5004,7 +5008,7 @@ test_a_shared_harness_check_is_overridden_with_different_details_and_new_passes(
     return 0
   fi
   assert_eq "$MERGE_RC" 0 "the failing check identity is shared ($MERGE_OUTPUT)"
-  assert_contains "$MERGE_STDOUT" 'every failing check and remaining literal line' "the base comparison used failing identities"
+  assert_contains "$MERGE_STDOUT" 'every failing check and remaining comparison line' "the base comparison used failing identities"
   assert_contains "$MERGE_STDOUT" 'tmp=/tmp/probe.head34 pid=823 slot=2' "the detail is still visible in the build log"
   assert_contains "$MERGE_CALLS" "--match-head-commit $BUILD_HEAD " "the merge is bound to the gated head"
   assert_clone_untouched
@@ -5018,20 +5022,22 @@ test_an_extra_harness_check_is_refused_under_override() {
   fi
   assert_eq "$MERGE_RC" 1 "the merge has a failing check of its own ($MERGE_OUTPUT)"
   assert_contains "$MERGE_STDOUT" "1 line(s) of the merge's failure evidence are not in main's" "one check differs"
-  assert_contains "$MERGE_STDOUT" '  + tools/test-suite.sh: FAIL  a check that fails only on the merge' "the new failure is named"
+  assert_contains "$MERGE_STDOUT" '  + FAIL  a check that fails only on the merge [HARNESS tools/test-suite.sh' "the new failure is named"
   assert_no_merge_call
   assert_clone_untouched
 }
 
 test_an_unrecognised_harness_line_is_compared_literally_under_override() {
-  run_harness_failure_override "      unfamiliar detail tmp=/tmp/probe.head34 pid=823 slot=2"
+  local refusal='EXECUTION SLOT REFUSED fixture: this batch runs inside slot 2 of 4, which an enclosing batch took as --cpu'
+  run_harness_failure_override "      unfamiliar detail tmp=/tmp/probe.head34 pid=823 slot=2"$'\n'"$refusal"
   if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
     assert_posix_only_refusal "a merge build with an unfamiliar failure line"
     return 0
   fi
   assert_eq "$MERGE_RC" 1 "an extra detail line still needs a literal match ($MERGE_OUTPUT)"
-  assert_contains "$MERGE_STDOUT" "1 line(s) of the merge's failure evidence are not in main's" "only the first detail was ignored"
+  assert_contains "$MERGE_STDOUT" "2 line(s) of the merge's failure evidence are not in main's" "the extra detail and refusal both differ"
   assert_contains "$MERGE_STDOUT" '  +       unfamiliar detail tmp=/tmp/probe.head34 pid=823 slot=2' "the unfamiliar line is shown verbatim"
+  assert_contains "$MERGE_STDOUT" "  + $refusal" "the slot refusal is shown verbatim"
   assert_no_merge_call
   assert_clone_untouched
 }

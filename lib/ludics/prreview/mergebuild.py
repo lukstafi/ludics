@@ -327,17 +327,26 @@ changed picks the same ones. Its verdict:
                             since what decides the merge was not read.
 
 Recognised forms (closed, #1359). When the merge log has a ``FAIL  <label>`` line (two spaces and a
-label that starts with a nonspace), compare the set of failing labels verbatim. A label belongs
-to the current member when introduced by ``HARNESS <path> (<tier>; bash <major>.<minor>
+label that starts with a nonspace), compare failing labels verbatim, with multiplicity because
+the same invocation can run twice. The identity includes the full current harness header
+``HARNESS <path> (<tier>; bash <major>.<minor>
 <interpreter>)`` (optionally with `` --only '<selector>'`` after the path). Paths use ASCII letters,
 digits, underscores, dots, slashes and hyphens; tiers omit dots and slashes. The scope ends at the matching
-``HARNESS <path> exit: <digits>``. Keep both delimiter lines literally too. Ignore ``PASS  <label>``
-and the one detail line immediately after a recognised FAIL with exactly six leading spaces and
-a nonblank payload. That line carries observations such as random scratch paths, PIDs and slot
-numbers. No substitutions are made inside labels or other lines. Every other line, including a
-malformed marker, additional indented lines, and unfamiliar failure wording, compares literally
-with multiplicity. With no recognised FAIL in the merge log, compare both logs literally with
-multiplicity as before. Two empty logs still match when their exit statuses agree.
+``HARNESS <path> exit: <digits>``. Both delimiter lines also compare literally. The only other
+recognised forms are:
+
+* ``PASS  <label>`` with the same label shape, ignored.
+* One line immediately after FAIL with exactly six leading spaces and a nonspace next character,
+  ignored as reporter detail (scratch paths, PIDs, slot numbers).
+* ``EXECUTION SLOT <box>: inside slot <index> of <capacity>, held by an enclosing batch, for: <command>``.
+  Mask the positive decimal slot index, keeping box, capacity and command.
+* ``  real fleet run: <absolute path>; background record: <absolute path>``. Ignore this pair of
+  generated record paths, with exactly two leading spaces and no semicolon in either path.
+
+Every other line, including malformed markers, slot refusals, additional indented lines and
+unfamiliar failure wording, compares literally with multiplicity. With no recognised FAIL in
+the merge log, compare both logs literally as before. Two empty logs still match when their exit
+statuses agree.
 The override's reason names the failure for the reader (merge.py). The dry run (THE DRY RUN)
 takes no override, so a shared failure is its exit 1.
 """
@@ -355,8 +364,9 @@ import sys
 import tempfile
 import time
 from collections import Counter
-from collections.abc import Generator, Mapping, Sequence
+from collections.abc import Generator, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from itertools import islice
 from pathlib import Path
 from types import FrameType
 from typing import Literal, NoReturn, assert_never
@@ -1994,12 +2004,18 @@ _PASSED_CHECK = re.compile(r"PASS  \S.*")
 _CHECK_DETAIL = re.compile(r" {6}\S.*")
 _MEMBER_START = re.compile(r"HARNESS ([A-Za-z0-9_./-]+)(?: --only '.+')? \([A-Za-z0-9_-]+; bash [0-9]+\.[0-9]+ .+\)")
 _MEMBER_END = re.compile(r"HARNESS ([A-Za-z0-9_./-]+) exit: [0-9]+")
+_SLOT_REUSE = re.compile(
+    r"(EXECUTION SLOT [A-Za-z0-9_.-]+: inside slot )[1-9][0-9]*"
+    r"( of [1-9][0-9]*, held by an enclosing batch, for: \S.*)"
+)
+_FLEET_RECORDS = re.compile(r"  real fleet run: /[^;]+; background record: /[^;]+")
 
 
 def _failure_evidence(lines: list[str]) -> Counter[tuple[str, str]]:
-    """The set of failing checks, with a multiset of all unrecognised lines."""
+    """Failing checks and literal lines are counted so each has a matching witness on the base."""
     evidence: Counter[tuple[str, str]] = Counter()
     member = ""
+    header = ""
     after_fail = False
     for line in lines:
         if after_fail and _CHECK_DETAIL.fullmatch(line):
@@ -2007,12 +2023,15 @@ def _failure_evidence(lines: list[str]) -> Counter[tuple[str, str]]:
             continue
         after_fail = _FAILED_CHECK.fullmatch(line) is not None
         if after_fail:
-            evidence[member, line] = 1
-        elif not _PASSED_CHECK.fullmatch(line):
+            evidence[header, line] += 1
+        elif slot := _SLOT_REUSE.fullmatch(line):
+            evidence["slot", f"{slot[1]}<index>{slot[2]}"] += 1
+        elif not (_PASSED_CHECK.fullmatch(line) or _FLEET_RECORDS.fullmatch(line)):
             if start := _MEMBER_START.fullmatch(line):
                 member = start[1]
+                header = line
             elif (end := _MEMBER_END.fullmatch(line)) and end[1] == member:
-                member = ""
+                member = header = ""
             evidence["", line] += 1
     return evidence
 
@@ -2067,26 +2086,30 @@ def _against_base(
         fail(1, *plain, f"though each side is green on its own. Merge {base_ref} in, fix the clash, push, and merge again.")
     mine, theirs = _log_lines(merged.log), _log_lines(base.log)
     evidence = "every line of the merge's output in its own"
+    extra_count = 0
+    extra: Iterable[tuple[str, str]] = ()
     if base.status != rc:
         differs = f"{base_ref} alone exits {base.status}, the merge {rc}"
-        extra: list[str] = []
     elif mine is None or theirs is None:
         differs = f"a log is over {COMPARED_BYTES} bytes or could not be read, so the two were not compared"
-        extra = []
     elif any(_FAILED_CHECK.fullmatch(line) for line in mine):
-        extra = [f"{member}: {line}" if member else line
-                 for member, line in (_failure_evidence(mine) - _failure_evidence(theirs)).elements()]
-        differs = f"{len(extra)} line(s) of the merge's failure evidence are not in {base_ref}'s" if extra else ""
-        evidence = "every failing check and remaining literal line of the merge's output in its own"
+        missing = _failure_evidence(mine) - _failure_evidence(theirs)
+        extra_count = missing.total()
+        extra = missing.elements()
+        differs = f"{extra_count} line(s) of the merge's failure evidence are not in {base_ref}'s" if extra_count else ""
+        evidence = "every failing check and remaining comparison line of the merge's output in its own"
     else:
-        extra = list((Counter(mine) - Counter(theirs)).elements())
-        differs = f"{len(extra)} line(s) of the merge's output are not in {base_ref}'s" if extra else ""
+        missing_lines = Counter(mine) - Counter(theirs)
+        extra_count = missing_lines.total()
+        extra = (("", line) for line in missing_lines.elements())
+        differs = f"{extra_count} line(s) of the merge's output are not in {base_ref}'s" if extra_count else ""
     if differs:
         cli.say(f"merge build {label}: {base_ref} alone FAILED (exit {base.status}) after {base.took}s, not the same way: {differs}")
-        for line in extra[:NAMED_LINES]:
-            cli.say(f"  + {line[:LINE_CHARS]}")
-        if len(extra) > NAMED_LINES:
-            cli.say(f"  + ... ({len(extra) - NAMED_LINES} more)")
+        for scope, line in islice(extra, NAMED_LINES):
+            name = f" [{scope[:LINE_CHARS]}]" if scope.startswith("HARNESS ") else ""
+            cli.say(f"  + {(line[:LINE_CHARS] + name)[:LINE_CHARS]}")
+        if extra_count > NAMED_LINES:
+            cli.say(f"  + ... ({extra_count - NAMED_LINES} more)")
         fail(
             1, *plain,
             f"and its failure is not only {base_ref}'s ({differs}). Merge {base_ref} in, fix what is the merge's,",
