@@ -837,6 +837,7 @@ def conclude_from_bg_run(
     unbound = request_refusal(facts, run_dir, box, request)
     if unbound is not None:
         return unbound
+    # Absent directories and scratch failures keep bg_run_verdict's own diagnostics.
     if require_bound and "request" in facts and run_request(facts)[0] == "none":
         return Refusal(f"FROM-BG-RUN REFUSED: {shown(run_dir)} on {box} has no request file binding it to {shown(request)}", 1)
     read = bg_run_verdict(facts, run_dir, box)

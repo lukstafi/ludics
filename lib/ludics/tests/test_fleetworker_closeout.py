@@ -245,6 +245,16 @@ class NoPR(Refusing):
             self.refuses(4, "test-run host unreachable; FROM-BG-RUN REFUSED: a run directory /bg is on both",
                          closeout.no_pr_payloads, cfg, "w", "t", self.records, ["a"], ["/bg"], "evidence")
 
+    def test_two_bg_run_copies_refuse_even_when_only_one_binds_the_record(self) -> None:
+        self.records[0]["request"]["agent_host"] = "testbox"
+        cfg = load_config(CFG.script, {"FLEET_BOXES": "box testbox", "FLEET_LOCAL_BOX": "testbox"}, host="testbox")
+        facts = [ex.bg_run_facts(bg_text(request=binding)) for binding in ("", ":a")]
+        with (mock.patch.object(ex, "observed_sha_of", return_value=OID),
+              mock.patch.object(ex, "read_run", return_value=ex.Refusal("absent", 1)),
+              mock.patch.object(ex, "read_bg_run", side_effect=facts)):
+            self.refuses(1, "then retry board close", closeout.no_pr_payloads,
+                         cfg, "w", "t", self.records, ["a"], ["/bg"], "evidence")
+
     def test_one_match_does_not_hide_an_unreachable_second_record(self) -> None:
         other = record("b", checkout="/other")
         other["request"]["execution_host"] = "otherbox"

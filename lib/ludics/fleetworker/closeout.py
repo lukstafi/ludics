@@ -50,7 +50,8 @@ With ``--no-pr``, each repeated absolute ``--run`` trims trailing whitespace (``
 internal spaces stay, while leading whitespace and relative paths are refused) and is read as
 test-run on each standing record's execution host. The bg-run fallback checks that host and the
 record's eligible agent host (execution.py's ``bg_run_boxes``); copies on both refuse a match for
-that record even if only one copy binds it (#1355).
+that record even if only one copy binds it (#1355). An unreachable eligible agent host makes
+the close refuse with exit 4, even when another standing record matches.
 Exactly one record must match. A test-run must name its checkout; a bg-run requires its one-line
 request file and uses execution.py's verdict reader, which reads wait's result, the last whole
 runner sentinel and the immediate slot refusal. Other log lines supply no verdict. The checkout
