@@ -234,6 +234,7 @@ class Race(unittest.TestCase):
 
             out = io.StringIO()
             with mock.patch.object(tiprun, "listing", side_effect=listing), \
+                    mock.patch.object(tiprun, "pending_windows", return_value=Done(0, "[]")), \
                     mock.patch.object(tiprun, "fleet_worker", side_effect=worker), \
                     mock.patch.object(tiprun, "run_on", side_effect=AssertionError("the box was touched")), \
                     contextlib.redirect_stdout(out):
@@ -269,6 +270,7 @@ class Race(unittest.TestCase):
 
             out = io.StringIO()
             with mock.patch.object(tiprun, "listing", side_effect=listing), \
+                    mock.patch.object(tiprun, "pending_windows", return_value=Done(0, "[]")), \
                     mock.patch.object(tiprun, "fleet_worker", side_effect=worker), \
                     mock.patch.object(tiprun, "refresh_box", side_effect=refresh), \
                     mock.patch.object(tiprun, "run_on", side_effect=AssertionError("the box was touched")), \
@@ -398,6 +400,75 @@ class ReservedRun(unittest.TestCase):
         self.assertIn("read once this run was reserved", out)
 
 
+class GpuPendingWindow(unittest.TestCase):
+    """ludics#1356: an unreserved (GPU) loop run yields to a live pending measurement window on its box."""
+
+    BOX = "rog-nv-linux"
+    RID = "w-gpu-rog-7"
+
+    def go(self, before: list[dict[str, Any]], pending: str = "[]", pending_rc: int = 0,
+           ) -> tuple[int, str, list[list[str]], mock.MagicMock]:
+        cfg = load_config("/nonexistent/issue-wave/scripts/fleet-worker.sh", {}, host="h")
+        calls: list[list[str]] = []
+        mine = outstanding(self.RID, host=self.BOX)
+
+        def listing(_cfg: object) -> Done:
+            return Done(0, json.dumps(before if not calls else [*before, mine]))
+
+        def worker(_cfg: object, args: list[str], body: dict[str, Any] | None = None, *, verb: str = "TIP-RUN") -> int:
+            calls.append(args)
+            return 0
+
+        def on_box(_cfg: object, _box: str, _script: str, _args: list[str], capture: bool = False) -> Done:
+            return Done(0, "dir=/s/run-1\nslot=held\n")
+
+        req = request(request_id=self.RID, execution_host=self.BOX, purpose="GPU integration loop, cuda: tip")
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = os.path.join(tmp, "req.json")
+            with open(payload, "w", encoding="utf-8") as f:
+                json.dump(req, f)
+            out = io.StringIO()
+            with mock.patch.object(tiprun, "listing", side_effect=listing), \
+                    mock.patch.object(tiprun, "pending_windows", return_value=Done(pending_rc, pending)) as read_pending, \
+                    mock.patch.object(tiprun, "fleet_worker", side_effect=worker), \
+                    mock.patch.object(tiprun, "refresh_box", return_value=0), \
+                    mock.patch.object(tiprun, "run_on", side_effect=on_box), \
+                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                rc = tiprun.cmd_tip_run(cfg, [payload, "--checkout", "/co", "--full-loop", "--", "env", "OCANNL_BACKEND=cuda", "true"])
+        return rc, out.getvalue(), calls, read_pending
+
+    def test_a_gpu_loop_yields_to_a_live_pending_window_on_its_box(self) -> None:
+        mark = {"box": self.BOX, "id": "measure-9", "worker": "t2429", "expires_left": 900}
+        rc, out, calls, read_pending = self.go([outstanding("iterate", host=self.BOX, standing=True)], pending=json.dumps([mark]))
+        self.assertEqual((rc, calls), (1, []))
+        read_pending.assert_called_once()
+        self.assertIn("TIP-RUN NOT STARTED w-gpu-rog-7: pending window measure-9 (t2429, 900s left) waits for rog-nv-linux;"
+                      " a loop run starts no new run before it opens (registry.py, THE PENDING WINDOW); nothing reserved", out)
+
+    def test_a_gpu_loop_starts_with_no_live_pending_mark_or_one_on_another_box(self) -> None:
+        elsewhere = {"box": "minix-amd-linux", "id": "measure-9", "worker": "t2429", "expires_left": 900}
+        for pending in ("[]", json.dumps([elsewhere])):
+            with self.subTest(pending=pending):
+                rc, out, calls, _ = self.go([outstanding("iterate", host=self.BOX, standing=True)], pending=pending)
+                self.assertEqual(rc, 0, out)
+                self.assertIn(f"TIP-RUN STARTED {self.RID} {self.BOX}", out)
+                self.assertEqual([c[:2] for c in calls], [["execution", "run"], ["execution", "record"]])
+
+    def test_a_gpu_loop_yields_fail_closed_on_unread_or_unreadable_pending_window(self) -> None:
+        for pending, rc_read in (("[]", 1), ("[]", 255), ("nonsense", 0), (json.dumps([{"id": "bad", "unreadable": True}]), 0)):
+            with self.subTest(pending=pending, rc=rc_read):
+                rc, out, calls, _ = self.go([], pending=pending, pending_rc=rc_read)
+                self.assertEqual((rc, calls), (1, []), out)
+                self.assertIn(f"TIP-RUN NOT STARTED {self.RID}: ", out)
+                self.assertIn("; nothing reserved", out)
+
+    def test_an_outstanding_non_standing_record_short_circuits_before_reading_pending_windows(self) -> None:
+        rc, out, calls, read_pending = self.go([outstanding("leg-1", host=self.BOX)])
+        self.assertEqual((rc, calls), (1, []))
+        read_pending.assert_not_called()
+        self.assertIn("rog-nv-linux has leg-1 (launching) outstanding; a loop run yields to it; nothing reserved", out)
+
+
 class Tip(unittest.TestCase):
     """--tip: the branch's head on GitHub becomes the request's one SHA before anything is reserved."""
 
@@ -421,6 +492,7 @@ class Tip(unittest.TestCase):
             payload = self.payload(tmp)
             with mock.patch.object(tiprun.revision, "branch_head", return_value=SHA) as head, \
                     mock.patch.object(tiprun, "listing", return_value=Done(0, "[]")), \
+                    mock.patch.object(tiprun, "pending_windows", return_value=Done(0, "[]")), \
                     mock.patch.object(tiprun, "fleet_worker", side_effect=worker), \
                     contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as err:
                 rc = tiprun.cmd_tip_run(cfg, [payload, "--tip", "main", "--checkout", "/co", "--", "true"])
@@ -464,6 +536,7 @@ class Allocate(unittest.TestCase):
                 json.dump(bare, f)
             out = io.StringIO()
             with mock.patch.object(tiprun, "listing", return_value=Done(0, json.dumps(held))), \
+                    mock.patch.object(tiprun, "pending_windows", return_value=Done(0, "[]")), \
                     mock.patch.object(tiprun, "fleet_worker", side_effect=worker), \
                     contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()) as err:
                 rc = tiprun.cmd_tip_run(cfg, [payload, "--id-prefix", "w-gpu-rog", "--checkout", "/co", "--", "true"])
@@ -514,6 +587,7 @@ class Starting(unittest.TestCase):
             with open(payload, "w", encoding="utf-8") as f:
                 json.dump(req, f)
             with mock.patch.object(tiprun, "listing", side_effect=listing), \
+                    mock.patch.object(tiprun, "pending_windows", return_value=Done(0, "[]")), \
                     mock.patch.object(tiprun, "fleet_worker", side_effect=worker), \
                     mock.patch.object(tiprun, "refresh_box", return_value=0), \
                     mock.patch.object(tiprun, "run_on", side_effect=on_box), \

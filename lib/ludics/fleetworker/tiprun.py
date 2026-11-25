@@ -27,8 +27,12 @@ In order, each step yielding rather than waiting:
     another loop run) refuses the run: a loop run is the lowest-priority correctness on the box, so it never takes
     a seat or a token a worker's leg was reserved for, and never stands between a measurement and
     its window. Standing reservations are a worker's iteration on its own agent host, whose batches
-    the slot below sees as they run. A run with ``--reserved <id>`` yields far less (THE RESERVED
-    RUN, below).
+    the slot below sees as they run. Before the reservation only, it also reads the anchor's live
+    pending-window marks (registry.py, THE PENDING WINDOW; ludics#1356): a live mark naming this
+    box, an unreadable mark, or a failed read refuses the run fail-closed, reserving nothing, while
+    a lapsed mark or one on another box does not stop it; a mark written between that read and the
+    reservation holds back at most this one run (the same boundary as THE RESERVED RUN). A run with
+    ``--reserved <id>`` yields far less (THE RESERVED RUN, below).
  3. ``execution run`` reserves and dispatches it, with every check the registry makes (lease,
     halt and the two records it admits: its triage, and a run marked as this verb's -- the payload
     is sent with ``"tip_run": true`` beside the request, registry.py's THE LOOP RUN UNDER A HALT,
@@ -80,7 +84,8 @@ is ``TIP-RUN NOT STARTED`` (exit 1), concluded as any. The far side passes ``--r
 <id>`` to its ``execution slot``, which takes only the reserved slot (slot.py, THE RESERVED SLOT),
 still ``--wait 0``: a slot held by a batch that took it before the reservation stood refuses the
 run, and the loop tries again at its next start. A running run is never stopped by any of this. A
-run without ``--reserved`` -- a GPU loop's -- yields as step 2 says, unchanged.
+run without ``--reserved`` -- a GPU loop's -- yields as step 2 says (non-standing records and live
+pending-window marks).
 
 Started, the record is moved to ``running`` with the revision, checkout, handle and log; not
 started, anything reserved is concluded ``not-launched`` with the reason as evidence, so a box the
@@ -550,7 +555,7 @@ def reserved_refusal(records: list[dict[str, Any]], box: str, request_id: str, c
 
 
 def pending_on(cfg: Config, box: str) -> str | None:
-    """THE RESERVED RUN's pending-window read: why the run does not start, or None."""
+    """Pre-reservation pending-window read (step 2 and THE RESERVED RUN): why the run does not start, or None."""
     done = pending_windows(cfg)
     try:
         decoded: Any = json.loads(done.out) if done.rc == 0 and not done.unreachable else None
@@ -558,12 +563,12 @@ def pending_on(cfg: Config, box: str) -> str | None:
         decoded = None
     if not isinstance(decoded, list) or not all(isinstance(m, dict) for m in cast(list[Any], decoded)):
         return (f"the anchor's pending windows could not be read (exit {done.rc}), so whether a window waits for {box}"
-                " is unknown; a reserved loop run never outruns one")
+                " is unknown; a loop run never outruns one")
     marks = cast(list[dict[str, Any]], decoded)
     named = [f"{m.get('id')}" + (" (unreadable)" if m.get("unreadable") else f" ({m.get('worker')}, {m.get('expires_left')}s left)")
              for m in marks if m.get("unreadable") or m.get("box") == box]
     if named:
-        return (f"pending window {', '.join(named)} waits for {box}; a reserved loop run starts no new run before it opens"
+        return (f"pending window {', '.join(named)} waits for {box}; a loop run starts no new run before it opens"
                 " (registry.py, THE PENDING WINDOW)")
     return None
 
@@ -658,14 +663,13 @@ def cmd_tip_run(cfg: Config, args: list[str]) -> int:
         return 1
     if parsed.reserved:
         why = reserved_refusal(records, box, request_id, parsed.checkout, parsed.reserved) or pending_on(cfg, box)
-        if why:
-            cli.say(f"TIP-RUN NOT STARTED {request_id}: {why}; nothing reserved")
-            return 1
     else:
         busy = yielding_to(records, box, request_id)
-        if busy:
-            cli.say(f"TIP-RUN NOT STARTED {request_id}: {box} has {', '.join(busy)} outstanding; a loop run yields to it; nothing reserved")
-            return 1
+        why = (f"{box} has {', '.join(busy)} outstanding; a loop run yields to it" if busy
+               else pending_on(cfg, box))
+    if why:
+        cli.say(f"TIP-RUN NOT STARTED {request_id}: {why}; nothing reserved")
+        return 1
 
     # The request is staged anew, marked beside it as this verb's (registry.py, THE LOOP RUN UNDER A
     # HALT: a halt admits it, the verdict the halt waits for), with the revision and id resolved above.
