@@ -336,7 +336,9 @@ fleetworker/execution.py:conclude_from_run
 
 fleetworker/execution.py:from_bg_run_payload
 fleetworker/execution.py:conclude_from_bg_run
-    issue-wave/scripts/test-fleet-worker.sh "execution conclude --from-bg-run" "execution tip-run" "execution revisions resolve" "execution leg"
+fleetworker/execution.py:locate_bg_run
+fleetworker/execution.py:AmbiguousBgRun
+    issue-wave/scripts/test-fleet-worker.sh "execution conclude --from-bg-run" "execution tip-run" "execution revisions resolve" "execution leg" board
 
 fleetworker/execution.py:standing_handback_payload
 fleetworker/execution.py:standing_handback

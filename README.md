@@ -839,6 +839,8 @@ a successor enters its lease mutation. It checks the refusal and both files in t
 `test-fleet-worker.sh board` drives no-PR close-out through the real conclude CLI and registry
 (#1123): passed and failed runs conclude their own standing record and finish the row, and a
 repeated close writes nothing. The fixtures use payload files rather than accepting JSON in argv.
+A leg's bound bg-run on its agent host closes its execution record, while the same path on both
+hosts refuses before writing either the board or the registry (#1355).
 The same section records a first native spawn, a native respawn and a CLI-to-native finisher
 through `board spawned`, checking the recorded facts, the relaunch counts, launch-attempt ID replay
 idempotency and the lease (#1264, #1294), and pins `board tally --turn-id` replay idempotency and
