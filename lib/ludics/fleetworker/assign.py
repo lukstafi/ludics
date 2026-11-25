@@ -20,8 +20,10 @@ the registry is asked, so a malformed request reserves nothing, and neither do i
 
 - ``<base.json>``: one JSON object, the coordinator's completion of every request in the call, of
   BASE_FIELDS only: ``wave``, ``worker``, ``transport``, ``agent_host``, ``repository`` (required,
-  nonempty strings), ``issue`` and ``purpose`` (optional strings). Nothing a worker cannot be
-  trusted to choose comes from the worker: a block cannot set the transport, the wave, ``standing``,
+  nonempty strings), ``issue`` and ``purpose`` (optional strings). The base's ``purpose`` is retained
+  for the shared Windows witness base format. Assignment takes its purpose from the request block.
+  Nothing a worker cannot be trusted to choose comes from the worker: a block cannot set the
+  transport, the wave, ``standing``,
   ``integration`` or ``triage_reason``, so ``assign`` never takes a standing, integration or triage
   reservation (those keep their own verbs: ``run``, ``tip-run``).
 - the requests file (``-``: stdin): the worker's final message as written, of which only the blocks

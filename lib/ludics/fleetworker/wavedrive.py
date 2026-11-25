@@ -61,7 +61,9 @@ terminal event, a failed turn), the states ``ORPHANED``, ``VANISHED`` and ``UNKN
 with no final message are attention. A box that does not answer, and a status line this driver cannot read, are tried again
 next tick and recorded nowhere: only a state the worker is really in ends a turn's reading.
 
-THE MARKERS, a fail-closed allowlist over the final message's non-blank lines. The closed list
+THE MARKERS, a fail-closed allowlist over the final message's non-blank lines. The scan begins
+after ``log --last-result`` selects the text. Gemini step selection reads earlier marker-shaped
+lines as plain text (farside.LOG_LAST_RESULT). The closed list
 of block forms excluded from marker reading is: explicit `>`-prefixed lines, backtick fences and
 tilde fences, each with up to three leading spaces. A fence opens with at least three matching
 characters and optional info (without backticks for a backtick fence), and ends at a fence of
@@ -943,7 +945,8 @@ class Driver:
         markers = ", ".join(token for token in MARKER_TOKENS if token not in ("PLAN_READY", "END_PLAN_READY"))
         write_atomically(reply, f"Please resend the same final message with its handoff marker on the first line."
                                 f" The driver reads {markers}. For REVIEW_REQUEST and CONFIRM_REQUEST,"
-                                " send the marker line by itself so it is also the last line.\n")
+                                " send the marker line by itself so it is also the last line."
+                                " If your final is a question for the coordinator, resend the question as written.\n")
         self.note(worker, turn, "reprompt", "reprompting", why, file=message, reply=reply)
         self.resume(worker, turn, "reprompt", reply, f"asked for the same final message with a marker first ({reply})")
 

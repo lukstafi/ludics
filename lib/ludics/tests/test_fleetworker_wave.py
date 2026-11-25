@@ -3184,6 +3184,7 @@ class Drive(DriveCase):
             with open(sent[-1], encoding="utf-8") as f:
                 prompt = f.read()
             self.assertIn("resend the same final message with its handoff marker on the first line", prompt)
+            self.assertIn("If your final is a question for the coordinator, resend the question as written.", prompt)
             for marker in ("WINDOWS_WITNESS_REQUEST", "EXECUTION_REQUEST", "EXECUTION_RESULT", "REVIEW_REQUEST", "CONFIRM_REQUEST", "HANDBACK"):
                 self.assertIn(marker, prompt)
             self.assertEqual(self.ledger(), [(0, "reprompt", "reprompting"), (0, "reprompt", "answered")])
