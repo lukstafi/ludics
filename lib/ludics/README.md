@@ -969,6 +969,8 @@ All six regression tests fail with the production code at base `82b50835`.
 The review controls fail on `93185826` for the paired-plan escalation, assignment payload and
 recovery input, and fenced run evidence.
 
+Agent notes (wave-20261125-ludics, t1344): `wave heartbeat --until-attention` tracks the last read printed to the coordinator (or cold-start baseline) separately and persists it as optional `reported` (`{"at", "parts"}`) in `logs/heartbeat.last` whenever it differs from `at`/`parts`. Silent ticks still advance `at`/`parts`/`read` for plain ticks, wakes diff `HEARTBEAT changed since` against `reported`, and unreadable-board wakes advance `reported`'s non-board parts while preserving its last reported `board rows`. Both `test_until_attention_exits_on_done_row_and_ignores_live_changes` and `test_until_attention_wake_diffs_against_last_reported_read` fail on the base.
+
 Agent notes (wave-20261117-ludics, t1190): `wavedrive.py`'s exact
 `WINDOWS_WITNESS_REQUEST` marker goes directly to attention without parsing its payload or
 calling assign. `test_fleetworker_wave.py` drives the first tick and repeat ticks, rejects mixed
