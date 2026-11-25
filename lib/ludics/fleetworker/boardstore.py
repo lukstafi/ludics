@@ -200,6 +200,7 @@ type Doc = dict[str, Any]
 WAVE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 KEY = re.compile(r"[A-Za-z][A-Za-z0-9_-]*")
 PLANNER_KEYS = ("planner", "planner_effort")
+PAIRED_MODES = ("paired", "paired+critique")
 # THE LAUNCH-ATTEMPT IDENTITY (the header): the one launch-attempt ID grammar shared by
 # ``board spawned`` (#1294) and ``wave launch`` (#1290), sharing WAVE's token grammar.
 LAUNCH_ID = WAVE
@@ -275,6 +276,16 @@ def task_ok(value: Any) -> str:
     if not task or task.startswith("-") or any(unicodedata.category(c) in NOT_IN_TASK for c in task):
         refuse("a task must be nonempty, with no control character or line separator, and not start with '-'")
     return task
+
+
+def planner_target_ok(
+    task: str, planning: str | None, recorded_dir: str | None, plan_dir: str | None
+) -> None:
+    if planning not in PAIRED_MODES:
+        refuse(f"planner fields require a paired planning mode on {json.dumps(task)}")
+    if not plan_dir or plan_dir != recorded_dir:
+        refuse(f"planner fields require the recorded plan_dir on {json.dumps(task)}"
+               f" (has {json.dumps(recorded_dir)}, got {json.dumps(plan_dir)})")
 
 
 def fields_ok(value: Any) -> list[tuple[str, str]]:
@@ -830,15 +841,10 @@ def main(argv: list[str]) -> None:
             before = None if created else dict(fields)
             if action == "set":
                 changed = dict(pairs)
-                paired = changed.get("planning", fields.get("planning")) in ("paired", "paired+critique")
+                planning = changed.get("planning", fields.get("planning"))
                 if any(key in changed for key in PLANNER_KEYS):
-                    if not paired:
-                        refuse(f"planner fields require a paired planning mode on {json.dumps(task)}")
-                    plan_dir = changed.get("plan_dir")
-                    if not plan_dir or plan_dir != fields.get("plan_dir"):
-                        refuse(f"planner fields require the recorded plan_dir on {json.dumps(task)}"
-                               f" (has {json.dumps(fields.get('plan_dir'))}, got {json.dumps(plan_dir)})")
-                if (("planning" in changed and not paired)
+                    planner_target_ok(task, planning, fields.get("plan_dir"), changed.get("plan_dir"))
+                if (("planning" in changed and planning not in PAIRED_MODES)
                         or ("plan_dir" in changed and changed["plan_dir"] != fields.get("plan_dir"))):
                     for key in PLANNER_KEYS:
                         fields.pop(key, None)

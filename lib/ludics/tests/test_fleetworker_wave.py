@@ -194,13 +194,21 @@ class CoordinatorPreflight(WaveDirCase):
                 ],
             )
 
-    def test_invalid_claude_probe_options_refuse_without_starting_cli(self) -> None:
+    def test_single_dash_option_values_refuse_before_any_probe(self) -> None:
+        cases = (
+            ("--model", "claude-custom", "--effort", "-low"),
+            ("--model", "gpt-custom", "--effort", "-low"),
+            ("--model", "gemini-custom", "--effort", "-low"),
+            ("--model", "-x"),
+        )
+        for args in cases:
+            with self.subTest(args=args), FakeTool("claude") as claude, FakeTool("codex") as codex, FakeTool("agy") as agy:
+                rc, out, err = self.probe("--mode", "paired", *args)
+                self.assertEqual((rc, out, claude.calls(), codex.calls(), agy.calls()), (2, "", [], [], []), err)
+                self.assertIn(f"preflight --planner: {args[-2]} must match", err)
+
+    def test_claude_probe_builder_still_refuses_invalid_model(self) -> None:
         with FakeTool("claude") as claude:
-            rc, out, err = self.probe("--mode", "paired", "--model", "claude-custom", "--effort", "-low")
-            self.assertEqual((rc, out), (1, ""))
-            self.assertIn("PREFLIGHT REFUSED mac planner (claude claude-custom):", err)
-            self.assertIn("effort must not start with '-'", err)
-            self.assertEqual(claude.calls(), [])
             why = preflight.probe_coordinator_turn("claude", "-bad", "", 1)
             self.assertIn("model must be a non-empty model name", why)
             self.assertEqual(claude.calls(), [])

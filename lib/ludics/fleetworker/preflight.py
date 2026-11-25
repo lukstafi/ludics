@@ -190,9 +190,13 @@ def coordinator_preflight(cfg: Config, box: str, args: list[str]) -> int:
         die("preflight --planner: give the wave file, optionally followed by --mode, --model and --effort with values")
     options: dict[str, str] = {}
     for name, value in zip(args[1::2], args[2::2], strict=True):
-        if name not in ("--mode", "--model", "--effort") or name in options or not value or value.startswith("--"):
+        if name not in ("--mode", "--model", "--effort") or name in options:
             die(f"preflight --planner: invalid option or value for {shlex.quote(name)}")
         options[name] = value
+    try:
+        plan.validate_options(options)
+    except ValueError as exc:
+        die(f"preflight --planner: {exc}")
     mode = options.get("--mode", "none")
     if mode not in MODES:
         die(f"preflight --planner: --mode must be one of {', '.join(MODES)}")

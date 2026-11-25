@@ -191,6 +191,16 @@ class PeerPlan(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         return done.stdout.strip()
 
+    def assert_start_refused(self, diagnostic: str, *args: str, status: int = 2) -> None:
+        worktrees = git("-C", self.repo, "worktree", "list", "--porcelain")
+        done = self.entry("start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main",
+                          "--managed", *args)
+        self.assertEqual((done.returncode, done.stdout, os.path.lexists(os.path.dirname(self.dir)),
+                          git("-C", self.repo, "worktree", "list", "--porcelain")),
+                         (status, "", False, worktrees), done.stderr)
+        self.assertIn(diagnostic, done.stderr)
+        self.assertEqual(self.gh.calls(), [])
+
     def wait(self, run: str) -> str:
         done = subprocess.run([BG_RUN, "wait", run, "--within", "60"], capture_output=True, text=True, check=False)
         # The verdict word: a run that finished before the wait reads `rc=0 (finished earlier, ...)`.
@@ -299,23 +309,42 @@ class PeerPlan(unittest.TestCase):
         self.assertNotIn("planner", rows["t8"])
         self.assertNotIn("planner_effort", rows["t8"])
 
-    def test_a_board_refusal_stops_the_run_before_dispatch(self) -> None:
+    def test_an_unpaired_row_refuses_before_allocation(self) -> None:
         self.paired_board("paired")
-        run = self.start_on_board("t8")
-        self.assertEqual(self.wait(run), "rc=1")
-        with open(os.path.join(run, "log"), encoding="utf-8") as f:
-            self.assertIn("planner fields require a paired planning mode", f.read())
+        self.assert_start_refused("planner fields require a paired planning mode", "--wave", "w", "--task", "t8")
         self.assertNotIn("planner", self.board_fields()["t8"])
-        self.assertFalse(os.path.exists(os.path.join(self.claude.dir, "calls.jsonl")))
 
-    def test_a_different_paired_rows_plan_directory_refuses_before_dispatch(self) -> None:
+    def test_a_mistyped_task_refuses_before_allocation(self) -> None:
+        self.paired_board("paired")
+        self.assert_start_refused('no task "t77" on the board of w', "--wave", "w", "--task", "t77")
+
+    def test_a_missing_board_refuses_before_allocation(self) -> None:
+        self.paired_board("paired")
+        self.assert_start_refused("no board for wave other", "--wave", "other", "--task", "t7")
+
+    def test_an_unreadable_board_fails_before_allocation(self) -> None:
+        self.paired_board("paired")
+        with open(os.path.join(self.tmp, "fleet", "boards", "w.json"), "w", encoding="utf-8") as f:
+            f.write("invalid JSON\n")
+        self.assert_start_refused("cannot read the board of w", "--wave", "w", "--task", "t7", status=1)
+
+    def test_a_mismatched_plan_dir_refuses_before_allocation(self) -> None:
         self.paired_board("paired")
         self.fleet("board", "set", "w", "t8", "planning=paired", f"plan_dir={self.dir}-other")
         before = self.board_fields()
-        run = self.start_on_board("t8")
+        self.assert_start_refused('planner fields require the recorded plan_dir on "t8"', "--wave", "w", "--task", "t8")
+        self.assertEqual(self.board_fields(), before)
+
+    def test_a_plan_dir_changed_after_allocation_refuses_before_dispatch(self) -> None:
+        self.paired_board("paired")
+        run = self.start_on_board("t7", "--managed")
+        self.fleet("board", "set", "w", "t7", f"plan_dir={self.dir}-other")
+        before = self.board_fields()
+        subprocess.run([BG_RUN, "start", run, "--", ENTRY, "_run", "plan", self.dir],
+                       capture_output=True, text=True, check=False)
         self.assertEqual(self.wait(run), "rc=1")
         with open(os.path.join(run, "log"), encoding="utf-8") as f:
-            self.assertIn('planner fields require the recorded plan_dir on "t8"', f.read())
+            self.assertIn('planner fields require the recorded plan_dir on "t7"', f.read())
         self.assertEqual(self.board_fields(), before)
         self.assertFalse(os.path.exists(os.path.join(self.claude.dir, "calls.jsonl")))
 
@@ -328,7 +357,7 @@ class PeerPlan(unittest.TestCase):
             self.assertIn("coordinator lease held by nobody", f.read())
         self.assertFalse(os.path.exists(os.path.join(self.claude.dir, "calls.jsonl")))
 
-    def test_a_claude_critique_refuses_a_whitespace_only_thread_and_bad_effort_exits_cleanly(self) -> None:
+    def test_a_claude_critique_refuses_a_whitespace_only_thread(self) -> None:
         done = self.entry("start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main")
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(self.wait(done.stdout.strip()), "rc=0")
@@ -346,15 +375,12 @@ class PeerPlan(unittest.TestCase):
         with open(os.path.join(run, "log"), encoding="utf-8") as f:
             self.assertIn("recorded no session id", f.read())
 
-        bad_dir = os.path.join(self.tmp, "plans", "w-8")
-        done = self.entry("start", bad_dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main", "--effort", "-high")
-        self.assertEqual(done.returncode, 0, done.stderr)
-        bad_run = done.stdout.strip()
-        self.assertEqual(self.wait(bad_run), "rc=1")
-        with open(os.path.join(bad_run, "log"), encoding="utf-8") as f:
-            log = f.read()
-        self.assertIn("effort must not start with '-'", log)
-        self.assertNotIn("Traceback", log)
+    def test_bad_model_or_effort_refuses_before_allocation(self) -> None:
+        cases = (("--effort", "-high"), ("--model", "-x"), ("--model", ""), ("--effort", "a\nb"))
+        for index, (option, value) in enumerate(cases):
+            with self.subTest(option=option, value=value):
+                self.dir = os.path.join(self.tmp, f"plans-{index}", "w-7")
+                self.assert_start_refused(f"{option} must match", option, value)
 
     def test_a_gemini_planner_runs_agy_in_a_clone_and_resumes_its_conversation(self) -> None:
         """THE PLANNER: a gemini-... model plans through agy with every tool approved, in a clone with no
