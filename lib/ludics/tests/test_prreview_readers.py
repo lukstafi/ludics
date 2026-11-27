@@ -632,6 +632,30 @@ class NoFindingsRecorded(unittest.TestCase):
                 self.assertNotEqual(st.tok, "failed", st.line())
                 self.assertNotIn("no findings recorded", st.detail)
 
+    def test_an_eyes_under_it_bounds_the_same_failed_run(self) -> None:
+        # Local review of #1387, P1: a 👀 still in the snapshot made the Completed-row arm approve.
+        st = self.read(reactions=[reaction("eyes", iso(120))])
+        self.assertEqual(st.tok, "failed", st.line())
+        self.assertTrue(st.detail.startswith("aaaaaaa|run|"), st.detail)
+        bare = self.summary(iso(60))
+        bare["body"] = str(bare["body"]).replace("<!-- codex-review-state:v1 ", "<!-- no-record ", 1)
+        self.assertEqual(run_state(feeds(comments=[bare], reactions=[reaction("eyes", iso(120))], head_at=iso(300),
+                                         created=iso(9000))).tok, "approved",
+                         "control: a Completed row over a 👀 with no record approves, as before")
+
+    def test_what_belongs_to_another_head_does_not_answer_it(self) -> None:
+        # Local review of #1387, P2: an earlier head's receipt, and a newer verdict for another
+        # head over this head's own, are read by head.
+        about = "\n\n<details> <summary>ℹ️ About Codex in GitHub</summary>\nx\n</details>"
+        old_receipt = comment(2, iso(400), (
+            "<!-- codex-review-receipt:v1 -->\n\nCodex Review: Didn't find any major issues. Keep it up!" + about))
+        st = self.read(old_receipt)
+        self.assertEqual(st.tok, "failed", "a receipt older than the head's arrival is an earlier head's")
+        mine = comment(2, iso(70), f"Codex Review: Didn't find any major issues.\n\n**Reviewed commit:** `{HEAD[:10]}`")
+        theirs = comment(3, iso(65), "Codex Review: Didn't find any major issues.\n\n**Reviewed commit:** `bbbbbbbbbb`")
+        self.assertNotEqual(self.read(mine, theirs).tok, "failed",
+                            "this head's verdict under a newer one for another head is still this head's")
+
     def test_a_record_out_of_the_boundary_keeps_the_old_reading(self) -> None:
         absent = self.summary(iso(60))
         absent["body"] = str(absent["body"]).replace('"has_any_findings":null,', "", 1)

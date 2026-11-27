@@ -528,6 +528,23 @@ def _head_findings(comments: list[Json], reviews: list[Json], rev: str, head_sha
     return False
 
 
+def _said_about_head(comments: list[Json], reviews: list[Json], rev: str, head_sha: str) -> bool:
+    """Has the reviewer said anything about this exact head: a (substantive) review of it, or a
+    comment that is not the summary stamped with it, findings or a no-findings verdict alike
+    (ludics#1387)? Unlike ``_head_findings``, a clean verdict counts: an older one for this head
+    under a newer verdict for another is still this head's."""
+    if _review_of_head_at(reviews, rev, head_sha):
+        return True
+    for c in comments:
+        if not login_is(c, rev) or _is_summary(c):
+            continue
+        stamps = capture_all(body_of(c), REVIEWED_COMMIT_RE)
+        sha = jstr(alt(stamps[-1]["s"] if stamps else None, ""))
+        if sha and startswith(head_sha, sha):
+            return True
+    return False
+
+
 def _short(sha: str) -> str:
     return sha[:7]
 
@@ -766,9 +783,36 @@ def status_state(ctx: Ctx, pr: str) -> State:
             f"{rev} posted a no-findings verdict for head {_short(head_sha)} at {verd_at}",
         )
 
+    # A round the app closed Completed on exactly this head with no findings recorded either way
+    # (ludics#1387; lukstafi/ludics#1378's 9c0c1d9, 2026-11-25, read back from the summary's edit
+    # history): the record's has_any_findings and has_unresolved_findings both null, as they are
+    # while a round runs, and nothing posted, no 👍 -- a run that ended without a verdict, read as
+    # the Failed row is (the failed-run arm below), as ludics-lite#787 reads the Completed row
+    # naming no commit, and never as the approval the Completed-row arm gives over a 👀. The
+    # record and the row must agree (the row's allowlisted Completed shape, dating the record), and
+    # the reviewer must have said nothing about the head (``_said_about_head``), nor posted as its
+    # newest word a receipt naming no commit since the head arrived (``_arrival_floor``; one whose
+    # arrival does not read counts): which head that receipt approves is its own arm's to read.
+    try:
+        head_state = head_summary_state(comments, rev, head_sha)
+        unjudged = (
+            head_state is not None and head_state.status == "completed" and head_state.unresolved is None
+            and done_kind == "completed" and done_at == head_state.at
+            and _findings_unrecorded(comments, rev)
+            and not _said_about_head(comments, reviews, rev, head_sha)
+        )
+        receipt = _commitless_receipt(comments, rev) if unjudged else ""
+    except JqError:
+        return unknown(mstate, "the summary's review-state record or the reviewer's words did not parse")
+    if receipt:
+        if not head_at_read:
+            head_at = _commit_read(ctx, head_sha)
+            head_at_read = True
+        unjudged = lt(receipt, _arrival_floor(ctx, head_at, head.created))
+
     if (
         done_kind == "completed" and done_sha and head_sha and eyes_at and done_at > eyes_at
-        and (not last_spoke or last_spoke < eyes_at) and head_sha.startswith(done_sha)
+        and (not last_spoke or last_spoke < eyes_at) and head_sha.startswith(done_sha) and not unjudged
     ):
         return State(
             "approved", None, mstate,
@@ -783,10 +827,6 @@ def status_state(ctx: Ctx, pr: str) -> State:
     # BEFORE the record is written (#683: 16:20:15 then 16:20:18), so "nothing since the record"
     # cannot exclude it alone: the record's own has_unresolved_findings does, and so does any
     # finding the reviewer posted about this head, at any time.
-    try:
-        head_state = head_summary_state(comments, rev, head_sha)
-    except JqError:
-        return unknown(mstate, "the summary's review-state record did not parse")
     if (
         head_state is not None and head_state.status == "completed" and head_state.unresolved is False
         and done_kind == "completed" and done_at == head_state.at
@@ -806,24 +846,6 @@ def status_state(ctx: Ctx, pr: str) -> State:
                 " given)",
             )
 
-    # A round the app closed Completed on exactly this head with no findings recorded either way
-    # (ludics#1387; lukstafi/ludics#1378's 9c0c1d9, 2026-11-25, read back from the summary's edit
-    # history): the record's has_any_findings and has_unresolved_findings both null, as they are
-    # while a round runs, and nothing posted, no 👍 -- a run that ended without a verdict, read as
-    # the Failed row is (the arm below), as ludics-lite#787 reads the Completed row naming no
-    # commit. The record and the row must agree as above, and the reviewer must have posted
-    # nothing about the head: a review of it, a comment stamped with it, or a receipt naming no
-    # commit as its newest word is a verdict the record did not keep up with.
-    try:
-        unjudged = (
-            head_state is not None and head_state.status == "completed" and head_state.unresolved is None
-            and done_kind == "completed" and done_at == head_state.at
-            and _findings_unrecorded(comments, rev)
-            and not _head_findings(comments, reviews, rev, head_sha)
-            and not _commitless_receipt(comments, rev)
-        )
-    except JqError:
-        return unknown(mstate, "the reviewer's findings for the head did not parse")
     ended = "Failed" if done_kind == "failed" else (
         "Completed with no findings recorded (its state record's has_any_findings and"
         " has_unresolved_findings are null)"
