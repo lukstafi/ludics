@@ -22,23 +22,25 @@ A second build observer is refused before any read. Non-wait reads exit 3 under 
 
 THE JOB LOG (ludics#1386). `job-log` reads with ``--allow-escape-sequences``, since without it
 gh withholds a coloured log; a gh that refuses the flag as unknown (before 2.101, which withholds
-nothing) gets the plain read instead, its refusal having sent nothing. It saves the log as the read returns it, escapes kept (``$(gh
-...)``'s text: NUL bytes dropped, one trailing newline), to
-``<state>/job-logs/<owner>--<repo>--<job-id>.log``, ``<state>`` being the budget's directory
+nothing) gets the plain read instead, its refusal having sent nothing. It saves the log as the
+budgeted read returns it, escapes kept: ``$(gh ...)``'s text, the shared read's (core.py), so NUL
+bytes are dropped and a non-empty log ends in one newline. That is not the response byte for
+byte. The file is ``<state>/job-logs/<owner>--<repo>--<job-id>.log``, ``<state>`` being the budget's directory
 (SHIP_PR_STATE_DIR by default; the system temp directory when that is empty), and a stderr line
 names the file. Only the tail on stdout is sanitized. A log that cannot be saved costs the
 file, not the tail: the stderr line says so, and the exit stays 0.
 
 JOB-LOG SANITIZER BOUNDARY (``sanitize_log``), a fail-closed allowlist. Stdout keeps TAB, LF and
 every code point that is not a control character or a lone surrogate. Removed, in this order:
-(1) whole escape sequences, so their parameters do not leak as text: CSI (``ESC [``, parameter
-bytes 0x30-0x3F, intermediate bytes 0x20-0x2F, a final byte 0x40-0x7E); the control strings OSC,
-DCS, SOS, PM and APC (``ESC ]``, ``ESC P``, ``ESC X``, ``ESC ^``, ``ESC _``) through BEL or ST
-(``ESC \\``), or to the end of their line when unterminated; any other escape (``ESC``,
+(1) whole escape sequences, so their parameters do not leak as text: CSI (``ESC [`` or C1 CSI
+U+009B, parameter bytes 0x30-0x3F, intermediate bytes 0x20-0x2F, a final byte 0x40-0x7E); the
+control strings OSC, DCS, SOS, PM and APC (``ESC ]``, ``ESC P``, ``ESC X``, ``ESC ^``, ``ESC _``,
+or their C1 forms U+009D, U+0090, U+0098, U+009E, U+009F) through the first BEL, ST (``ESC \\``)
+or C1 ST (U+009C), or to the end of their line when unterminated; any other escape (``ESC``,
 intermediates 0x20-0x2F, a final byte 0x30-0x7E); (2) every remaining C0 control except TAB and
-LF (so CR and a bare ESC), DEL, and every C1 control (U+0080-U+009F, the 8-bit CSI U+009B
-included); (3) lone surrogates (bytes that are not UTF-8, which stdout's surrogateescape would
-write back raw, 0x9B among them) become U+FFFD. The tail's line count is of sanitized lines. Not
+LF (so CR and a bare ESC), DEL, and every C1 control (U+0080-U+009F); (3) lone surrogates (bytes
+that are not UTF-8, which stdout's surrogateescape would write back raw, 0x9B among them) become
+U+FFFD, a byte's parameters after it staying as text. The tail's line count is of sanitized lines. Not
 read: printable Unicode, format characters (bidi overrides, zero-width) included, which are not
 terminal control sequences; and the saved file, which is the reader's to open.
 
@@ -93,8 +95,8 @@ ESCAPES_FLAG = "--allow-escape-sequences"
 # The JOB-LOG SANITIZER BOUNDARY's three steps (module header); the alternation's order matters:
 # a control string before the catch-all escape, which would otherwise take only its ESC ].
 _ESCAPE_SEQUENCE = re.compile(
-    r"\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]"
-    r"|\x1b[\]PX^_][^\n]*?(?:\x07|\x1b\\|(?=\n)|\Z)"
+    r"(?:\x1b\[|\x9b)[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]"
+    r"|(?:\x1b[\]PX^_]|[\x90\x98\x9d\x9e\x9f])[^\n]*?(?:\x07|\x1b\\|\x9c|(?=\n)|\Z)"
     r"|\x1b[\x20-\x2f]*[\x30-\x7e]"
 )
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
@@ -324,14 +326,14 @@ def save_raw_log(text: str, repo: str, jid: str) -> str:
         os.makedirs(directory, exist_ok=True)
         fd, tmp = tempfile.mkstemp(prefix=".new.", dir=directory)
         with os.fdopen(fd, "wb") as out:
-            out.write((text + "\n").encode("utf-8", "surrogateescape"))
+            out.write((text + "\n" if text else "").encode("utf-8", "surrogateescape"))
         os.replace(tmp, path)
     except OSError as exc:
         if tmp:
             with contextlib.suppress(OSError):
                 os.remove(tmp)
-        return f"the raw log was not saved to {shlex.quote(path)} ({exc.strerror}); only stdout's sanitized tail was printed"
-    return f"the raw log (terminal escapes kept) is saved at {shlex.quote(path)}; stdout's tail is sanitized"
+        return f"the log as read was not saved to {shlex.quote(path)} ({exc.strerror}); only stdout's sanitized tail was printed"
+    return f"the log as read (terminal escapes kept) is saved at {shlex.quote(path)}; stdout's tail is sanitized"
 
 
 def read_jobs(session: GhSession, repo: str, rid: str) -> list[dict[str, object]]:
