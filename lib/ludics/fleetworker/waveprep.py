@@ -34,6 +34,17 @@ Presence of that field marks the reassignment. The comparison changes neither th
 the prep exit status. The driver's internal ``--reassignment-approval`` carries a saved approval
 instead of a manual reason. Prep checks it against the inputs it resolves before making anything.
 
+THE DRIVER'S CONFIG (ludics#1383). ``wave drive`` holds the wave file it loaded at its start, and
+each prep reads the file as it is now. The driver's internal ``--driver-config <json>`` is
+``launch_config`` of the driver's copy: the keys a queued task's prep is decided and made by. Prep
+computes the same object from the file it loaded and, on any difference, refuses before reading or
+making anything, naming each changed key with the driver's value and the file's. The compared keys
+are a fail-closed allowlist: ``wave``, ``repository``, ``checkout``, ``agent_host``, ``vars.MAIN``
+and the named profile's ``transport``, ``kind``, ``model`` and ``effort``. A profile or var that is
+absent reads as ``absent``. Every other key (other profiles, ``hosts``, ``legs``, ``loops``,
+``review``, other ``vars``) is not compared. Those keys are read only by prep itself, so the driver
+holds no copy that could drift. A prep run by hand passes no such object and is not compared.
+
 A CLI TASK (transport ``cli``) is prepared and not made. ``fleet-worker.sh launch`` makes a CLI
 worker's worktree on its box and takes its standing reservation in one fenced step, so prep makes
 neither: it writes the brief, the standing payloads (the host's without a ``checkout``, which
@@ -343,14 +354,16 @@ def parse(args: list[str]) -> tuple[str, str, dict[str, Any]]:
     if len(args) < 2 or args[0].startswith("--") or args[1].startswith("--"):
         die(f"wave prep: name the wave file and the task; usage: {USAGE}")
     opts: dict[str, Any] = {"base": "", "issue": "", "source": "", "mode": "none", "legs": "", "allow_rival": set(),
-                            "profile": "", "host": "", "tier": None, "reassignment_reason": None, "reassignment_approval": None}
+                            "profile": "", "host": "", "tier": None, "reassignment_reason": None, "reassignment_approval": None,
+                            "driver_config": None}
     rest = args[2:]
     i = 0
     while i < len(rest):
         word = rest[i]
         key = {"--base": "base", "--issue": "issue", "--source": "source", "--mode": "mode", "--legs": "legs",
                "--allow-rival": "allow_rival", "--profile": "profile", "--host": "host",
-               "--tier": "tier", "--reassignment-reason": "reassignment_reason", "--reassignment-approval": "reassignment_approval"}.get(word)
+               "--tier": "tier", "--reassignment-reason": "reassignment_reason", "--reassignment-approval": "reassignment_approval",
+               "--driver-config": "driver_config"}.get(word)
         if key is None or i + 1 >= len(rest):
             die(f"wave prep: {'unknown option ' + word if key is None else word + ' needs a value'}; usage: {USAGE}")
         if key == "allow_rival":
@@ -391,6 +404,37 @@ def reassignment_of(wave: str, reason: str, issue_ref: str, source_ref: str, pro
             "kind": profile.kind, "model": profile.model, "effort": profile.effort}
 
 
+PROFILE_KEYS = ("transport", "kind", "model", "effort")
+
+
+def launch_config(wave: Wave, profile: str) -> dict[str, str | None]:
+    """THE DRIVER'S CONFIG (the header): the compared keys, None for a profile or var the file lacks."""
+    chosen = wave.profiles.get(profile)
+    return {"wave": wave.wave, "repository": wave.repository, "checkout": wave.checkout, "agent_host": wave.agent_host,
+            "vars.MAIN": wave.vars.get("MAIN"),
+            **{f"profiles.{profile}.{key}": getattr(chosen, key) if chosen else None for key in PROFILE_KEYS}}
+
+
+def config_drift(held: dict[str, str | None], found: dict[str, str | None]) -> str:
+    """Each key whose value differs, the driver's value then the file's; "" when they agree."""
+    def shown(value: str | None) -> str:
+        return "absent" if value is None else json.dumps(value)
+
+    return "; ".join(f"{key} is {shown(held.get(key))} in the driver's config and {shown(found.get(key))} in the file"
+                     for key in dict.fromkeys([*held, *found]) if held.get(key) != found.get(key))
+
+
+def parse_driver_config(raw: str) -> dict[str, str | None]:
+    try:
+        held: Any = json.loads(raw)
+    except ValueError:
+        held = None
+    if isinstance(held, dict) and all(isinstance(key, str) and (value is None or isinstance(value, str))
+                                      for key, value in cast(dict[object, object], held).items()):
+        return cast(dict[str, str | None], held)
+    die("wave: --driver-config needs the driver's launch_config object")
+
+
 def parse_reassignment(raw: str) -> dict[str, str]:
     try:
         approval: Any = json.loads(raw)
@@ -420,6 +464,11 @@ def build(cfg: Config, path: str, task: str, opts: dict[str, Any]) -> Prep:
     wave = load_wave(path, "prep")
     if not TASK.fullmatch(task):
         die(f"wave prep: task {task!r} does not match {TASK.pattern}")
+    if opts["driver_config"] is not None:
+        # THE DRIVER'S CONFIG (the header): compared before any other read of the file's values.
+        drift = config_drift(parse_driver_config(opts["driver_config"]), launch_config(wave, opts["profile"]))
+        if drift:
+            raise Stop(1, f"WAVE PREP REFUSED {shlex.quote(task)}: the wave file changed under the driver: {drift}; nothing made")
     if opts["mode"] not in MODES:
         die(f"wave prep: --mode is one of {', '.join(MODES)}, not {opts['mode']!r}")
     if opts["tier"] is not None and opts["tier"] not in TIERS:

@@ -863,6 +863,24 @@ class MixedWave(WaveDirCase):
         self.assertEqual(self.manifest()["reassignment"], approval)
         self.assertIn("reassignment_reason=Needs this tool", self.shim_calls[-1])
 
+    def test_prep_refuses_a_wave_file_that_changed_under_the_driver(self) -> None:
+        held = waveprep.launch_config(wave.load_wave(self.path, "prep"), "sol")
+        args = ["t42", "--base", "main", "--profile", "sol", "--host", "far", "--driver-config"]
+        with self.world():
+            for key, value, said in (("agent_host", "mini", "\"mini\" in the driver's config and \"mac\" in the file"),
+                                     ("profiles.sol.effort", "high", "\"high\" in the driver's config and \"medium\" in the file"),
+                                     ("vars.MAIN", None, "absent in the driver's config and \"main\" in the file")):
+                with self.subTest(key=key):
+                    rc, out, err = self.prep(*args, json.dumps({**held, key: value}))
+                    self.assertEqual(rc, 1, out + err)
+                    self.assertEqual(out, f"WAVE PREP REFUSED t42: the wave file changed under the driver: {key} is {said}; nothing made\n")
+            self.assertEqual(self.shim_calls, [], "nothing is read from the anchor or made")
+            self.assertFalse(os.path.exists(os.path.join(self.wavedir, "prep", "t42.json")))
+            self.assertEqual(self.prep(*args, "[]")[0], 2, "a malformed object is a usage refusal")
+            rc, out, err = self.prep(*args, json.dumps(held))
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("WAVE PREP t42: ready", out)
+
     def test_wave_without_a_split_has_no_issue_number_note(self) -> None:
         with self.world():
             rc, out, err = self.prep("t42", "--base", "main", "--profile", "sol")
@@ -4330,6 +4348,10 @@ class Queue(DriveCase):
     def launched(self) -> list[list[str]]:
         return [c for c in self.calls if c[0] == "wave"]
 
+    def held(self, profile: str = "sol") -> list[str]:
+        """The --driver-config a driver that loaded the wave file as it is now passes prep (THE DRIVER'S CONFIG)."""
+        return ["--driver-config", json.dumps(waveprep.launch_config(wave.load_wave(self.path, "drive"), profile))]
+
     def manifest(self, task: str, host: str, base: str) -> None:
         """What wave prep left for a CLI task: its launch record, the host and the base being what a launch reads."""
         record: dict[str, Any] = {**{key: "x" for key in wavelaunch.TEXTS}, "host": host, "base": base, "remote": True, "allow_rival": [], "legs": []}
@@ -4345,7 +4367,8 @@ class Queue(DriveCase):
             rc, out = self.once()
             self.assertEqual(rc, 0, out)
             self.assertEqual(self.launched(), [
-                ["wave", "prep", self.path, "t50", "--base", B, "--profile", "sol", "--host", "far", "--legs", "gpu-box", "--mode", "paired"],
+                ["wave", "prep", self.path, "t50", "--base", B, "--profile", "sol", "--host", "far", "--legs", "gpu-box", "--mode", "paired",
+                 *self.held()],
                 ["wave", "launch", self.path, "t50", "--status", self.launched()[1][5], "--launch-id", "wv-t50-1"]])
             self.assertEqual(self.calls[0], ["halted"])
             self.assertIn("DRIVE t50 launch: launch answered: WAVE LAUNCH t50: launched far/w1-50", out)
@@ -4355,7 +4378,7 @@ class Queue(DriveCase):
             out = self.once()[1]
             self.assertNotIn("peer planner", out, "an unpaired launch names no planner")
             self.assertEqual(self.launched(), [["wave", "prep", self.path, "t51", "--base", B, "--profile", "sol", "--issue", "777",
-                                                "--tier", "D1/D2", "--reassignment-reason", "Needs the agent host"],
+                                                "--tier", "D1/D2", *self.held(), "--reassignment-reason", "Needs the agent host"],
                                                ["wave", "launch", self.path, "t51", "--status", self.launched()[1][5], "--launch-id", "wv-t51-1"]],
                              "one launch a tick, in file order; the agent host takes no --host")
             self.rows = [row("t50"), row("t51", agent_host="mac")]
@@ -4657,7 +4680,7 @@ class Queue(DriveCase):
             self.rows = [self.rows[0], self.rows[2]]  # what wave unprep removed: t51's row and manifest
             os.remove(os.path.join(self.wavedir, "prep", "t51.json"))
             self.once()
-            self.assertEqual(self.launched(), [["wave", "prep", self.path, "t51", "--base", B, "--profile", "sol", "--host", "far"],
+            self.assertEqual(self.launched(), [["wave", "prep", self.path, "t51", "--base", B, "--profile", "sol", "--host", "far", *self.held()],
                                                ["wave", "launch", self.path, "t51", "--status", self.launched()[1][5], "--launch-id", "wv-t51-1"]],
                              "...prepared again at the tip under its own id")
             self.assertIn(["refresh", "mac"], self.calls, "the agent host's served checkout is refreshed before the prep")
@@ -4700,7 +4723,7 @@ class Queue(DriveCase):
             self.assertEqual(rc, 0, out)
             prep, launch = self.launched()
             self.assertEqual(prep[:-1], ["wave", "prep", self.path, "t50", "--base", B, "--profile", "alias", "--host", "far",
-                                         "--issue", "50", "--reassignment-approval"])
+                                         "--issue", "50", *self.held("alias"), "--reassignment-approval"])
             self.assertEqual(json.loads(prep[-1])["reason"], "Needs the far host")
             self.assertEqual(prep[-1], unprep[-1])
             self.assertEqual(launch[:4], ["wave", "launch", self.path, "t50"])
@@ -4898,6 +4921,99 @@ class Queue(DriveCase):
             self.state = "RUNNING"
             self.assertEqual((self.once()[1], self.launched()), ("", []), "final: said once")
         self.assertEqual(len(self.attention()), 1)
+
+    def edit_wave(self, change: Callable[[dict[str, Any]], None]) -> None:
+        with open(self.path) as f:
+            data = json.load(f)
+        change(data)
+        with open(self.path, "w") as f:
+            json.dump(data, f)
+
+    def tick(self, driver: wavedrive.Driver) -> str:
+        """One tick of a driver that keeps running, as wave drive's loop runs it: its startup wave file held."""
+        self.calls.clear()
+        rc, out, err = captured(driver.round)
+        self.assertEqual(rc, 0, out + err)
+        return out
+
+    def test_a_wave_file_edited_mid_drive_prepares_nothing_and_is_told_once_until_it_agrees(self) -> None:
+        def model(data: dict[str, Any]) -> None:
+            data["profiles"]["sol"]["model"] = "gpt-7-sol"
+
+        def default_host(data: dict[str, Any]) -> None:
+            data["agent_host"] = "mini"
+
+        drifts = {"profile": (model, "profiles.sol.model is \"gpt-6.1-sol\" in the driver's config and \"gpt-7-sol\" in the file", ["t50"]),
+                  "default host": (default_host, "agent_host is \"mac\" in the driver's config and \"mini\" in the file", ["t50", "t51"])}
+        for made in ("logs", "msgs"):  # what wave drive's lock makes before its first tick
+            os.makedirs(os.path.join(self.wavedir, made), exist_ok=True)
+        for name, (change, said, drifted) in drifts.items():
+            for resolution in ("revert", "restart"):
+                with self.subTest(change=name, resolution=resolution):
+                    self.edit_wave(lambda data: data.update(profiles={**MIXED["profiles"], "neon": {"transport": "cli", "kind": "gemini"}},
+                                                            agent_host="mac"))
+                    for log in ("drive.jsonl", "attention.jsonl"):
+                        with contextlib.suppress(FileNotFoundError):
+                            os.remove(os.path.join(self.wavedir, "logs", log))
+                    self.rows, self.state = [], "RUNNING"  # a launched t51's worker is mid-turn: nothing of its own to answer
+                    self.queue({"task": "t50", "profile": "sol", "host": "mac"}, {"task": "t51", "profile": "neon", "host": "far"})
+                    driver = wavedrive.Driver(self.cfg, wave.load_wave(self.path, "drive"))
+                    started = self.held()
+                    self.edit_wave(change)
+                    with self.world():
+                        for again in (False, True):
+                            out = self.tick(driver)
+                            self.assertFalse(any(c[:4] == ["wave", "prep", self.path, "t50"] for c in self.calls), out)
+                            if "t51" in drifted:
+                                self.assertEqual(self.calls, [], "no refresh, gate read or prep while the file differs")
+                            elif not again:
+                                self.assertEqual([c[:4] for c in self.launched()], [["wave", "prep", self.path, "t51"],
+                                                                                    ["wave", "launch", self.path, "t51"]],
+                                                 "a task whose keys agree is prepared as before, past the drifted one")
+                                self.rows = [row("t51")]
+                            self.assertEqual(self.attention(), [f"the wave file changed since this driver started, so the queued task is"
+                                                                f" not prepared: {said}; revert the edit, or restart the driver to take it"]
+                                             * len(drifted), "told once per task and difference")
+                        if resolution == "revert":
+                            self.edit_wave(lambda data: data["profiles"]["sol"].update(model="gpt-6.1-sol") or data.update(agent_host="mac"))
+                            self.tick(driver)
+                            expected = started
+                        else:
+                            self.once()  # a fresh driver loads the edited file
+                            expected = self.held()
+                    prep = self.launched()[0]
+                    self.assertEqual(prep[:4] + prep[-2:], ["wave", "prep", self.path, "t50", *expected], resolution)
+                    self.assertEqual(self.ledger(), [(wavedrive.LAUNCH, "launch", status)
+                                                     for status in ["launching", "answered"] * (1 if "t51" in drifted else 2)],
+                                     "no final line: the drift never took the task from the driver")
+
+    def test_a_wave_file_edited_while_prep_reads_it_is_the_same_non_final_line(self) -> None:
+        self.queue({"task": "t50", "profile": "sol", "host": "far"})
+        driver = wavedrive.Driver(self.cfg, wave.load_wave(self.path, "drive"))
+        execute = self.execute
+
+        def edited_during_prep(argv: list[str], timeout: float | None = None) -> tuple[int, str, str]:
+            if "prep" in argv and "wave" in argv:
+                self.edit_wave(lambda data: data["profiles"]["sol"].update(effort="high"))
+                self.calls.append(argv[argv.index("wave"):])
+                return 1, ("WAVE PREP REFUSED t50: the wave file changed under the driver: profiles.sol.effort is \"medium\" in the"
+                           " driver's config and \"high\" in the file; nothing made\n"), ""
+            return execute(argv, timeout)
+
+        for made in ("logs", "msgs"):  # what wave drive's lock makes before its first tick
+            os.makedirs(os.path.join(self.wavedir, made), exist_ok=True)
+        with mock.patch.object(self, "execute", side_effect=edited_during_prep), self.world():
+            self.tick(driver)
+            self.assertEqual([c[:4] for c in self.launched()], [["wave", "prep", self.path, "t50"]])
+            self.tick(driver)
+            self.assertEqual(self.launched(), [], "the next tick reads the file first and prepares nothing")
+            self.edit_wave(lambda data: data["profiles"]["sol"].update(effort="medium"))
+        with self.world():
+            self.tick(driver)
+        self.assertEqual([c[:4] for c in self.launched()], [["wave", "prep", self.path, "t50"], ["wave", "launch", self.path, "t50"]])
+        self.assertEqual(len(self.attention()), 1)
+        self.assertIn("profiles.sol.effort is \"medium\" in the driver's config and \"high\" in the file", self.attention()[0])
+        self.assertEqual(self.ledger(), [(wavedrive.LAUNCH, "launch", "launching"), (wavedrive.LAUNCH, "launch", "answered")])
 
     def test_a_refused_prep_is_final_a_refused_launch_is_told_once_and_retried(self) -> None:
         self.queue({"task": "t50", "profile": "sol", "host": "far"}, {"task": "t51", "profile": "sol", "host": "far"})
