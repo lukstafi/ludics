@@ -2820,7 +2820,7 @@ class Loop(unittest.TestCase):
 
 def slot_rec(box: str = "rog", n: int = 1, state: str = "launching") -> dict[str, Any]:
     return {"request_id": f"wv-cc-slot-{box}-{n}", "state": state, "slot_reservation": True,
-            "request": {"execution_host": box, "repository": "o/staging", "standing": True}}
+            "request": {"execution_host": box, "repository": "o/staging", "standing": True, "wave": "wv"}}
 
 
 class ReservedLoop(unittest.TestCase):
@@ -2884,7 +2884,7 @@ class ReservedLoop(unittest.TestCase):
             if len(slept) >= sleeps:
                 open(os.path.join(self.dir, "loops.stop"), "w").close()
 
-        def listed(_cfg: object) -> Done:
+        def listed(_cfg: object, *_: object, **__: object) -> Done:
             return Done(0, json.dumps(self.records))
 
         def head(*_args: object) -> str:
@@ -2982,9 +2982,11 @@ class ReservedLoop(unittest.TestCase):
     def test_release_concludes_every_reservation_of_the_loop(self) -> None:
         # Not this loop's: another loop's reservation, a reservation of a loop named cc-slot-rog (its
         # id has this loop's shape on box "rog-slot-tuf", but it stands on tuf), and that loop's run.
+        # And one of this loop's shape whose record names another wave (a colliding prefix).
         others = [{**slot_rec("rog"), "request_id": "other-slot-rog-1"},
                   {**slot_rec("tuf"), "request_id": "wv-cc-slot-rog-slot-tuf-1"},
-                  {**rec(3, "running"), "request_id": "wv-cc-slot-rog-3"}]
+                  {**rec(3, "running"), "request_id": "wv-cc-slot-rog-3"},
+                  {**slot_rec("tuf", 2), "request": {**slot_rec("tuf")["request"], "wave": "wv-x"}}]
         self.records = [slot_rec(), slot_rec("tuf"), *others]
         rc, out = self.drive([], [], 1, "--release")
         self.assertEqual(rc, 0, out)
@@ -3019,6 +3021,15 @@ class ReservedLoop(unittest.TestCase):
                          ["wv-cc-slot-mx-1", "wv-cc-slot-tuf-1"])
         self.assertEqual([(s[s.index("--checkout") + 1], s[s.index("--reserved") + 1]) for s in self.starts()],
                          [("/home/u/mx", "wv-cc-slot-mx-1"), ("/home/u/standby", "wv-cc-slot-tuf-1")])
+
+    def test_a_restart_after_a_case_only_rename_reserves_the_roster_spelling(self) -> None:
+        self.records = [rec(1, "concluded", "pass", B), {**slot_rec(), "request_id": "wv-cc-slot-ROG-1",
+                                                         "request": {**slot_rec()["request"], "execution_host": "ROG"}}]
+        self.answers = [Done(1, "TIP-RUN NOT STARTED wv-cc-2: x\n")]
+        rc, out = self.drive([A], [0], 1)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.concluded(), ["wv-cc-slot-ROG-1"], "tip-run and the registry compare the host exactly")
+        self.assertIn("RESERVED wv-cc-slot-rog-", out)
 
     def test_a_restart_with_reserve_slot_dropped_releases_every_reservation(self) -> None:
         self.records = [rec(1, "concluded", "pass", B), slot_rec()]
