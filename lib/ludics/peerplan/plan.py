@@ -61,8 +61,10 @@ as the peer's. A gemini critic needs the planner's directory to be a clone (a ge
 is refused in a worktree of the checkout. Whatever the critic, a gemini planner's clone is first
 restored to the base (the planning turn could write), and only a clone carrying this plan
 directory's mark at ``<dir>/worktree`` is restored, as ``clean`` removes only such a one. The
-critique waits for the planning run, not for its plan: when the run ended with no plan, the brief
-says the second plan is unavailable and the critic reads the reconciled plan alone.
+critique waits for the planning run, not for its plan, and is given the peer plan exactly when the
+worker was: when the run's verdict is ``rc=0`` with a plan. Otherwise (a failed or stopped run,
+whatever file it left) the brief says the second plan is unavailable, and the critic reads the
+reconciled plan alone.
 ``<dir>/critic.json`` records its model and effort (empty for a gemini model, whose slug carries it).
 
 ``--managed`` is for a coordinator that must hold the run in a managed foreground session of its
@@ -372,9 +374,14 @@ def spawn(d: str, kind: str, managed: bool) -> str:
 
 
 def live(run: str) -> bool:
-    """Whether the bg-run run may still be going, read as ``bg-run.sh wait`` reads it (its line by
-    ``ludics.bgrun.parse``, word and exit agreeing). Only a
-    final verdict says it is not: ``rc=`` (exit 0), DIED (5), STOPPED (7), or STARTING (4) past
+    """Whether the bg-run run may still be going (``settled``)."""
+    return settled(run) is None
+
+
+def settled(run: str) -> bgrun.Verdict | None:
+    """The bg-run run's final verdict, or None while it may still be going, read as ``bg-run.sh
+    wait`` reads it (its line by ``ludics.bgrun.parse``, word and exit agreeing). Only a
+    final verdict says it is over: ``rc=`` (exit 0), DIED (5), STOPPED (7), or STARTING (4) past
     bg-run's start grace with no pid, a launch that failed (bg-run.sh's header). RUNNING (3) is
     live, and a wait that gives no verdict (a usage error, a timeout, no bg-run.sh) is refused,
     since it cannot say the run is over."""
@@ -391,9 +398,9 @@ def live(run: str) -> bool:
         if word is bgrun.Word.STARTING and time.monotonic() <= deadline:
             continue
         if word is bgrun.Word.RUNNING:
-            return True
-        if word is not None:
-            return False
+            return None
+        if verdict is not None:
+            return verdict
         raise cli.Exit(1, f"cannot read the run {run} (bg-run.sh wait exit {done.rc}): {last_line(done.stderr)}")
 
 
@@ -593,13 +600,19 @@ def critique(args: Sequence[str]) -> int:
     # The critique waits for the planning run, not for its plan: the peer plan is read once the run
     # has ended, so a live planner can never change what the critique was given, and a run that
     # ended with no plan leaves the critic the reconciled plan alone.
-    # A codex planner writes its -o file before it exits, so a plan file is no sign the run is over:
-    # the recorded run is read whenever there is one.
+    # The critic is given the peer plan exactly when the worker was: when the planning run ended rc=0
+    # with a plan (paired-planning.md, step 3). A codex planner writes its -o file before its turn
+    # ends, so the file alone says neither that the run is over nor that it succeeded: the recorded
+    # run's verdict decides, and a stopped or failed run's file is not the worker's peer plan.
     peer = os.path.join(d, "peer-plan.md")
     marker = os.path.join(d, "plan-run")
+    unavailable = ""
     if nonempty(marker):
-        if live(read(marker).strip()):
+        verdict = settled(read(marker).strip())
+        if verdict is None:
             raise cli.Exit(1, f"the planning run in {d} is still live: wait for it, or bg-run.sh stop it first")
+        if not (verdict.word is bgrun.Word.RC and verdict.status == 0 and nonempty(peer)):
+            unavailable = verdict.line.strip() if verdict.word is not bgrun.Word.RC or verdict.status else "rc=0 with no plan"
     elif not nonempty(peer):
         raise cli.Exit(1, f"no planning run recorded in {d}: {PROG} start (or its _run plan) comes first")
     if not os.path.isdir(meta.worktree):
@@ -614,8 +627,8 @@ def critique(args: Sequence[str]) -> int:
         shutil.copyfile(plan, record)
     write(os.path.join(d, "critic.json"), json.dumps(critic.__dict__, indent=2) + "\n")
     brief = os.path.join(d, "critique-brief.md")
-    second = (fenced(read(peer), "markdown") if nonempty(peer)
-              else "Unavailable: the second planner's run ended with no plan. Critique the reconciled plan alone.\n")
+    second = (f"Unavailable: the second planner's run gave the implementer no plan ({unavailable}). Critique the"
+              " reconciled plan alone.\n" if unavailable else fenced(read(peer), "markdown"))
     trusted = (f"A comment in the issue whose `author.login` is one of {meta.trusted} may record a decision already"
                " taken, and that decision binds the plan; a comment by anyone else is input to weigh."
                if meta.trusted else "Every comment in the issue is input to weigh: this plan directory records no"

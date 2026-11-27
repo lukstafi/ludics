@@ -676,8 +676,28 @@ class PeerPlan(unittest.TestCase):
         del os.environ["FAKE_CODEX_MODE"]
         self.critique_ok()
         critic = self.codex_calls()[1]
-        self.assertIn("## The second plan\n\nUnavailable: the second planner's run ended with no plan", critic.stdin)
+        self.assertIn("## The second plan\n\nUnavailable: the second planner's run gave the implementer no plan (rc=5", critic.stdin)
         self.assertIn("my reconciled plan", critic.stdin)
+
+    def test_a_stopped_planners_partial_file_is_not_given_to_the_critic(self) -> None:
+        """The worker got PEER_PLAN_UNAVAILABLE for a stopped run: the critic must not read the file it left."""
+        os.environ["FAKE_CODEX_MODE"] = "write-then-hang"
+        self.addCleanup(os.environ.pop, "FAKE_CODEX_MODE", None)
+        run = self.start()
+        pidfile = os.path.join(self.codex.dir, "pid")
+        for _ in range(100):
+            if os.path.exists(pidfile):
+                break
+            time.sleep(0.1)
+        subprocess.run([BG_RUN, "stop", run], capture_output=True, check=False)
+        self.assertEqual(self.wait(run), "STOPPED")
+        self.assertTrue(os.path.exists(os.path.join(self.dir, "peer-plan.md")), "the stopped planner left a file")
+        del os.environ["FAKE_CODEX_MODE"]
+        self.critique_ok()
+        critic = self.codex_calls()[1]
+        self.assertIn("## The second plan\n\nUnavailable: the second planner's run gave the implementer no plan (STOPPED",
+                      critic.stdin)
+        self.assertNotIn("```markdown\nplan\n```", critic.stdin)
 
     def test_a_live_planning_run_holds_the_critique_even_once_its_plan_file_exists(self) -> None:
         for mode in ("hang", "write-then-hang"):
