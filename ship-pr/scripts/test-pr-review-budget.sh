@@ -670,8 +670,10 @@ test_recovery_reads_and_wait_use_the_budget() {
     if [ "$verb" = job-log ]; then
       run read cmd_rerun "$REPO#7" "$verb" 101 201 1
       assert_eq "$(out read)" last "only the requested log tail, escapes stripped"
-      # The file name only: native Python on the Git Bash leg spells $STATE_DIR its own way.
-      assert_contains "$(err read)" "example--repo--201.log; stdout's tail is sanitized" "names the saved log"
+      # The file name only: native Python on the Git Bash leg spells $STATE_DIR its own way, and a
+      # path with a space comes quoted (the hostile runner's TMPDIR).
+      assert_contains "$(err read)" "/example--repo--201.log" "names the saved log"
+      assert_contains "$(err read)" "; stdout's tail is sanitized" "and says the tail is sanitized"
       assert_eq "$(tail -n 1 "$STATE_DIR/job-logs/example--repo--201.log")" "$(printf '\033[31mlast\033[0m')" \
         "the saved log keeps its escapes"
     else
