@@ -9,11 +9,12 @@ disagree about what "current" means); this module composes them, reads the knobs
 and reports the correctness slots this configuration gives each roster box.
 
 COORDINATOR CHECK. ``preflight <box> --planner <wave.json> [--mode none|paired|paired+critique]
-[--model <m>] [--effort <e>]`` runs in the coordinator's own session on the wave's agent host.
+[--model <m>] [--effort <e>] [--critic-model <m>] [--critic-effort <e>]`` runs in the coordinator's own session on the wave's agent host.
 It reads the wave's typed review setting and the explicitly selected planning mode (default none),
 with peer-plan's default model and effort unless overridden (``--model`` and ``--effort`` name the
-planner; ``paired+critique`` also probes peer-plan's default critic, ``plan.CRITIC_MODEL``, at the
-default effort). It does not infer modes from briefs,
+planner; ``paired+critique`` also probes the critic, by default ``plan.CRITIC_MODEL`` at the default
+effort, or the one ``--critic-model`` and ``--critic-effort`` name, as ``peer-plan.sh critique``'s
+``--model`` and ``--effort`` would). It does not infer modes from briefs,
 queues or board rows. Each selected role gets one tool-free prompt in an empty temporary directory.
 An absent role or executable is skipped. Success is point-in-time evidence for this process's
 environment and the selected models. A refusal records no readiness; repair and repeat the same
@@ -189,10 +190,11 @@ def coordinator_preflight(cfg: Config, box: str, args: list[str]) -> int:
     from ludics.fleetworker.waveprep import MODES  # prep's execution reads also use worker preflight
 
     if not args or len(args) % 2 == 0 or args[0].startswith("--"):
-        die("preflight --planner: give the wave file, optionally followed by --mode, --model and --effort with values")
+        die("preflight --planner: give the wave file, optionally followed by --mode, --model, --effort,"
+            " --critic-model and --critic-effort with values")
     options: dict[str, str] = {}
     for name, value in zip(args[1::2], args[2::2], strict=True):
-        if name not in ("--mode", "--model", "--effort") or name in options:
+        if name not in ("--mode", "--model", "--effort", "--critic-model", "--critic-effort") or name in options:
             die(f"preflight --planner: invalid option or value for {shlex.quote(name)}")
         options[name] = value
     try:
@@ -204,6 +206,8 @@ def coordinator_preflight(cfg: Config, box: str, args: list[str]) -> int:
         die(f"preflight --planner: --mode must be one of {', '.join(MODES)}")
     if mode == "none" and ("--model" in options or "--effort" in options):
         die("preflight --planner: --model and --effort require a paired --mode")
+    if mode != "paired+critique" and ("--critic-model" in options or "--critic-effort" in options):
+        die("preflight --planner: --critic-model and --critic-effort require --mode paired+critique")
     wave = load_wave(args[0], "preflight --planner")
     if not is_local(cfg, box) or not is_local(cfg, wave.agent_host):
         die(f"preflight --planner: run on the wave's coordinator box {shlex.quote(wave.agent_host)}")
@@ -214,9 +218,9 @@ def coordinator_preflight(cfg: Config, box: str, args: list[str]) -> int:
         tool = "claude" if plan.is_claude(model) else "agy" if plan.is_gemini(model) else "codex"
         roles.append(("planner", tool, model, options.get("--effort", plan.DEFAULT_EFFORT)))
     if mode == "paired+critique":
-        critic = plan.CRITIC_MODEL
+        critic = options.get("--critic-model", plan.CRITIC_MODEL)
         roles.append(("critic", "claude" if plan.is_claude(critic) else "agy" if plan.is_gemini(critic) else "codex",
-                      critic, plan.DEFAULT_EFFORT))
+                      critic, options.get("--critic-effort", plan.DEFAULT_EFFORT)))
     if wave.review is not None:
         roles.append(("reviewer", "claude" if wave.review.kind == "claude" else "agy", wave.review.model, ""))
     if not roles:

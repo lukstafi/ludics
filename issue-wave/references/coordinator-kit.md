@@ -185,7 +185,8 @@ driver hands you as an attention line.
    checkpoint or paired planning. It probes the configured reviewer. Add `--mode paired` or
    `--mode paired+critique` to probe the peer planner as well, with the same `--model` and
    `--effort` overrides as `peer-plan.sh start` if used (`paired+critique` also probes the
-   default critic, Astra through codex). Each turn is bounded by
+   critic: Astra through codex by default, or the one `--critic-model` and `--critic-effort`
+   name, as `peer-plan.sh critique --model --effort` would). Each turn is bounded by
    `FLEET_PROBE_TIMEOUT` (120 seconds by default). An absent CLI is reported as skipped and gives
    no readiness evidence. On a refusal, apply the reported repair and repeat the command in the
    same session before proceeding. The check records no readiness for later launches.

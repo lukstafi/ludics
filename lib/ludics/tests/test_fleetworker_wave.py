@@ -202,6 +202,18 @@ class CoordinatorPreflight(WaveDirCase):
                              ["PREFLIGHT OK mac planner (claude fable)", "PREFLIGHT OK mac reviewer (claude opus)"])
             self.assertEqual(len(codex.calls()), 1)
 
+    def test_a_named_critic_is_the_one_probed(self) -> None:
+        with FakeTool("claude") as claude, FakeTool("codex") as codex:
+            claude.route((When(prefix=("-p", "--model", "fable")), self.ok),
+                         (When(prefix=("-p", "--model", "opus"), has=("medium",)), self.ok))
+            rc, out, err = self.probe("--mode", "paired+critique", "--critic-model", "opus", "--critic-effort", "medium")
+            self.assertEqual((rc, err), (0, ""))
+            self.assertEqual(out.splitlines(), ["PREFLIGHT OK mac planner (claude fable)", "PREFLIGHT OK mac critic (claude opus)"])
+            self.assertEqual(codex.calls(), [], "a named critic replaces the default's probe")
+            rc, _, err = self.probe("--mode", "paired", "--critic-model", "opus")
+            self.assertEqual(rc, 2)
+            self.assertIn("require --mode paired+critique", err)
+
     def test_single_dash_option_values_refuse_before_any_probe(self) -> None:
         cases = (
             ("--model", "claude-custom", "--effort", "-low"),

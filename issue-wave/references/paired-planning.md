@@ -87,14 +87,17 @@ plan directory is `$ISSUE_WAVE_STATE/plans/<wave>-<issue>`:
    coordinator's context, about 21 KB per D3 (wave-20261102). A run that ends other than `rc=0` is
    not retried: resume with `PEER_PLAN_UNAVAILABLE <the verdict and the run's log tail>`. In
    `paired` mode the worker then reconciles, posts the plan and implements; the planning is done.
+   In `paired+critique` the worker hands its plan back all the same (step 4), and the critique
+   still runs on it.
    A planner that is still running 30 minutes after `PLAN_READY` is stopped and counts as
    unavailable. Stop a spawned run with `bg-run.sh stop <run>`. A `--managed` run shares the
    managed session's process group, which `stop` refuses, so end that session through the runtime
    by the session ID it kept.
 4. **For `paired+critique`, on the second `PLAN_READY`** (the reconciled plan, which the worker
    hands back without posting it): save it with `--reconciled`, which writes
-   `<plan-dir>/reconciled-plan.md` and refuses until the first plan is saved. A CLI worker's comes
-   from `--last-result` as before. Then start the critique on it:
+   `<plan-dir>/reconciled-plan.md`. It takes only a `PLAN_READY` block after the first plan's in
+   the same transcript, so it refuses before the worker has handed the reconciled plan back. A CLI
+   worker's comes from `--last-result` as before. Then start the critique on it:
 
    ```bash
    ~/.claude/skills/issue-wave/scripts/peer-plan.sh save-plan <plan-dir> --from-transcript <output file> --reconciled
@@ -105,7 +108,10 @@ plan directory is `$ISSUE_WAVE_STATE/plans/<wave>-<issue>`:
    `--managed` passes it here too, and runs `bg-run.sh start <run> -- peer-plan.sh _run critique
    <plan-dir>` in a managed session, as for the plan. `--model` and `--effort` name another critic
    (`plan.py`'s header, THE CRITIC); the default is Astra at high effort, the one `preflight
-   --planner --mode paired+critique` probes. Then resume the worker with `PEER_CRITIQUE`, followed
+   --planner --mode paired+critique` probes (`--critic-model` and `--critic-effort` there name
+   another). The critique waits for the planning run to end, not for its plan: after
+   `PEER_PLAN_UNAVAILABLE` it runs on the reconciled plan alone, and it refuses while the planning
+   run is still live. A gemini planner's clone is restored to the base before any critic reads it. Then resume the worker with `PEER_CRITIQUE`, followed
    by `<plan-dir>/critique.md` verbatim (or its absolute path, as in step 3). A critique run that
    ends other than `rc=0`, or one still running 30 minutes after the reconciled `PLAN_READY`, is
    not retried: resume with `PEER_CRITIQUE_UNAVAILABLE <...>`, and the worker posts the reconciled

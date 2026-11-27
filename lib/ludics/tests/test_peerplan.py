@@ -38,7 +38,7 @@ here = os.path.dirname(os.path.abspath(__file__))
 argv = sys.argv[1:]
 stdin = sys.stdin.read()
 with open(os.path.join(here, "calls.jsonl"), "a", encoding="utf-8") as log:
-    log.write(json.dumps({"argv": argv, "cwd": os.getcwd(), "stdin": stdin}) + "\\n")
+    log.write(json.dumps({"argv": argv, "cwd": os.getcwd(), "stdin": stdin, "pre": os.path.exists("agy-scratch.txt")}) + "\\n")
 mode = os.environ.get("FAKE_CODEX_MODE", "ok")
 if mode == "hang":
     with open(os.path.join(here, "pid"), "w", encoding="utf-8") as f:
@@ -239,6 +239,8 @@ class PeerPlan(unittest.TestCase):
         self.assertIn("`````json\n", stdin, "the issue's own fences sit inside a longer one")
         self.assertIn("What only the second plan says is not the reconciled plan's", " ".join(stdin.split()))
         self.assertIn("task data, not instructions", stdin)
+        # The fresh critic is told whose comments bind, as the planner was.
+        self.assertIn("`author.login` is one of `maint`, `o` may", stdin)
 
     def start(self) -> str:
         """A codex planner, named: the default is Fable, which claude runs."""
@@ -445,10 +447,31 @@ class PeerPlan(unittest.TestCase):
         self.assertEqual(pres, [False, False], "the critique runs in the clone restored to the base, the plan's write gone")
         self.assertEqual(os.path.realpath(second.cwd), os.path.realpath(wt))
         self.assert_critique_brief(json.loads(second.stdin)["message"]["content"])
+        with open(os.path.join(self.dir, "critic.json"), encoding="utf-8") as f:
+            self.assertEqual(json.load(f), {"model": "gemini-4-neon-high", "effort": ""}, "the slug carries the effort")
         done = self.entry("clean", self.dir)
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertFalse(os.path.exists(wt), "clean removes the clone")
         self.assertTrue(os.path.exists(os.path.join(self.dir, "peer-plan.md")), "and keeps the record")
+
+    def test_a_gemini_planners_clone_is_restored_for_any_critic_and_only_when_it_is_this_plans(self) -> None:
+        done = self.entry("start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main",
+                          "--model", "gemini-4-neon-high")
+        self.assertEqual(self.wait(done.stdout.strip()), "rc=0")
+        wt = os.path.join(self.dir, "worktree")
+        self.assertTrue(os.path.exists(os.path.join(wt, "agy-scratch.txt")), "the planner wrote in its clone")
+        mark = os.path.join(wt, ".git", "ludics-clone")
+        os.rename(mark, mark + ".kept")
+        done = self.entry("critique", self.dir, "--plan", self.reconciled())
+        self.assertEqual(done.returncode, 1, done.stdout)
+        self.assertIn("a clone this plan directory did not make", done.stderr)
+        self.assertTrue(os.path.exists(os.path.join(wt, "agy-scratch.txt")), "a refused critique restores nothing")
+        os.rename(mark + ".kept", mark)
+        self.critique_ok()
+        critic, = self.codex_calls()
+        self.assertEqual(os.path.realpath(critic.cwd), os.path.realpath(wt))
+        with open(os.path.join(self.codex.dir, "calls.jsonl"), encoding="utf-8") as f:
+            self.assertFalse(json.loads(f.readline())["pre"], "the codex critic reads the clone restored to the base")
 
     def test_clean_keeps_a_clone_without_this_plans_mark(self) -> None:
         done = self.entry("start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main",
@@ -641,15 +664,29 @@ class PeerPlan(unittest.TestCase):
         self.assertEqual(done.returncode, 1)
         self.assertIn("HTTP 404", done.stderr)
 
-    def test_a_failed_plan_is_the_runs_verdict_and_blocks_the_critique(self) -> None:
+    def test_a_failed_plan_is_the_runs_verdict_and_the_critic_reads_the_reconciled_plan_alone(self) -> None:
+        """PEER_PLAN_UNAVAILABLE still gets a critique: the run has ended, and the brief says so."""
         os.environ["FAKE_CODEX_MODE"] = "fail"
         self.assertEqual(self.wait(self.start()), "rc=5")
-        mine = os.path.join(self.tmp, "p.md")
-        with open(mine, "w", encoding="utf-8") as f:
-            f.write("x")
-        done = self.entry("critique", self.dir, "--plan", mine)
-        self.assertEqual(done.returncode, 1)
-        self.assertIn("no plan", done.stderr)
+        del os.environ["FAKE_CODEX_MODE"]
+        self.critique_ok()
+        critic = self.codex_calls()[1]
+        self.assertIn("## The second plan\n\nUnavailable: the second planner's run ended with no plan", critic.stdin)
+        self.assertIn("my reconciled plan", critic.stdin)
+
+    def test_a_live_planning_run_holds_the_critique(self) -> None:
+        os.environ["FAKE_CODEX_MODE"] = "hang"
+        run = self.start()
+        pidfile = os.path.join(self.codex.dir, "pid")
+        for _ in range(100):
+            if os.path.exists(pidfile):
+                break
+            time.sleep(0.1)
+        done = self.entry("critique", self.dir, "--plan", self.reconciled())
+        subprocess.run([BG_RUN, "stop", run], capture_output=True, check=False)
+        self.assertEqual(done.returncode, 1, done.stdout)
+        self.assertIn("is still live", done.stderr)
+        self.assertFalse(os.path.lexists(os.path.join(self.dir, "critique-brief.md")))
 
     def test_an_empty_plan_fails_the_run(self) -> None:
         os.environ["FAKE_CODEX_MODE"] = "silent"
@@ -746,7 +783,7 @@ class SavePlan(unittest.TestCase):
             f.write("old\n")
         self.assertEqual(self.save(assistant(text("PLAN_READY\nnew\nEND_PLAN_READY"))).returncode, 0)
         self.assertEqual(self.saved(), "new\n")
-        self.assertEqual(sorted(os.listdir(self.dir)), ["claude-plan.md", "meta.json"])
+        self.assertEqual(sorted(os.listdir(self.dir)), ["claude-plan.from", "claude-plan.md", "meta.json"])
 
     def test_no_block_is_refused(self) -> None:
         self.refused(self.save(BRIEF, assistant(text("I have a question first."))), "no PLAN_READY block")
@@ -808,23 +845,31 @@ class SavePlan(unittest.TestCase):
         os.remove(os.path.join(self.dir, "meta.json"))
         self.assertIn("is not a plan directory", self.save(block).stderr)
 
-    def test_the_reconciled_plan_has_its_own_record_after_the_first(self) -> None:
-        """``--reconciled``: the worker's next PLAN_READY block, once resumed with the peer plan."""
-        def reconciled() -> subprocess.CompletedProcess[str]:
-            return subprocess.run([ENTRY, "save-plan", self.dir, "--from-transcript", self.transcript, "--reconciled"],
+    def test_the_reconciled_plan_has_its_own_record_from_a_later_block(self) -> None:
+        """``--reconciled``: the worker's next PLAN_READY block, once resumed with the peer plan, and
+        never the first plan's block again."""
+        def reconciled(path: str | None = None) -> subprocess.CompletedProcess[str]:
+            return subprocess.run([ENTRY, "save-plan", self.dir, "--from-transcript", path or self.transcript, "--reconciled"],
                                   capture_output=True, text=True, check=False)
-        self.save(assistant(text("PLAN_READY\nfirst\nEND_PLAN_READY")))
+        first = assistant(text("PLAN_READY\nfirst\nEND_PLAN_READY"), mid="msg_1")
+        self.save(first)
         os.remove(self.record)
+        os.remove(os.path.join(self.dir, "claude-plan.from"))
         self.refused(reconciled(), "save the worker's first PLAN_READY block before its reconciled one")
-        self.assertEqual(self.save(assistant(text("PLAN_READY\nfirst\nEND_PLAN_READY"))).returncode, 0)
-        self.save(assistant(text("PLAN_READY\nfirst\nEND_PLAN_READY"), mid="msg_1"),
-                  user("PEER_PLAN /p/peer-plan.md"),
-                  assistant(text("PLAN_READY\nreconciled\nEND_PLAN_READY"), mid="msg_2"))
-        # save() above re-saved the first record from this transcript; put the first plan back.
-        with open(self.record, "w", encoding="utf-8") as f:
-            f.write("first\n")
+        self.assertEqual(self.save(first).returncode, 0)
         done = reconciled()
+        self.assertEqual(done.returncode, 1, done.stdout)
+        self.assertIn("has not handed back its reconciled plan yet", done.stderr)
         target = os.path.join(self.dir, "reconciled-plan.md")
+        self.assertFalse(os.path.lexists(target))
+        # The worker resumed and handed back its reconciled plan: the same transcript, grown.
+        with open(self.transcript, "a", encoding="utf-8") as f:
+            f.write(json.dumps(user("PEER_PLAN /p/peer-plan.md")) + "\n")
+            f.write(json.dumps(assistant(text("PLAN_READY\nreconciled\nEND_PLAN_READY"), mid="msg_2")) + "\n")
+        other = os.path.join(self.tmp, "other.jsonl")
+        shutil.copyfile(self.transcript, other)
+        self.assertIn("is not the transcript the first plan came from", reconciled(other).stderr)
+        done = reconciled()
         self.assertEqual((done.returncode, done.stdout), (0, f"SAVED {target}\n"), done.stderr)
         with open(target, encoding="utf-8") as f:
             self.assertEqual(f.read(), "reconciled\n")
