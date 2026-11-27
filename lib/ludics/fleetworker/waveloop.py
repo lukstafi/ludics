@@ -277,7 +277,7 @@ class Driver:
     def release_stale(self) -> None:
         """THE MOVE: conclude the loop's reservations on a box that is neither its home nor its standby
         now (every one, when the entry no longer says ``reserve_slot``)."""
-        current = {b.lower() for b, _ in self.boxes()} if self.loop.reserve_slot else set()
+        current: set[str] = {b.lower() for b, _ in self.boxes()} if self.loop.reserve_slot else set()
         stale = [r for r in self.reservations() if str(field(r, "request", "execution_host")).lower() not in current]
         why = "no longer the loop's home or standby" if self.loop.reserve_slot else "the loop no longer reserves a slot"
         self.release(stale, why)
