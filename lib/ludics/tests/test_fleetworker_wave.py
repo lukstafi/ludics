@@ -2836,11 +2836,24 @@ class ReservedLoop(unittest.TestCase):
                                    failover_after=600)
         with open(self.path, "w") as f:
             json.dump(data, f)
-        self.cfg = load_config(SCRIPT, {"HOME": self.dir, "FLEET_BOXES": "rog tuf", "FLEET_BOX_CORRECTNESS_SLOTS": "rog=4 tuf=3"})
+        self.cfg = load_config(SCRIPT, {"HOME": self.dir, "FLEET_BOXES": "rog tuf mx",
+                                        "FLEET_BOX_CORRECTNESS_SLOTS": "rog=4 tuf=3 mx=2"})
         self.calls: list[list[str]] = []
         self.answers: list[Done] = []
         self.records: list[dict[str, Any]] = []
         self.payloads: list[dict[str, Any]] = []
+
+    def edit(self, **entry: Any) -> None:
+        """Edit the cc loop's entry in the wave file, as a coordinator moving its home does."""
+        with open(self.path) as f:
+            data = json.load(f)
+        data["loops"]["cc"].update(entry)
+        data["loops"]["cc"] = {k: v for k, v in data["loops"]["cc"].items() if v is not None}
+        with open(self.path, "w") as f:
+            json.dump(data, f)
+
+    def concluded(self) -> list[str]:
+        return [p["request_id"] for p in self.payloads if p.get("verdict") == "not-launched"]
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
@@ -2957,6 +2970,7 @@ class ReservedLoop(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertIn("RESUME failed over to tuf (wv-cc-slot-tuf-1 outstanding)", out)
         self.assertEqual([s[s.index("--checkout") + 1] for s in self.starts()], ["/home/u/integ", "/home/u/standby"])
+        self.assertEqual(self.concluded(), [], "a restart that keeps the home and standby releases nothing")
 
     def test_two_reservations_on_a_box_are_unknown(self) -> None:
         self.records = [slot_rec(), slot_rec(n=2)]
@@ -2966,12 +2980,55 @@ class ReservedLoop(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
     def test_release_concludes_every_reservation_of_the_loop(self) -> None:
-        self.records = [slot_rec(), slot_rec("tuf"), {**slot_rec("rog"), "request_id": "other-slot-rog-1"}]
+        # Not this loop's: another loop's reservation, a reservation of a loop named cc-slot-rog (its
+        # id has this loop's shape on box "rog-slot-tuf", but it stands on tuf), and that loop's run.
+        others = [{**slot_rec("rog"), "request_id": "other-slot-rog-1"},
+                  {**slot_rec("tuf"), "request_id": "wv-cc-slot-rog-slot-tuf-1"},
+                  {**rec(3, "running"), "request_id": "wv-cc-slot-rog-3"}]
+        self.records = [slot_rec(), slot_rec("tuf"), *others]
         rc, out = self.drive([], [], 1, "--release")
         self.assertEqual(rc, 0, out)
         self.assertEqual([p["request_id"] for p in self.payloads], ["wv-cc-slot-rog-1", "wv-cc-slot-tuf-1"])
         self.assertEqual({p["verdict"] for p in self.payloads}, {"not-launched"})
-        self.assertEqual([r["request_id"] for r in self.records], ["other-slot-rog-1"], "another loop's is not this one's")
+        self.assertEqual(self.records, others, "another loop's is not this one's")
+
+    def test_release_after_moving_the_home_concludes_the_old_box_too(self) -> None:
+        # ludics#1394: the entry edited first (rog -> mx), then --release: rog's must not stay outstanding.
+        self.records = [slot_rec(), slot_rec("tuf")]
+        self.edit(box="mx", checkout="/home/u/mx")
+        rc, out = self.drive([], [], 1, "--release")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.concluded(), ["wv-cc-slot-rog-1", "wv-cc-slot-tuf-1"])
+        self.assertEqual(self.records, [])
+        self.assertIn("RELEASED wv-cc-slot-rog-1 on rog", out)
+        self.assertIn("RELEASED: the loop holds no reserved slot", out)
+
+    def test_a_restart_after_moving_the_home_releases_the_old_box_and_keeps_the_standby(self) -> None:
+        # ludics#1394: failed over to tuf, the home edited rog -> mx, restarted with no --release.
+        self.records = [rec(1, "concluded", "pass", B), slot_rec(), slot_rec("tuf")]
+        self.edit(box="mx", checkout="/home/u/mx")
+        self.answers = [Done(1, "TIP-RUN NOT STARTED wv-cc-2: x\n"), Done(1, "TIP-RUN NOT STARTED wv-cc-2: y\n")]
+        rc, out = self.drive([A], [0], 1)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.concluded(), ["wv-cc-slot-rog-1"], "only the old home's, never the standby's")
+        self.assertIn("RELEASED wv-cc-slot-rog-1 on rog: no longer the loop's home or standby", out)
+        self.assertIn("RESERVED wv-cc-slot-mx-1 on mx: workers' batches there take 1 of 2 slots", out)
+        self.assertIn("RESUME failed over to tuf (wv-cc-slot-tuf-1 outstanding)", out)
+        self.assertLess(out.index("RELEASED wv-cc-slot-rog-1"), out.index("RESERVED wv-cc-slot-mx-1"))
+        self.assertEqual(sorted(r["request_id"] for r in self.records if r.get("slot_reservation")),
+                         ["wv-cc-slot-mx-1", "wv-cc-slot-tuf-1"])
+        self.assertEqual([(s[s.index("--checkout") + 1], s[s.index("--reserved") + 1]) for s in self.starts()],
+                         [("/home/u/mx", "wv-cc-slot-mx-1"), ("/home/u/standby", "wv-cc-slot-tuf-1")])
+
+    def test_a_restart_with_reserve_slot_dropped_releases_every_reservation(self) -> None:
+        self.records = [rec(1, "concluded", "pass", B), slot_rec()]
+        self.edit(reserve_slot=None, standby=None, failover_after=None)
+        self.answers = [Done(1, "TIP-RUN NOT STARTED wv-cc-2: x\n")]
+        rc, out = self.drive([A], [], 1)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.concluded(), ["wv-cc-slot-rog-1"])
+        self.assertIn("RELEASED wv-cc-slot-rog-1 on rog: the loop no longer reserves a slot", out)
+        self.assertNotIn("--reserved", self.starts()[0])
 
     def test_a_rerun_runs_where_the_red_ran_under_that_boxs_reservation(self) -> None:
         red = rec(4, "concluded", "fail", A)
