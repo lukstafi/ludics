@@ -303,9 +303,10 @@ attention line naming each changed key with both values, once per unchanged diff
 like the missing-task notice), and the scan goes on to the next task. A file that agrees again
 (the edit reverted) clears it, so the task is prepared on that tick. A restarted driver holds the
 edited file and prepares the task. The prep call carries the object as ``--driver-config``, so an
-edit between this read and prep's is refused by prep, and a prep refusal that the driver's next read
-shows as drift is the same non-final line, not a final one. A pending row is launched from its
-manifest and is not compared. A launch its own gates refuse started no worker and
+edit between this read and prep's is refused by prep with its own status (waveprep's
+``CONFIG_CHANGED``). The driver tells that as the same non-final line, with prep's difference, and
+reads the file no further for it; any other prep refusal is final, whatever the file says by then.
+A pending row is launched from its manifest and is not compared. A launch its own gates refuse started no worker and
 may clear: ``LAUNCH REFUSED`` as its last line (a preflight, a halt) or the base gate's ``BASE
 REFUSED:`` on its stderr (a base that turned red after THE GATE read it), with exit 1. It is told
 once and tried again each ``RETRY`` seconds, while its base is still the branch's tip. Any other
@@ -366,8 +367,8 @@ from ludics.fleetworker.wave import USAGE, WORD, Wave, acquire_startup_lock, loa
 from ludics.fleetworker.wavebrief import write_atomically
 from ludics.fleetworker.wavelaunch import Record, read_manifest, read_wave_launch_status
 from ludics.fleetworker.waveprep import (
-    REASSIGNMENT_REASON_PROBLEM, TASK, TIERS, Stop, config_drift, launch_config, reassignment_of, reassignment_row,
-    resolve_subject, valid_reassignment_reason,
+    CONFIG_CHANGED, CONFIG_CHANGED_LINE, REASSIGNMENT_REASON_PROBLEM, TASK, TIERS, Stop, config_drift, launch_config,
+    reassignment_of, reassignment_row, resolve_subject, valid_reassignment_reason,
 )
 from ludics.fleetworker.waveunprep import FENCE, legacy_reassignment
 
@@ -1279,11 +1280,15 @@ class Driver:
         if not drift:
             self.drift_told.pop(queued.task, None)
             return False
+        self.tell_drift(slot, queued, drift)
+        return True
+
+    def tell_drift(self, slot: Worker, queued: Queued, drift: str) -> None:
+        """THE DRIVER'S CONFIG's one non-final line, said once per unchanged difference."""
         if self.drift_told.get(queued.task) != drift:
             self.tell(slot, LAUNCH, f"the wave file changed since this driver started, so the queued task is not prepared: {drift};"
                                    " revert the edit, or restart the driver to take it")
             self.drift_told[queued.task] = drift
-        return True
 
     def tell_missing(self, slot: Worker, queued: Queued, missing: tuple[str, ...]) -> None:
         """The missing-prerequisite notice (THE QUEUE, the header), told once per unchanged list: one text for both kinds."""
@@ -1434,8 +1439,11 @@ class Driver:
                              *(bound or manual), gated=True)
             if done.rc == 4:
                 return
-            if done.rc != 0 and self.drifted(slot, queued):
-                return  # THE DRIVER'S CONFIG (the header): an edit between the two reads, non-final as before prep
+            if done.rc == CONFIG_CHANGED:
+                # THE DRIVER'S CONFIG (the header): an edit between the two reads, told with prep's own difference.
+                said = (substitution(done.out).splitlines() or [""])[-1]
+                found = said.partition(CONFIG_CHANGED_LINE)[2].removesuffix("; nothing made") or said or "prep did not say what"
+                return self.tell_drift(slot, queued, found[:600])
             if done.rc != 0:
                 said = (substitution(done.out).splitlines() or [f"wave prep exit {done.rc}"])[-1]
                 return self.attention(slot, LAUNCH, "launch", f"the queued task was not prepared: {said[:300]}; launch it by hand"

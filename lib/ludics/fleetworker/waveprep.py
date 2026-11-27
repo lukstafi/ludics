@@ -38,7 +38,8 @@ THE DRIVER'S CONFIG (ludics#1383). ``wave drive`` holds the wave file it loaded 
 each prep reads the file as it is now. The driver's internal ``--driver-config <json>`` is
 ``launch_config`` of the driver's copy: the keys a queued task's prep is decided and made by. Prep
 computes the same object from the file it loaded and, on any difference, refuses before reading or
-making anything, naming each changed key with the driver's value and the file's. The compared keys
+making anything, with its own exit status ``CONFIG_CHANGED`` (3) and one line naming each changed
+key with the driver's value and the file's. The compared keys
 are a fail-closed allowlist: ``wave``, ``repository``, ``issue_repository``, ``checkout``,
 ``agent_host``, ``vars.MAIN`` and the named profile's ``transport``, ``kind``, ``model`` and
 ``effort``. A profile or var that is absent reads as ``absent``. Every other key (other profiles,
@@ -220,6 +221,8 @@ SHARED = tuple(name for name in COMMON if name not in OWN)
 PLANNING = ("planning-paired.md", "planning-paired+critique.md")
 PAIRED = ("native-claude", "cli-codex", "cli-gemini")  # the kinds the shipped PLANNING parts are for (THE PARTS)
 SHIPPED_VARS = ("COORDINATOR", "MAIN")
+CONFIG_CHANGED = 3  # THE DRIVER'S CONFIG: prep's exit when the file differs from the driver's --driver-config
+CONFIG_CHANGED_LINE = "the wave file changed under the driver: "
 READY = "ready"  # the manifest's last step: every write of prep landed (wave launch starts nothing without it)
 
 
@@ -470,7 +473,7 @@ def build(cfg: Config, path: str, task: str, opts: dict[str, Any]) -> Prep:
         # THE DRIVER'S CONFIG (the header): compared before any other read of the file's values.
         drift = config_drift(parse_driver_config(opts["driver_config"]), launch_config(wave, opts["profile"]))
         if drift:
-            raise Stop(1, f"WAVE PREP REFUSED {shlex.quote(task)}: the wave file changed under the driver: {drift}; nothing made")
+            raise Stop(CONFIG_CHANGED, f"WAVE PREP REFUSED {shlex.quote(task)}: {CONFIG_CHANGED_LINE}{drift}; nothing made")
     if opts["mode"] not in MODES:
         die(f"wave prep: --mode is one of {', '.join(MODES)}, not {opts['mode']!r}")
     if opts["tier"] is not None and opts["tier"] not in TIERS:

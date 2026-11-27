@@ -872,7 +872,7 @@ class MixedWave(WaveDirCase):
                                      ("vars.MAIN", None, "absent in the driver's config and \"main\" in the file")):
                 with self.subTest(key=key):
                     rc, out, err = self.prep(*args, json.dumps({**held, key: value}))
-                    self.assertEqual(rc, 1, out + err)
+                    self.assertEqual(rc, waveprep.CONFIG_CHANGED, out + err)
                     self.assertEqual(out, f"WAVE PREP REFUSED t42: the wave file changed under the driver: {key} is {said}; nothing made\n")
             self.assertEqual(self.shim_calls, [], "nothing is read from the anchor or made")
             self.assertFalse(os.path.exists(os.path.join(self.wavedir, "prep", "t42.json")))
@@ -4987,33 +4987,51 @@ class Queue(DriveCase):
                                                      for status in ["launching", "answered"] * (1 if "t51" in drifted else 2)],
                                      "no final line: the drift never took the task from the driver")
 
-    def test_a_wave_file_edited_while_prep_reads_it_is_the_same_non_final_line(self) -> None:
-        self.queue({"task": "t50", "profile": "sol", "host": "far"})
-        driver = wavedrive.Driver(self.cfg, wave.load_wave(self.path, "drive"))
+    def test_prep_classifies_an_edit_during_its_read_and_the_driver_reads_no_file_after_it(self) -> None:
+        refusal = ("WAVE PREP REFUSED t50: the wave file changed under the driver: profiles.sol.effort is \"medium\" in the"
+                   " driver's config and \"high\" in the file; nothing made\n")
+        rival = "WAVE PREP REFUSED t50: open rival PR(s) #9 Fix #50\n"
         execute = self.execute
+        answer: tuple[int, str] = (0, "")
+        edit: Callable[[dict[str, Any]], None] = lambda _data: None
 
-        def edited_during_prep(argv: list[str], timeout: float | None = None) -> tuple[int, str, str]:
+        def prep_while_edited(argv: list[str], timeout: float | None = None) -> tuple[int, str, str]:
             if "prep" in argv and "wave" in argv:
-                self.edit_wave(lambda data: data["profiles"]["sol"].update(effort="high"))
                 self.calls.append(argv[argv.index("wave"):])
-                return 1, ("WAVE PREP REFUSED t50: the wave file changed under the driver: profiles.sol.effort is \"medium\" in the"
-                           " driver's config and \"high\" in the file; nothing made\n"), ""
+                self.edit_wave(edit)  # the coordinator's edit lands while prep runs, and stays or is undone at once
+                return *answer, ""
             return execute(argv, timeout)
 
-        for made in ("logs", "msgs"):  # what wave drive's lock makes before its first tick
-            os.makedirs(os.path.join(self.wavedir, made), exist_ok=True)
-        with mock.patch.object(self, "execute", side_effect=edited_during_prep), self.world():
-            self.tick(driver)
-            self.assertEqual([c[:4] for c in self.launched()], [["wave", "prep", self.path, "t50"]])
-            self.tick(driver)
-            self.assertEqual(self.launched(), [], "the next tick reads the file first and prepares nothing")
-            self.edit_wave(lambda data: data["profiles"]["sol"].update(effort="medium"))
-        with self.world():
-            self.tick(driver)
-        self.assertEqual([c[:4] for c in self.launched()], [["wave", "prep", self.path, "t50"], ["wave", "launch", self.path, "t50"]])
-        self.assertEqual(len(self.attention()), 1)
-        self.assertIn("profiles.sol.effort is \"medium\" in the driver's config and \"high\" in the file", self.attention()[0])
-        self.assertEqual(self.ledger(), [(wavedrive.LAUNCH, "launch", "launching"), (wavedrive.LAUNCH, "launch", "answered")])
+        def high(data: dict[str, Any]) -> None:
+            data["profiles"]["sol"]["effort"] = "high"
+
+        for logs in ("logs", "msgs"):
+            os.makedirs(os.path.join(self.wavedir, logs), exist_ok=True)
+        with self.subTest("prep saw the edit, and it was reverted before prep's exit was read"):
+            self.queue({"task": "t50", "profile": "sol", "host": "far"})
+            driver = wavedrive.Driver(self.cfg, wave.load_wave(self.path, "drive"))
+            answer = (waveprep.CONFIG_CHANGED, refusal)
+            with mock.patch.object(self, "execute", side_effect=prep_while_edited), self.world():
+                self.tick(driver)
+            self.assertEqual(self.attention(), ["the wave file changed since this driver started, so the queued task is not prepared:"
+                                                " profiles.sol.effort is \"medium\" in the driver's config and \"high\" in the file;"
+                                                " revert the edit, or restart the driver to take it"])
+            self.assertFalse(os.path.exists(os.path.join(self.wavedir, "logs", "drive.jsonl")), "non-final: nothing on the ledger")
+            with self.world():
+                self.tick(driver)
+            self.assertEqual([c[:4] for c in self.launched()], [["wave", "prep", self.path, "t50"], ["wave", "launch", self.path, "t50"]],
+                             "the file agrees, so the next tick prepares the task")
+        with self.subTest("a refusal of another kind, with an edit made meanwhile, stays final"):
+            for log in ("drive.jsonl", "attention.jsonl"):
+                with contextlib.suppress(FileNotFoundError):
+                    os.remove(os.path.join(self.wavedir, "logs", log))
+            self.rows = []
+            driver = wavedrive.Driver(self.cfg, wave.load_wave(self.path, "drive"))
+            answer, edit = (1, rival), high
+            with mock.patch.object(self, "execute", side_effect=prep_while_edited), self.world():
+                out = self.tick(driver)
+            self.assertIn("DRIVE ATTENTION t50 launch: the queued task was not prepared: WAVE PREP REFUSED t50: open rival PR(s) #9", out)
+            self.assertEqual(self.ledger(), [(wavedrive.LAUNCH, "launch", "attention")])
 
     def test_a_refused_prep_is_final_a_refused_launch_is_told_once_and_retried(self) -> None:
         self.queue({"task": "t50", "profile": "sol", "host": "far"}, {"task": "t51", "profile": "sol", "host": "far"})

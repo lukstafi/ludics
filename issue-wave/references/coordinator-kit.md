@@ -393,7 +393,8 @@ driver hands you as an attention line.
    `wave.json` it started with. When the file's `wave`, `repository`, `issue_repository`, `checkout`,
    `agent_host` or `vars.MAIN`, or the profile a queued task names, no longer matches that copy, it prepares nothing
    for the task and writes one attention line naming each key with both values. Revert the edit, or
-   restart the driver to take it (`touch <wave dir>/drive.stop`, then `wave drive` again). A task's queued `after` tasks are above it in the file; an `after`
+   restart the driver to take it: `touch <wave dir>/drive.stop`, and once it has exited, remove
+   that file and start `wave drive` again. A task's queued `after` tasks are above it in the file; an `after`
    task that is not queued is one you launch yourself (a native worker's).
 
    A native task is queued for its cue, not its launch: an entry under a native profile, or with
