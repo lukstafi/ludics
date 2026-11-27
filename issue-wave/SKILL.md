@@ -959,7 +959,8 @@ native tasks it cues (*Launch*), and stopping it (*Close out*).
   loop reserve a slot on the standby and run there (`FAILOVER to <box>`), and the first start
   home succeeds returns it (`RETURNED to <box>`), releasing the standby's slot; an unknown
   outcome never fails it over. Neither a stop, a red nor a restart releases the home slot: at
-  close-out run `wave loop <wave.json> <name> --release` after the loop's driver has stopped.
+  close-out run `wave loop <wave.json> <name> --release` after the loop's driver has stopped; to
+  move the home, stop the loop, edit its entry and restart it (the restart releases the old box's).
   The GPU loops keep the yield (below).
 
   **On a red at the tip, halt launches at once** (`fleet-worker.sh halt "<red at <sha>, rerun

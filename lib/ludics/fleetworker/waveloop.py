@@ -76,8 +76,18 @@ THE RESERVED SLOT (ludics#1187). A loop whose entry says ``reserve_slot`` (the c
     takes it before its first step, reuses the one outstanding there on a restart (two are ``LOOP
     UNKNOWN``, exit 4), and says ``RESERVED <id> on <box>: workers' batches there take <n-1> of <n>
     slots``. Stopping, a red or a restart never releases it: ``wave loop <wave.json> <name>
-    --release`` concludes every outstanding reservation of the loop (``not-launched``: it names no
-    run), the close-out step. Its id never matches the runs' ``<wave>-<name>-<n>``.
+    --release`` concludes every outstanding reservation of the loop, on whatever box it stands, the
+    wave file's or not (``not-launched``: it names no run), the close-out step. Its id never matches
+    the runs' ``<wave>-<name>-<n>``. The loop's reservations, read on every box, are the outstanding
+    records of the wave marked ``slot_reservation`` whose id is ``<wave>-<name>-slot-<its
+    execution_host>-<n>`` (the id's case folded, the host's exact), and nothing else: a run, another
+    loop's reservation and another wave's whose prefix collides never match.
+  - THE MOVE (ludics#1394): the driver, before anything else, concludes each reservation of the loop
+    on a box that is neither its home nor its standby now (every one, once the entry drops
+    ``reserve_slot``), saying ``RELEASED <id> on <box>: no longer the loop's home or standby``. So
+    moving the home needs no procedure: stop the loop, edit its entry, restart it (a ``--release``
+    before or after the edit concludes the old box's too). The standby's reservation, outstanding
+    while failed over, stays across a restart that keeps the standby.
   - EACH START passes ``--reserved <id>`` to tip-run (tiprun.py, THE RESERVED RUN), which yields to a
     measurement, a pending window and another loop run in its checkout, and to nothing else.
   - FAILOVER, only with ``standby: {box, checkout}``: every step starts at home first. A home
@@ -200,15 +210,26 @@ class Driver:
 
     # --- the reserved slot ------------------------------------------------------------------------
 
-    def held(self, box: str) -> list[dict[str, Any]]:
-        """This loop's outstanding slot reservations on ``box`` (THE RESERVED SLOT)."""
-        listed = listing(self.cfg)
+    def reservations(self) -> list[dict[str, Any]]:
+        """This loop's outstanding slot reservations on every box (THE RESERVED SLOT): a record of this
+        wave marked ``slot_reservation`` whose id is ``<prefix>-slot-<its own execution_host>-<n>``."""
+        listed = listing(self.cfg, None, {"active": True, "compact": True})
         records = records_of(listed.out) if listed.rc == 0 else None
         if records is None:
             raise self.end(4, f"UNKNOWN: the anchor's registry could not be read (exit {listed.rc}); nothing started")
-        pattern = re.compile(re.escape(f"{self.prefix}-slot-{box}") + r"-[0-9]+", re.IGNORECASE)
-        return [r for r in records if r.get("state") != "concluded" and isinstance(r.get("request_id"), str)
-                and pattern.fullmatch(r["request_id"])]
+        found: list[dict[str, Any]] = []
+        for r in records:
+            rid, host = r.get("request_id"), field(r, "request", "execution_host")
+            if (r.get("state") != "concluded" and r.get("slot_reservation") is True and isinstance(rid, str)
+                    and field(r, "request", "wave") == self.wave.wave and isinstance(host, str) and host
+                    and re.fullmatch(re.escape(f"{self.prefix}-slot-{host}") + r"-[0-9]+", rid, re.IGNORECASE)):
+                found.append(r)
+        return found
+
+    def held(self, box: str) -> list[dict[str, Any]]:
+        """This loop's outstanding slot reservations on ``box`` (THE RESERVED SLOT)."""
+        # The host exactly, as tip-run's reserved refusal and the registry compare it (only ids fold case).
+        return [r for r in self.reservations() if field(r, "request", "execution_host") == box]
 
     def ensure(self, box: str, checkout: str) -> str:
         """The loop's reservation on ``box``: the outstanding one, else a new one."""
@@ -241,10 +262,10 @@ class Driver:
         self.say(f"RESERVED {rid} on {box}: workers' batches there take {slots} slots")
         return rid
 
-    def release(self, box: str) -> None:
-        """Conclude the loop's reservations on ``box`` (a reservation names no run: not-launched)."""
-        for r in self.held(box):
-            rid = str(r["request_id"])
+    def release(self, held: list[dict[str, Any]], why: str = "") -> None:
+        """Conclude these reservations of the loop (a reservation names no run: not-launched)."""
+        for r in held:
+            rid, box = str(r["request_id"]), str(field(r, "request", "execution_host"))
             done_payload = {"request_id": rid, "verdict": "not-launched", "log": "-",
                             "evidence": f"wave loop {self.loop.name}: the loop's reserved slot on {box} released"}
             path = os.path.join(self.wave.directory, "logs", f"loop-{self.loop.name}-release.json")
@@ -253,7 +274,15 @@ class Driver:
             if done.rc != 0:
                 raise self.end(4, f"UNKNOWN: the slot reservation {rid} on {box} was not released"
                                   f" (execution conclude exited {done.rc}): {done.out.strip()[-300:]!r}")
-            self.say(f"RELEASED {rid} on {box}")
+            self.say(f"RELEASED {rid} on {box}" + (f": {why}" if why else ""))
+
+    def release_stale(self) -> None:
+        """THE MOVE: conclude the loop's reservations on a box that is neither its home nor its standby
+        now (every one, when the entry no longer says ``reserve_slot``)."""
+        current: set[str] = {b for b, _ in self.boxes()} if self.loop.reserve_slot else set()
+        stale = [r for r in self.reservations() if field(r, "request", "execution_host") not in current]
+        why = "no longer the loop's home or standby" if self.loop.reserve_slot else "the loop no longer reserves a slot"
+        self.release(stale, why)
 
     def boxes(self) -> list[tuple[str, str]]:
         """The loop's (box, checkout) pairs: home, then the standby."""
@@ -318,7 +347,7 @@ class Driver:
             self.down_since = None
             if self.standby_slot and standby is not None:
                 self.say(f"RETURNED to {self.loop.box}: {started} runs at home; releasing the standby's slot")
-                self.release(standby.box)
+                self.release(self.held(standby.box))
                 self.standby_slot = ""
             return started
         if standby is None:
@@ -391,6 +420,7 @@ class Driver:
 
     def drive(self, resume_after: str) -> int:
         try:
+            self.release_stale()
             if self.loop.reserve_slot:
                 self.home_slot = self.ensure(self.loop.box, self.loop.checkout)
                 spare = self.held(self.loop.standby.box) if self.loop.standby is not None else []
@@ -467,8 +497,7 @@ def cmd_loop(cfg: Config, args: list[str]) -> int:
             driver = Driver(cfg, wave, loop, log)
             if release:
                 try:
-                    for box, _ in driver.boxes():
-                        driver.release(box)
+                    driver.release(driver.reservations())
                 except End as end:
                     return end.rc
                 driver.say("RELEASED: the loop holds no reserved slot")
