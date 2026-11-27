@@ -368,6 +368,20 @@ def _code_review_record(body: str) -> dict[str, object] | None:
     return cast(dict[str, object], code)
 
 
+def _findings_unrecorded(comments: list[Json], rev: str) -> bool:
+    """Does the reviewer's newest summary's one state record (``_code_review_record``) carry both
+    ``has_any_findings`` and ``has_unresolved_findings``, each null (ludics#1387)? A key that is
+    absent, or any other value, is False. Which commit and status the record names, and whether
+    its row agrees, is ``summary_state``'s to read; ``status_state`` reads both."""
+    newest_summary = _newest_summary(comments, rev)
+    if newest_summary is None:
+        return False
+    fields = _code_review_record(body_of(newest_summary))
+    return fields is not None and all(
+        k in fields and fields[k] is None for k in ("has_any_findings", "has_unresolved_findings")
+    )
+
+
 def _commitless_done(comments: list[Json], rev: str) -> tuple[str, str]:
     """When the reviewer's newest summary marks its newest Code Review row Completed naming no
     commit (ludics-lite#787): that row's stamp with its fraction cut, and its Review trigger cell
@@ -792,29 +806,51 @@ def status_state(ctx: Ctx, pr: str) -> State:
                 " given)",
             )
 
+    # A round the app closed Completed on exactly this head with no findings recorded either way
+    # (ludics#1387; lukstafi/ludics#1378's 9c0c1d9, 2026-11-25, read back from the summary's edit
+    # history): the record's has_any_findings and has_unresolved_findings both null, as they are
+    # while a round runs, and nothing posted, no 👍 -- a run that ended without a verdict, read as
+    # the Failed row is (the arm below), as ludics-lite#787 reads the Completed row naming no
+    # commit. The record and the row must agree as above, and the reviewer must have posted
+    # nothing about the head: a review of it, a comment stamped with it, or a receipt naming no
+    # commit as its newest word is a verdict the record did not keep up with.
+    try:
+        unjudged = (
+            head_state is not None and head_state.status == "completed" and head_state.unresolved is None
+            and done_kind == "completed" and done_at == head_state.at
+            and _findings_unrecorded(comments, rev)
+            and not _head_findings(comments, reviews, rev, head_sha)
+            and not _commitless_receipt(comments, rev)
+        )
+    except JqError:
+        return unknown(mstate, "the reviewer's findings for the head did not parse")
+    ended = "Failed" if done_kind == "failed" else (
+        "Completed with no findings recorded (its state record's has_any_findings and"
+        " has_unresolved_findings are null)"
+    ) if unjudged else ""
     if (
-        done_kind == "failed" and done_sha and head_sha and not plus
+        ended and done_sha and head_sha and not plus
         and age_of(done_at, ctx.clock.time()) is not None
         and _after_nudge(done_at, nudge_at) and (not eyes_at or eyes_at < done_at)
     ):
         if head_sha.startswith(done_sha):
             if eyes_at:
                 if not (not last_spoke or last_spoke < eyes_at):
-                    done_kind = ""
+                    ended = ""
             else:
                 if not (not last_spoke or last_spoke < done_at):
-                    done_kind = ""
+                    ended = ""
                 try:
                     rev_head_at = _review_of_head_at(reviews, rev, head_sha)
                 except JqError:
                     return unknown(mstate, "the reviews feed did not parse for the failed run's head")
                 if rev_head_at:
-                    done_kind = ""
+                    ended = ""
         else:
-            done_kind = ""
+            ended = ""
     else:
-        done_kind = ""
-    if done_kind == "failed":
+        ended = ""
+    if ended:
         if not head_at_read:
             head_at = _commit_read(ctx, head_sha)
             head_at_read = True
@@ -831,13 +867,13 @@ def status_state(ctx: Ctx, pr: str) -> State:
                 return State(
                     "failed", age, mstate,
                     f"{_short(head_sha)}|run-again|{rev}'s summary marks head {_short(head_sha)}'s"
-                    f" Code Review Failed at {done_at}, after the '@codex review' request at"
+                    f" Code Review {ended} at {done_at}, after the '@codex review' request at"
                     f" {req_before} on this head, with no review of it and no 👍",
                 )
             return State(
                 "failed", age, mstate,
                 f"{_short(head_sha)}|run|{rev}'s summary marks head {_short(head_sha)}'s Code Review"
-                f" Failed at {done_at}, with no review of it, no 👍, and no '@codex review' on it"
+                f" {ended} at {done_at}, with no review of it, no 👍, and no '@codex review' on it"
                 " since it arrived",
             )
 

@@ -566,6 +566,85 @@ class FailedRowWithNote(unittest.TestCase):
                 self.assertEqual(st.tok, "expected", st.line())
 
 
+class NoFindingsRecorded(unittest.TestCase):
+    """ludics#1387: lukstafi/ludics#1378's summary for head 9c0c1d9 (2026-11-25T20:15:10Z, read
+    back from its edit history) marked the Code Review Completed with a record whose
+    has_any_findings and has_unresolved_findings were both null, its 👀 gone, and nothing else
+    posted: the state read EXPECTED and the watch's nudge read was barred by the row naming the
+    head. It is the failed run, re-requested once. Verbatim but for the head and the stamp."""
+
+    def summary(self, at: str, **flags: Json) -> dict[str, Json]:
+        code: dict[str, Json] = {"commit_sha": HEAD, "has_any_findings": None,
+                                 "has_unresolved_findings": None, "status": "completed"}
+        code.update(flags)
+        record = json.dumps({"code_review": code, "security_review": {
+            "commit_sha": None, "has_any_findings": None, "has_unresolved_findings": None, "status": None}},
+            separators=(",", ":"))
+        return comment(1, at, (
+            "<!-- codex-pull-request-review-summary -->\n"
+            f"<!-- codex-review-state:v1 {record} -->\n\n<details>\n"
+            "<summary><strong>Codex Review Summary</strong>: ✅ Completed</summary>\n\n"
+            "This comment shows the latest Codex review activity on this pull request.\n\n"
+            "| Review | Status | Commit | Review trigger |\n| --- | --- | --- | --- |\n"
+            f"| 📝 **Code Review** | ✅ **Completed** <relative-time datetime=\"{at[:-1]}.146160Z\">{at[:-1]}.146160Z"
+            f"</relative-time> | `{HEAD[:7]}` | New commit |\n\n</details>"))
+
+    def read(self, *extra: Json, reactions: Sequence[Json] = (), reviews: Sequence[Json] = (),
+             **flags: Json) -> state.State:
+        return run_state(feeds(comments=[self.summary(iso(60), **flags), *extra], reactions=reactions,
+                               reviews=reviews, head_at=iso(300), created=iso(9000)))
+
+    def test_the_round_is_the_failed_run(self) -> None:
+        st = self.read()
+        self.assertEqual(st.tok, "failed", st.line())
+        self.assertTrue(st.detail.startswith("aaaaaaa|run|"), st.detail)
+        self.assertIn("Code Review Completed with no findings recorded", st.detail)
+
+    def test_a_request_on_the_head_makes_it_one_request(self) -> None:
+        st = self.read(comment(9, iso(120), "@codex review", login="me"))
+        self.assertEqual(st.tok, "failed", st.line())
+        self.assertTrue(st.detail.startswith("aaaaaaa|run-again|"), "a request before it: handed back")
+        after = self.read(comment(9, iso(30), "@codex review", login="me"))
+        self.assertNotEqual(after.tok, "failed", "a request since it: the round it asks for is due")
+        earlier = self.read(comment(9, iso(600), "@codex review", login="me"))
+        self.assertTrue(earlier.detail.startswith("aaaaaaa|run|"), "a request before the head arrived was an earlier head's")
+
+    def test_a_verdict_for_the_head_is_no_failed_run(self) -> None:
+        stamped = f"**Reviewed commit:** `{HEAD[:10]}`"
+        about = "\n\n<details> <summary>ℹ️ About Codex in GitHub</summary>\nx\n</details>"
+        none: list[Json] = []
+        cases: list[tuple[str, list[Json], list[Json], list[Json], dict[str, Json]]] = [
+            ("a 👍", none, [reaction("+1", iso(50))], none, {}),
+            ("a review of the head", none, none, [review(5, HEAD, iso(62))], {}),
+            ("a findings comment on the head", [comment(2, iso(65), f"A finding.\n\n{stamped}")], none, none, {}),
+            ("a no-findings verdict on the head",
+             [comment(2, iso(62), f"Codex Review: Didn't find any major issues.\n\n{stamped}")], none, none, {}),
+            ("a receipt naming no commit", [comment(2, iso(62), (
+                "<!-- codex-review-receipt:v1 -->\n\nCodex Review: Didn't find any major issues. Keep it up!"
+                + about))], none, none, {}),
+            ("a clean record", none, none, none, {"has_any_findings": False, "has_unresolved_findings": False}),
+            ("unresolved findings", none, none, none, {"has_any_findings": True, "has_unresolved_findings": True}),
+            ("findings recorded, unresolved null", none, none, none, {"has_any_findings": False}),
+        ]
+        for name, extra, reactions, reviews, flags in cases:
+            with self.subTest(name):
+                st = self.read(*extra, reactions=reactions, reviews=reviews, **flags)
+                self.assertNotEqual(st.tok, "failed", st.line())
+                self.assertNotIn("no findings recorded", st.detail)
+
+    def test_a_record_out_of_the_boundary_keeps_the_old_reading(self) -> None:
+        absent = self.summary(iso(60))
+        absent["body"] = str(absent["body"]).replace('"has_any_findings":null,', "", 1)
+        other = self.summary(iso(60))
+        other["body"] = str(other["body"]).replace(f'"commit_sha":"{HEAD}"', '"commit_sha":"' + "b" * 40 + '"')
+        running = self.summary(iso(60), status="running")
+        for name, c in (("no has_any_findings key", absent), ("another head's record", other),
+                        ("a running record", running)):
+            with self.subTest(name):
+                st = run_state(feeds(comments=[c], head_at=iso(300), created=iso(9000)))
+                self.assertEqual(st.tok, "expected", st.line())
+
+
 def state_summary(cid: int, at: str, record: str, row_sha: str = HEAD[:7], edited: str = "") -> dict[str, Json]:
     """The reviewer's summary comment as the app writes it (lukstafi/ludics-lite#690's, 2026-10-18):
     the tag, the hidden state record, and the table with its Code Review row, Completed at ``at``.
