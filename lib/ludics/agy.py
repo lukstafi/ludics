@@ -41,11 +41,13 @@ plan or a checkpoint review on any LF-delimited line. After optional spaces or t
 protected lines are those starting with ``PLAN_READY`` or ``END_PLAN_READY``, and whole checkpoint
 headings as defined by ``prreview.checkpoint.HEADING``, with trailing whitespace allowed.
 This protects the envelopes these callers save. A REVIEW (``result(stdout, review=True)``, the
-checkpoint's reader) trims only to a step that itself holds such a whole heading line: a step
-without one keeps the whole response, so a split review whose heading is missing or malformed and
-whose final step is only its verdict keeps the findings of its earlier steps (#1381). That is an
-allowlist on the heading, not a reading of the step's prose: an unheaded review keeps any wait
-chatter above it, which ``checkpoint.headed`` then heads like the rest. The jq reader protects
+checkpoint's reader) trims only to a step that itself holds such a whole heading line AND a
+nonblank line that is neither a whole heading nor a whole checkpoint VERDICT line (stripped): any
+other step keeps the whole response, so a split review whose findings sit in earlier steps, under
+a missing or malformed heading or above a final step of heading and verdict alone, keeps them
+(#1381). That is an allowlist on the step's shape, not a reading of its prose: an unheaded review,
+or one whose final step is its heading and verdict alone, keeps any wait chatter above it, which
+``checkpoint.headed`` then heads like the rest. The jq reader protects
 wave driver markers for CLI worker handoffs. Other event types, marker words and prose play no
 part in this selection.
 """
@@ -59,7 +61,7 @@ from typing import Any, cast
 
 from ludics import proc
 from ludics.peerplan.transcript import CLOSE as PLAN_CLOSE, OPEN as PLAN_OPEN
-from ludics.prreview.checkpoint import HEADING as CHECKPOINT_HEADING
+from ludics.prreview.checkpoint import HEADING as CHECKPOINT_HEADING, VERDICT as CHECKPOINT_VERDICT
 
 MARK = "ludics-clone"
 NO_HOOKS = ["-c", f"core.hooksPath={os.devnull}", "-c", "advice.detachedHead=false"]
@@ -97,9 +99,16 @@ def _response_text(response: str, step: str, review: bool) -> str:
     for line in prefix.split("\n"):
         if line.lstrip(" \t").startswith((PLAN_OPEN, PLAN_CLOSE)) or _heading(line):
             return response
-    if review and not any(_heading(line) for line in step.split("\n")):
+    if review and not _whole_review(step):
         return response
     return step
+
+
+def _whole_review(step: str) -> bool:
+    """RESPONSE TRIMMING's review shape (the header): a heading line and a line that is neither."""
+    lines = [line for line in step.split("\n") if line.strip()]
+    return any(_heading(line) for line in lines) and any(
+        not _heading(line) and CHECKPOINT_VERDICT.fullmatch(line.strip()) is None for line in lines)
 
 
 def result(stdout: str, review: bool = False) -> tuple[str, str, str]:

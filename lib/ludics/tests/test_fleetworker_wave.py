@@ -2256,16 +2256,21 @@ class AgyResult(unittest.TestCase):
                 self.assertEqual(agy.result(agy_stream(response, steps=steps)), (response, "c1", ""))
 
     def test_a_review_trims_only_to_a_step_holding_its_heading(self) -> None:
-        """#1381: a split review whose heading is missing or malformed keeps its earlier findings;
-        the control, a headed final step after wait chatter, still trims. A plan (no review)
-        trims as before."""
+        """#1381: a split review keeps its earlier findings when its final step is not a whole
+        review (a heading and a line that is neither heading nor verdict); the control, a whole
+        review after wait chatter, still trims. A plan (no review) trims as before."""
         verdict = "VERDICT: blocking (1 blocking, 0 suggestions)"
         heading = "### Review checkpoint (at-open): head 1234abcd"
         for name, earlier, final in (
                 ("no heading, verdict-only final step", "A blocking finding.\n\n", verdict),
                 ("a malformed heading in the final step", "A blocking finding.\n",
                  f"## Review checkpoint (at-open): head 1234abcd\n{verdict}"),
-                ("a heading cut short in the final step", "A blocking finding.\n", f"{heading} and more\n{verdict}")):
+                ("a heading with text after it in the final step", "A blocking finding.\n", f"{heading} and more\n{verdict}"),
+                ("a heading cut short in the final step", "A blocking finding.\n", f"{heading[:-3]}\n{verdict}"),
+                ("a whole heading and the verdict alone in the final step", "A blocking finding.\n\n",
+                 f"{heading}\n\n{verdict}\n"),
+                ("two headings and the verdict alone in the final step", "A blocking finding.\n",
+                 f"{heading}\n  {heading}\r\n{verdict}")):
             with self.subTest(name=name):
                 steps = (agy_step(1, "DONE", earlier), agy_step(2, "DONE", final))
                 response = earlier + final
