@@ -15,8 +15,9 @@ parent commit (``git show 14f2ca7:ship-pr/scripts/pr-review.sh``); read them bef
 - "keep waiting" is said only while something runs: a live round or a fresh nudge extends the
   window ONCE, to a frozen deadline (handed off once from a nudge's pickup to its review);
 - a `failed` run (a Failed summary row, or a Completed one naming no commit, #787, or recording
-  no findings either way, #1387) is
-  re-requested by the watch itself, once per head per process, on a state read fresh after the round, and the request is sent ONCE whatever its error (it may have landed);
+  no findings either way, #1387) is re-requested by the watch itself, once per head per process,
+  on a state read fresh after the round, and the request is sent ONCE whatever its error (it may
+  have landed);
   so is a first initialization failure (#792), when ``state.stall_nudge_read`` also finds nothing
   standing for the head; a failure after a request on the head (``-again``) is handed back. The
   failure comment is not a round (ludics#824, ``only_init_failure``): a round whose only items
@@ -188,7 +189,8 @@ def _after(text: str, sep: str) -> str:
 
 # The `failed` kinds whose first move is the one '@codex review' the watch posts itself: the run
 # the summary marks Failed (or Completed naming no commit, #787, or with no findings recorded,
-# #1387), and the initialization failures (#792). Their `-again` kinds, after a request on the head, are handed back.
+# #1387), and the initialization failures (#792). Their `-again` kinds, after a request on the
+# head, are handed back.
 _FIRST_FAILURES = ("run", "env", "git")
 
 

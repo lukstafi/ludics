@@ -518,14 +518,9 @@ def _head_findings(comments: list[Json], reviews: list[Json], rev: str, head_sha
     comment stamped with it that is not a no-findings verdict?"""
     if _review_of_head_at(reviews, rev, head_sha):
         return True
-    for c in comments:
-        if not login_is(c, rev) or _is_summary(c) or _NO_FINDINGS.search(body_of(c)):
-            continue
-        stamps = capture_all(body_of(c), REVIEWED_COMMIT_RE)
-        sha = jstr(alt(stamps[-1]["s"] if stamps else None, ""))
-        if sha and startswith(head_sha, sha):
-            return True
-    return False
+    return any(
+        _stamped_with_head(c, rev, head_sha) and not _NO_FINDINGS.search(body_of(c)) for c in comments
+    )
 
 
 def _said_about_head(comments: list[Json], reviews: list[Json], rev: str, head_sha: str) -> bool:
@@ -535,14 +530,18 @@ def _said_about_head(comments: list[Json], reviews: list[Json], rev: str, head_s
     under a newer verdict for another is still this head's."""
     if _review_of_head_at(reviews, rev, head_sha):
         return True
-    for c in comments:
-        if not login_is(c, rev) or _is_summary(c):
-            continue
-        stamps = capture_all(body_of(c), REVIEWED_COMMIT_RE)
-        sha = jstr(alt(stamps[-1]["s"] if stamps else None, ""))
-        if sha and startswith(head_sha, sha):
-            return True
-    return False
+    return any(_stamped_with_head(c, rev, head_sha) for c in comments)
+
+
+def _stamped_with_head(c: Json, rev: str, head_sha: str) -> bool:
+    """Is this the reviewer's comment, not the summary, whose last ``REVIEWED_COMMIT_RE`` stamp
+    names this head (a prefix of it)? The one test ``_head_findings`` and ``_said_about_head`` tie
+    a comment to a head by."""
+    if not login_is(c, rev) or _is_summary(c):
+        return False
+    stamps = capture_all(body_of(c), REVIEWED_COMMIT_RE)
+    sha = jstr(alt(stamps[-1]["s"] if stamps else None, ""))
+    return bool(sha) and startswith(head_sha, sha)
 
 
 def _short(sha: str) -> str:
