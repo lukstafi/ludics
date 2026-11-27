@@ -39,11 +39,13 @@ each prep reads the file as it is now. The driver's internal ``--driver-config <
 ``launch_config`` of the driver's copy: the keys a queued task's prep is decided and made by. Prep
 computes the same object from the file it loaded and, on any difference, refuses before reading or
 making anything, naming each changed key with the driver's value and the file's. The compared keys
-are a fail-closed allowlist: ``wave``, ``repository``, ``checkout``, ``agent_host``, ``vars.MAIN``
-and the named profile's ``transport``, ``kind``, ``model`` and ``effort``. A profile or var that is
-absent reads as ``absent``. Every other key (other profiles, ``hosts``, ``legs``, ``loops``,
-``review``, other ``vars``) is not compared. Those keys are read only by prep itself, so the driver
-holds no copy that could drift. A prep run by hand passes no such object and is not compared.
+are a fail-closed allowlist: ``wave``, ``repository``, ``issue_repository``, ``checkout``,
+``agent_host``, ``vars.MAIN`` and the named profile's ``transport``, ``kind``, ``model`` and
+``effort``. A profile or var that is absent reads as ``absent``. Every other key (other profiles,
+``hosts``, ``legs``, ``loops``, ``review``, other ``vars``, the wave's own ``transport`` and
+``kind``) is not compared: the driver reads none of them to decide or build a queued CLI task's
+prep call, so only prep's own read of them counts. A prep run by hand passes no such object and is
+not compared.
 
 A CLI TASK (transport ``cli``) is prepared and not made. ``fleet-worker.sh launch`` makes a CLI
 worker's worktree on its box and takes its standing reservation in one fenced step, so prep makes
@@ -410,8 +412,8 @@ PROFILE_KEYS = ("transport", "kind", "model", "effort")
 def launch_config(wave: Wave, profile: str) -> dict[str, str | None]:
     """THE DRIVER'S CONFIG (the header): the compared keys, None for a profile or var the file lacks."""
     chosen = wave.profiles.get(profile)
-    return {"wave": wave.wave, "repository": wave.repository, "checkout": wave.checkout, "agent_host": wave.agent_host,
-            "vars.MAIN": wave.vars.get("MAIN"),
+    return {"wave": wave.wave, "repository": wave.repository, "issue_repository": wave.issue_repository, "checkout": wave.checkout,
+            "agent_host": wave.agent_host, "vars.MAIN": wave.vars.get("MAIN"),
             **{f"profiles.{profile}.{key}": getattr(chosen, key) if chosen else None for key in PROFILE_KEYS}}
 
 
