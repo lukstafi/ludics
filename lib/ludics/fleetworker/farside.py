@@ -1696,11 +1696,31 @@ case "$kind" in
   # agy concatenates every agent_response step of a turn (each reactive-wakeup wait message plus
   # the final reply) into .result.response (#1308). Match codex last-message semantics by taking
   # the last non-empty DONE agent_response step of the last completed turn, verified fail-closed
-  # as a line-boundary suffix of .result.response AND with no line in the stripped prefix starting
-  # with any wavedrive.MARKER_TOKENS marker (pinned in test_fleetworker_wave.py); fall back to
-  # .result.response whole otherwise so wavedrive.classify sees every marker.
-  gemini) prog='def prefix_has_marker:
-      test("(?m)^[ \\t]*(?:PLAN_READY|END_PLAN_READY|WINDOWS_WITNESS_REQUEST|EXECUTION_REQUEST|EXECUTION_RESULT|REVIEW_REQUEST|CONFIRM_REQUEST|HANDBACK)");
+  # as a line-boundary suffix of .result.response AND with no LIVE marker line in the stripped
+  # prefix: a line starting, after spaces or tabs, with a wavedrive.MARKER_TOKENS marker (pinned
+  # in test_fleetworker_wave.py); fall back to .result.response whole otherwise so
+  # wavedrive.classify sees every marker. The prefix's LF lines are read with the fence half of
+  # wavedrive.marker_lines' closed list, and nothing else (#1381): a fence opens on a line of up
+  # to three spaces, three or more backticks or tildes and an info string (no backtick in a
+  # backtick fence's), and closes on a line of up to three spaces, a run of the same character at
+  # least as long, and only spaces, tabs or CRs after it. A marker line inside a fence that closes
+  # within the prefix is an example, not live. A fence still open where the prefix ends keeps the
+  # response whole, marker or not: the final step's lines are inside it as wavedrive reads the
+  # whole, and alone they would read as live. `>` lines never match a marker line. Indented code,
+  # list-relative fences, inline spans and HTML get no handling.
+  gemini) prog='def marker_line:
+      test("^[ \\t]*(?:PLAN_READY|END_PLAN_READY|WINDOWS_WITNESS_REQUEST|EXECUTION_REQUEST|EXECUTION_RESULT|REVIEW_REQUEST|CONFIRM_REQUEST|HANDBACK)");
+    def prefix_has_marker:
+      reduce split("\n")[] as $l ({fence: "", live: false};
+        .fence as $f
+        | [$l | match("^ {0,3}(`{3,}|~{3,})(.*)$") | .captures[] | (.string // "")] as $b
+        | if .live then .
+          elif $f != "" then
+            (if ($b | length) == 2 and ($b[0] | startswith($f)) and ($b[1] | test("^[ \\t\\r]*$")) then .fence = "" else . end)
+          elif ($b | length) == 2 and (($b[0] | startswith("~")) or (($b[1] | contains("`")) | not)) then .fence = $b[0]
+          elif ($l | marker_line) then .live = true
+          else . end)
+      | .live or .fence != "";
     reduce (inputs | fromjson? | select(type == "object")) as $e ({buf: {}, done: null, last: null};
       if $e.event == "init" then .buf = {} | .done = null
       elif $e.event == "step_update"

@@ -62,8 +62,8 @@ with no final message are attention. A box that does not answer, and a status li
 next tick and recorded nowhere: only a state the worker is really in ends a turn's reading.
 
 THE MARKERS, a fail-closed allowlist over the final message's non-blank lines. The scan begins
-after ``log --last-result`` selects the text. Gemini step selection reads earlier marker-shaped
-lines as plain text (farside.LOG_LAST_RESULT). The closed list
+after ``log --last-result`` selects the text. Gemini step selection (farside.LOG_LAST_RESULT)
+reads earlier steps with this list's fence forms, so a fenced example there is no marker. The closed list
 of block forms excluded from marker reading is: explicit `>`-prefixed lines, backtick fences and
 tilde fences, each with up to three leading spaces. A fence opens with at least three matching
 characters and optional info (without backticks for a backtick fence), and ends at a fence of

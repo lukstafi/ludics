@@ -174,7 +174,7 @@ def reviewer_call(call: "Call", prompt: str) -> tuple[str, list[str], bytes]:
 def final_message(kind: str, stdout: str) -> tuple[str, str]:
     """The reviewer's final message, or "" and why there is none."""
     if kind == "gemini":
-        text, _, why = agy.result(stdout)
+        text, _, why = agy.result(stdout, review=True)
         return text, why
     try:
         answer: Any = json.loads(stdout)

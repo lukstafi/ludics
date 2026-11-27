@@ -2234,31 +2234,8 @@ def agy_answer(response: str, **more: Any) -> Answer:
 
 
 class AgyResult(unittest.TestCase):
-    def test_last_done_step_assembles_deltas_by_index(self) -> None:
-        response = "Waiting.\n\nA finding.\nDone.\n"
-        steps = (agy_step(7, "DONE", "Waiting."),
-                 agy_step(3, "ACTIVE", "\nA finding."),
-                 agy_step(9, "ACTIVE", "Other text"),
-                 agy_step(3, "ACTIVE", "\nDone.\n"),
-                 agy_step(3, "DONE"),
-                 agy_step(10, "DONE", "  \n"))
-        self.assertEqual(agy.result(agy_stream(response, steps=steps)), ("\nA finding.\nDone.\n", "c1", ""))
-
-    def test_last_done_step_must_be_a_line_boundary_suffix(self) -> None:
-        for response, step in (("Waiting. Done.", "Done."),
-                               ("Waiting.\u0085Done.", "Done."),
-                               ("Waiting.\nDone.\nStill going.", "Done.\n")):
-            with self.subTest(response=response):
-                steps = (agy_step(1, "DONE", step), agy_step(2, "ACTIVE", "Still going."))
-                self.assertEqual(agy.result(agy_stream(response, steps=steps)), (response, "c1", ""))
-
-    def test_only_agent_response_steps_with_numeric_indices_can_trim(self) -> None:
-        response = "Waiting.\nDone."
-        steps = (agy_step("2", "DONE", "Done."), agy_step(True, "DONE", "Done."),
-                 agy_step(2, "DONE", "Done.", kind="tool_call"))
-        for step in steps:
-            with self.subTest(step=step):
-                self.assertEqual(agy.result(agy_stream(response, steps=(step,))), (response, "c1", ""))
+    """agy.result's own cases: its protected prefix lines and the review caller's heading rule
+    (the cases both readers share are STEP_FIXTURES)."""
 
     def test_last_done_step_preserves_plan_markers_in_the_prefix(self) -> None:
         for prefix, step in (("Waiting.\nPLAN_READY", "\nPlan text.\nEND_PLAN_READY"),
@@ -2278,19 +2255,113 @@ class AgyResult(unittest.TestCase):
                 response = earlier + verdict
                 self.assertEqual(agy.result(agy_stream(response, steps=steps)), (response, "c1", ""))
 
-    def test_last_done_step_cannot_cross_a_turn_boundary(self) -> None:
-        steps = (agy_step(1, "DONE", "Done."),)
-        response = "Different turn.\nDone."
-        previous_response = "Previous turn.\nDone."
-        previous, current = agy_stream(previous_response, steps=steps), agy_stream(response)
-        init, rest = current.split("\n", 1)
-        result_event = rest.split("\n", 1)[1]
-        cases = (("result reset", previous + result_event, response),
-                 ("init reset", json.dumps(steps[0]) + "\n" + init + "\n" + rest, response),
-                 ("unfinished turn", previous + json.dumps(agy_step(2, "DONE", previous_response)), "Done."))
-        for name, stream, expected in cases:
+    def test_a_review_trims_only_to_a_step_holding_its_heading(self) -> None:
+        """#1381: a split review whose heading is missing or malformed keeps its earlier findings;
+        the control, a headed final step after wait chatter, still trims. A plan (no review)
+        trims as before."""
+        verdict = "VERDICT: blocking (1 blocking, 0 suggestions)"
+        heading = "### Review checkpoint (at-open): head 1234abcd"
+        for name, earlier, final in (
+                ("no heading, verdict-only final step", "A blocking finding.\n\n", verdict),
+                ("a malformed heading in the final step", "A blocking finding.\n",
+                 f"## Review checkpoint (at-open): head 1234abcd\n{verdict}"),
+                ("a heading cut short in the final step", "A blocking finding.\n", f"{heading} and more\n{verdict}")):
+            with self.subTest(name=name):
+                steps = (agy_step(1, "DONE", earlier), agy_step(2, "DONE", final))
+                response = earlier + final
+                self.assertEqual(agy.result(agy_stream(response, steps=steps), review=True), (response, "c1", ""))
+                self.assertEqual(agy.result(agy_stream(response, steps=steps)), (final, "c1", ""))
+        for name, review in (("headed", f"{heading}\n\nA finding.\n\n{verdict}"),
+                             ("heading indented, CR-ended, after a line", f"Summary.\n \t{heading}\r\nA finding.\n{verdict}")):
+            with self.subTest(control=name):
+                chatter = "Waiting for CI.\nStill waiting.\n"
+                steps = (agy_step(1, "DONE", "Waiting for CI.\n"), agy_step(2, "DONE", "Still waiting.\n"), agy_step(3, "DONE", review))
+                self.assertEqual(agy.result(agy_stream(chatter + review, steps=steps), review=True), (review, "c1", ""))
+
+
+def last_result_jq(stream: str) -> str:
+    """farside.LOG_LAST_RESULT's gemini reader over one worker record holding <stream>: the text it
+    prints, less the newline `jq -r` ends it with, or the NO RESULT line."""
+    with tempfile.TemporaryDirectory() as state:
+        record = os.path.join(state, "workers", "w")
+        os.makedirs(record)
+        with open(os.path.join(record, "meta"), "w") as f:
+            f.write("kind=gemini\n")
+        with open(os.path.join(record, "stream.jsonl"), "w") as f:
+            f.write(stream)
+        script = f"STATE={shlex.quote(state)}\nBOX=box\nTMUX_SOCKET=\n" + farside.HELPERS + farside.LOG_LAST_RESULT
+        done = subprocess.run(["bash", "-c", script, "last-result", "w"], capture_output=True, check=False)
+    out = done.stdout.decode("utf-8", "surrogateescape")
+    if done.returncode != 0 or not out.endswith("\n"):
+        return f"rc={done.returncode} {out}{done.stderr.decode('utf-8', 'replace')}"
+    return out[:-1]
+
+
+def _turn_reset_streams() -> tuple[tuple[str, str, str], ...]:
+    steps = (agy_step(1, "DONE", "Done."),)
+    response = "Different turn.\nDone."
+    previous_response = "Previous turn.\nDone."
+    previous, current = agy_stream(previous_response, steps=steps), agy_stream(response)
+    init, rest = current.split("\n", 1)
+    result_event = rest.split("\n", 1)[1]
+    return (("turn reset: a result clears the step state", previous + result_event, response),
+            ("turn reset: an init clears the step state", json.dumps(steps[0]) + "\n" + init + "\n" + rest, response),
+            ("turn reset: an unfinished turn's DONE step leaves the ended turn's reading", previous
+             + json.dumps(agy_step(2, "DONE", previous_response)) + "\n", "Done."))
+
+
+# THE SHARED FIXTURES (#1381): streams whose selection agy.result and farside.LOG_LAST_RESULT's
+# gemini reader both make, with no line either reader protects, so the two must agree to the byte:
+# turn resets, delta assembly by index, completion order and the LF-boundary suffix check. Each
+# reader's protected lines (agy's plan and checkpoint lines, jq's wave driver markers and fences)
+# stay in their own suites: AgyResult and GeminiReview here, test-fleet-worker.sh's
+# "log --last-result (fixture streams)" for the jq reader. Number forms the two decoders read
+# differently (2 vs 2.0 keys, NaN) and non-ASCII whitespace are left out.
+STEP_FIXTURES: tuple[tuple[str, str, str], ...] = (
+    ("interleaved deltas assemble by index; a blank DONE step does not count",
+     agy_stream("Waiting.\n\nA finding.\nDone.\n", steps=(
+         agy_step(7, "DONE", "Waiting."), agy_step(3, "ACTIVE", "\nA finding."), agy_step(9, "ACTIVE", "Other text"),
+         agy_step(3, "ACTIVE", "\nDone.\n"), agy_step(3, "DONE"), agy_step(10, "DONE", "  \n"))),
+     "\nA finding.\nDone.\n"),
+    ("completion order: the last step to reach DONE wins, not the highest index",
+     agy_stream("Wait.\nFinal.\n", steps=(agy_step(2, "ACTIVE", "Final.\n"), agy_step(5, "DONE", "Wait.\n"), agy_step(2, "DONE"))),
+     "Final.\n"),
+    ("completion order: a step still ACTIVE after the last DONE one keeps the response whole",
+     agy_stream("Waiting.\nDone.\nStill going.", steps=(agy_step(1, "DONE", "Done.\n"), agy_step(2, "ACTIVE", "Still going."))),
+     "Waiting.\nDone.\nStill going."),
+    ("LF boundary: a step after an LF is selected",
+     agy_stream("Waiting.\r\nDone.", steps=(agy_step(1, "DONE", "Done."),)), "Done."),
+    ("LF boundary: a step that begins with its own LF is selected",
+     agy_stream("Waiting.\nDone.", steps=(agy_step(1, "DONE", "\nDone."),)), "\nDone."),
+    ("LF boundary: the whole response as one step",
+     agy_stream("Only.\n", steps=(agy_step(1, "DONE", "Only.\n"),)), "Only.\n"),
+    ("LF boundary: a mid-line suffix keeps the response whole",
+     agy_stream("Waiting. Done.", steps=(agy_step(1, "DONE", "Done."),)), "Waiting. Done."),
+    ("LF boundary: U+0085 is not a line boundary",
+     agy_stream("Waiting.\u0085Done.", steps=(agy_step(1, "DONE", "Done."),)), "Waiting.\u0085Done."),
+    ("a step that is not a suffix keeps the response whole",
+     agy_stream("Waiting.\nDone.", steps=(agy_step(1, "DONE", "Other."),)), "Waiting.\nDone."),
+    *((f"only agent_response steps with numeric indices trim ({name})", agy_stream("Waiting.\nDone.", steps=(step,)),
+       "Waiting.\nDone.") for name, step in (("string index", agy_step("2", "DONE", "Done.")),
+                                              ("boolean index", agy_step(True, "DONE", "Done.")),
+                                              ("tool_call step", agy_step(2, "DONE", "Done.", kind="tool_call")))),
+    *_turn_reset_streams(),
+)
+
+
+class SharedStepFixtures(unittest.TestCase):
+    """STEP_FIXTURES through both readers: what each selects is the fixture's, the same text."""
+
+    def test_agy_result_selects_each_fixtures_step(self) -> None:
+        for name, stream, expected in STEP_FIXTURES:
             with self.subTest(name=name):
                 self.assertEqual(agy.result(stream), (expected, "c1", ""))
+
+    @unittest.skipIf(shutil.which("bash") is None or shutil.which("jq") is None, "no bash or no jq")
+    def test_log_last_result_selects_each_fixtures_step(self) -> None:
+        for name, stream, expected in STEP_FIXTURES:
+            with self.subTest(name=name):
+                self.assertEqual(last_result_jq(stream), expected)
 
 
 class GeminiReview(WaveDirCase):
@@ -2370,6 +2441,26 @@ class GeminiReview(WaveDirCase):
             rc, out, err = self.review(sha=self.head)
         self.assertEqual(rc, 0, out + err)
         self.assertIn("verdict=blocking blocking=1 suggestions=0 decision=confirm", out)
+        self.assertEqual(self.read(self.stem() + ".md").rstrip("\n"), review)
+
+    def test_an_unheaded_split_review_keeps_its_findings_under_the_canonical_heading(self) -> None:
+        """#1381: the verdict alone in the final step, and no heading anywhere."""
+        verdict = "VERDICT: blocking (1 blocking, 0 suggestions)"
+        findings = "A finding at a.ml:3.\n\n"
+        steps = (agy_step(1, "DONE", findings), agy_step(2, "DONE", verdict))
+        with self.gworld(agy_answer(findings + verdict, steps=steps)):
+            rc, out, err = self.review(sha=self.head)
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("verdict=blocking blocking=1 suggestions=0 decision=confirm", out)
+        self.assertEqual(self.read(self.stem() + ".md").rstrip("\n"),
+                         f"### Review checkpoint (at-open): head {self.head[:8]}\n\n{findings}{verdict}")
+
+    def test_wait_chatter_above_a_headed_review_is_trimmed(self) -> None:
+        review = self.said("VERDICT: clean")
+        steps = (agy_step(1, "DONE", "Waiting for CI.\n"), agy_step(2, "DONE", review))
+        with self.gworld(agy_answer("Waiting for CI.\n" + review, steps=steps)):
+            rc, out, err = self.review(sha=self.head)
+        self.assertEqual(rc, 0, out + err)
         self.assertEqual(self.read(self.stem() + ".md").rstrip("\n"), review)
 
     def test_the_clone_is_at_the_head_with_origin_main_and_no_remote(self) -> None:
@@ -3310,8 +3401,8 @@ class Markers(unittest.TestCase):
 
     def test_farside_gemini_marker_guard_matches_wavedrive(self) -> None:
         from ludics.fleetworker import farside
-        match = re.search(r"def prefix_has_marker:\s*test\(\"[^\"]*\(\?:([^)]+)\)\"\)", farside.LOG_LAST_RESULT)
-        self.assertIsNotNone(match, "farside.LOG_LAST_RESULT must define prefix_has_marker over MARKER_TOKENS")
+        match = re.search(r"def marker_line:\s*test\(\"[^\"]*\(\?:([^)]+)\)\"\)", farside.LOG_LAST_RESULT)
+        self.assertIsNotNone(match, "farside.LOG_LAST_RESULT must define marker_line over MARKER_TOKENS")
         assert match is not None
         self.assertEqual(tuple(match.group(1).split("|")), wavedrive.MARKER_TOKENS)
 
