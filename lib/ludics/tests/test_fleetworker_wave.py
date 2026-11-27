@@ -2842,6 +2842,7 @@ class ReservedLoop(unittest.TestCase):
         self.answers: list[Done] = []
         self.records: list[dict[str, Any]] = []
         self.payloads: list[dict[str, Any]] = []
+        self.keep_concluded = False  # conclude as the registry does, the record kept, concluded
 
     def edit(self, **entry: Any) -> None:
         """Edit the cc loop's entry in the wave file, as a coordinator moving its home does."""
@@ -2871,7 +2872,11 @@ class ReservedLoop(unittest.TestCase):
             with open(args[2]) as f:
                 done = json.load(f)
             self.payloads.append(done)
-            self.records = [r for r in self.records if r["request_id"] != done["request_id"]]
+            if self.keep_concluded:
+                self.records = [{**r, "state": "concluded", "verdict": done["verdict"]}
+                                if r["request_id"] == done["request_id"] else r for r in self.records]
+            else:
+                self.records = [r for r in self.records if r["request_id"] != done["request_id"]]
             return Done(0, "{}")
         return self.answers.pop(0)
 
@@ -3025,11 +3030,15 @@ class ReservedLoop(unittest.TestCase):
     def test_a_restart_after_a_case_only_rename_reserves_the_roster_spelling(self) -> None:
         self.records = [rec(1, "concluded", "pass", B), {**slot_rec(), "request_id": "wv-cc-slot-ROG-1",
                                                          "request": {**slot_rec()["request"], "execution_host": "ROG"}}]
+        self.keep_concluded = True  # the concluded ROG-1 stays in the full listing ensure() numbers from
         self.answers = [Done(1, "TIP-RUN NOT STARTED wv-cc-2: x\n")]
         rc, out = self.drive([A], [0], 1)
         self.assertEqual(rc, 0, out)
         self.assertEqual(self.concluded(), ["wv-cc-slot-ROG-1"], "tip-run and the registry compare the host exactly")
-        self.assertIn("RESERVED wv-cc-slot-rog-", out)
+        # next_id folds case, as the registry refuses an id differing from one it holds only by case.
+        self.assertIn("RESERVED wv-cc-slot-rog-2 on rog: workers' batches there take 3 of 4 slots", out)
+        start = self.starts()[0]
+        self.assertEqual(start[start.index("--reserved") + 1], "wv-cc-slot-rog-2")
 
     def test_a_restart_with_reserve_slot_dropped_releases_every_reservation(self) -> None:
         self.records = [rec(1, "concluded", "pass", B), slot_rec()]
