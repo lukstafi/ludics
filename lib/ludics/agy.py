@@ -40,8 +40,16 @@ numbers accepted by the decoder. Preserve the whole response if the removed pref
 plan or a checkpoint review on any LF-delimited line. After optional spaces or tabs, the only
 protected lines are those starting with ``PLAN_READY`` or ``END_PLAN_READY``, and whole checkpoint
 headings as defined by ``prreview.checkpoint.HEADING``, with trailing whitespace allowed.
-This protects the envelopes these callers save. The jq reader protects wave driver markers for
-CLI worker handoffs. Other event types, marker words and prose play no part in this selection.
+This protects the envelopes these callers save. A REVIEW (``result(stdout, review=True)``, the
+checkpoint's reader) trims only to a step that itself holds such a whole heading line AND a
+nonblank line that is neither a whole heading nor a whole checkpoint VERDICT line (stripped): any
+other step keeps the whole response, so a split review whose findings sit in earlier steps, under
+a missing or malformed heading or above a final step of heading and verdict alone, keeps them
+(#1381). That is an allowlist on the step's shape, not a reading of its prose: an unheaded review,
+or one whose final step is its heading and verdict alone, keeps any wait chatter above it, which
+``checkpoint.headed`` then heads like the rest. The jq reader protects
+wave driver markers for CLI worker handoffs. Other event types, marker words and prose play no
+part in this selection.
 """
 
 import json
@@ -53,7 +61,7 @@ from typing import Any, cast
 
 from ludics import proc
 from ludics.peerplan.transcript import CLOSE as PLAN_CLOSE, OPEN as PLAN_OPEN
-from ludics.prreview.checkpoint import HEADING as CHECKPOINT_HEADING
+from ludics.prreview.checkpoint import HEADING as CHECKPOINT_HEADING, VERDICT as CHECKPOINT_VERDICT
 
 MARK = "ludics-clone"
 NO_HOOKS = ["-c", f"core.hooksPath={os.devnull}", "-c", "advice.detachedHead=false"]
@@ -78,21 +86,34 @@ def message(prompt: str) -> bytes:
     return (json.dumps({"event": "user", "message": {"content": prompt}}) + "\n").encode("ascii")
 
 
-def _response_text(response: str, step: str) -> str:
+def _heading(line: str) -> bool:
+    return CHECKPOINT_HEADING.fullmatch(line.lstrip(" \t").rstrip()) is not None
+
+
+def _response_text(response: str, step: str, review: bool) -> str:
     if not step or not response.endswith(step):
         return response
     prefix = response[:-len(step)]
     if prefix and not (prefix.endswith("\n") or step.startswith("\n")):
         return response
     for line in prefix.split("\n"):
-        start = line.lstrip(" \t")
-        if start.startswith((PLAN_OPEN, PLAN_CLOSE)) or CHECKPOINT_HEADING.fullmatch(start.rstrip()):
+        if line.lstrip(" \t").startswith((PLAN_OPEN, PLAN_CLOSE)) or _heading(line):
             return response
+    if review and not _whole_review(step):
+        return response
     return step
 
 
-def result(stdout: str) -> tuple[str, str, str]:
-    """The turn's final message, its conversation id, and "" or why there is no message."""
+def _whole_review(step: str) -> bool:
+    """RESPONSE TRIMMING's review shape (the header): a heading line and a line that is neither."""
+    lines = [line for line in step.split("\n") if line.strip()]
+    return any(_heading(line) for line in lines) and any(
+        not _heading(line) and CHECKPOINT_VERDICT.fullmatch(line.strip()) is None for line in lines)
+
+
+def result(stdout: str, review: bool = False) -> tuple[str, str, str]:
+    """The turn's final message, its conversation id, and "" or why there is no message.
+    ``review``: the checkpoint's reader (RESPONSE TRIMMING, the header)."""
     final: dict[str, Any] = {}
     conversation = ""
     buffers: dict[int | float, list[str]] = {}
@@ -145,7 +166,7 @@ def result(stdout: str) -> tuple[str, str, str]:
         return "", conversation, f"agy refused it a permission ({', '.join(names) or 'unnamed'}), which ends its turn"
     if final.get("status") != "SUCCESS" or not (isinstance(text, str) and text.strip()):
         return "", conversation, f"its result is {final.get('status') or 'missing'} with no response"
-    return _response_text(text, last_completed), conversation, ""
+    return _response_text(text, last_completed, review), conversation, ""
 
 
 def environment() -> dict[str, str]:

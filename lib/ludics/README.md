@@ -298,6 +298,7 @@ fleetworker/farside.py
     issue-wave/scripts/test-fleet-worker.sh
     issue-wave/scripts/test-fleet-execution.py
     lib/ludics/tests/test_bash_fragments.py
+    lib/ludics/tests/test_fleetworker_wave.py
     scripts/test-py.sh
 
 fleetworker/farside.py:GHPROBE fleetworker/farside.py:ghprobe fleetworker/farside.py:PREFLIGHT
@@ -318,6 +319,7 @@ fleetworker/farside.py:STATUS
 fleetworker/farside.py:LOG fleetworker/farside.py:LOG_LAST_RESULT
     issue-wave/scripts/test-fleet-worker.sh "launch /" "codex workers" "gemini workers" "log --last-result"
     lib/ludics/tests/test_bash_fragments.py
+    lib/ludics/tests/test_fleetworker_wave.py
 
 fleetworker/farside.py:UNSTICK
     issue-wave/scripts/test-fleet-worker.sh unstick "failure verdicts" "codex workers" "gemini workers" usage
@@ -987,6 +989,15 @@ these paths, and removing the Gemini first-line sentence alone exercises its own
 All six regression tests fail with the production code at base `82b50835`.
 The review controls fail on `93185826` for the paired-plan escalation, assignment payload and
 recovery input, and fenced run evidence.
+
+Agent notes (wave-20261127-ludics, t1381): the two Gemini step readers share one fixture table,
+`test_fleetworker_wave.py`'s `STEP_FIXTURES` (turn resets, delta assembly, completion order, LF
+boundaries), run through `agy.result` and `farside.LOG_LAST_RESULT` alike; a change to either
+reader's shared rules lands in both and in that table. Each reader's protected lines stay in its
+own suite. The review caller (`agy.result(..., review=True)`) trims only to a step holding a whole
+checkpoint heading line; the jq guard skips markers inside fences that close in the earlier
+steps, and keeps the whole response when a fence is open at the split. The new cases fail on base
+`0a9025ac`.
 
 Agent notes (wave-20261125-ludics, t1344): `wave heartbeat --until-attention` tracks the last read printed to the coordinator (or cold-start baseline) separately and persists it as optional `reported` (`{"at", "parts"}`) in `logs/heartbeat.last` whenever it differs from `at`/`parts` (or `null` across silent saves when unknown). Silent ticks still advance `at`/`parts`/`read` for plain `unchanged since` checks, printed wakes and plain full reads diff `HEARTBEAT changed since` against `reported`, and unreadable-board wakes or plain full reads with existing state advance `reported`'s non-board parts while preserving its last reported `board rows`. Both `test_until_attention_exits_on_done_row_and_ignores_live_changes` and `test_until_attention_wake_diffs_against_last_reported_read` fail on the base.
 

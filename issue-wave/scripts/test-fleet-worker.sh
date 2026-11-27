@@ -2919,6 +2919,35 @@ jq -cn '
   {event:"result",result:{conversation_id:"g8",status:"SUCCESS",response:"EXECUTION_RESULT {\"request_id\":\"r1\",\"run\":\"/r\",\"exit\":0,\"observed_sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}\nHANDBACK t89\nMerged /pull/17.\n"}}' | fixture_stream lr-gemini-result-prefix gemini
 printf 'EXECUTION_RESULT {"request_id":"r1","run":"/r","exit":0,"observed_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}\nHANDBACK t89\nMerged /pull/17.\n\n' > "$TMP/want-gemini-result-prefix"
 expect_exact "...and an EXECUTION_RESULT in an earlier step also falls back whole" 0 "$TMP/want-gemini-result-prefix" -- "$FW" log testbox lr-gemini-result-prefix --last-result
+# #1381: the guard reads earlier steps with wavedrive.marker_lines' fence forms. A marker inside a
+# fence that closes there is an example, so the hand-back keeps its first line; one after a
+# backtick info string holding a backtick, or under a four-space indent, stays live; and a fence
+# still open where the earlier steps end keeps the response whole, marker or not, since the final
+# step is inside it. gemini_split <name> final|whole <earlier> <final>, the two steps
+# as JSON strings: one turn of two DONE steps, and $TMP/want-<name>, what --last-result prints.
+gemini_split() {
+  jq -cn --argjson a "$3" --argjson b "$4" '
+    {event:"init",conversation_id:"g9"},
+    {event:"step_update",step_update:{step_index:1,step_type:"agent_response",state:"DONE",text_delta:$a}},
+    {event:"step_update",step_update:{step_index:2,step_type:"agent_response",state:"DONE",text_delta:$b}},
+    {event:"result",result:{conversation_id:"g9",status:"SUCCESS",response:($a + $b)}}' | fixture_stream "$1" gemini
+  if [ "$2" = final ]; then jq -rn --argjson b "$4" '$b'; else jq -rn --argjson a "$3" --argjson b "$4" '$a + $b'; fi > "$TMP/want-$1"
+}
+handback='"HANDBACK t89\nMerged /pull/17.\n"'
+gemini_split lr-gemini-fence-back final '"Progress. The request will read:\n```text\nEXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\n````\n"' "$handback"
+expect_exact "...but a marker in an earlier, closed backtick fence is an example: the hand-back keeps its first line" 0 "$TMP/want-lr-gemini-fence-back" -- "$FW" log testbox lr-gemini-fence-back --last-result
+gemini_split lr-gemini-fence-tilde final '"Progress.\n  ~~~~ the `ask` line\nREVIEW_REQUEST 17 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n~~~~~ \r\n"' "$handback"
+expect_exact "...and so is one in a closed tilde fence whose info holds a backtick" 0 "$TMP/want-lr-gemini-fence-tilde" -- "$FW" log testbox lr-gemini-fence-tilde --last-result
+gemini_split lr-gemini-fence-open whole '"Progress.\n```\nREVIEW_REQUEST 17 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"' "$handback"
+expect_exact "...while one in a fence still open where the earlier steps end stays live" 0 "$TMP/want-lr-gemini-fence-open" -- "$FW" log testbox lr-gemini-fence-open --last-result
+gemini_split lr-gemini-fence-split whole '"The hand-back will read:\n```\n"' '"HANDBACK t89\nMerged /pull/17.\n```\n"'
+expect_exact "...and a fence open across the split keeps it whole with no marker before it (the final step is the example)" 0 "$TMP/want-lr-gemini-fence-split" -- "$FW" log testbox lr-gemini-fence-split --last-result
+gemini_split lr-gemini-fence-split2 whole '"Asked:\n```\nEXECUTION_REQUEST\n```\nThe hand-back will read:\n```\n"' '"HANDBACK t89\nMerged /pull/17.\n```\n"'
+expect_exact "...even after a closed fenced example" 0 "$TMP/want-lr-gemini-fence-split2" -- "$FW" log testbox lr-gemini-fence-split2 --last-result
+gemini_split lr-gemini-fence-info whole '"Progress.\n``` see `x`\nEXECUTION_RESULT {}\n```\n"' "$handback"
+expect_exact "...as does one after a backtick info string holding a backtick (no fence)" 0 "$TMP/want-lr-gemini-fence-info" -- "$FW" log testbox lr-gemini-fence-info --last-result
+gemini_split lr-gemini-fence-indent whole '"Progress.\n    ```\nREVIEW_REQUEST 17 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n    ```\n"' "$handback"
+expect_exact "...and one under a four-space indent (indented code, not a fence)" 0 "$TMP/want-lr-gemini-fence-indent" -- "$FW" log testbox lr-gemini-fence-indent --last-result
 }
 
 section "halt" && {
