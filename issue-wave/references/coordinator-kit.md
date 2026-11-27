@@ -389,7 +389,12 @@ driver hands you as an attention line.
    that ended in doubt (a NOTE, an unknown outcome, a driver stopped inside it) is an attention
    line too, and keeps its host's slot until you set its row `launched` or close it. An entry's
    `tier` is passed to prep as `--tier` (a native entry's cue names it for your own prep); give
-   every entry one. You may add tasks to the file while the driver runs. A task's queued `after` tasks are above it in the file; an `after`
+   every entry one. You may add tasks to the file while the driver runs. The driver keeps the
+   `wave.json` it started with. When the file's `wave`, `repository`, `issue_repository`, `checkout`,
+   `agent_host` or `vars.MAIN`, or the profile a queued task names, no longer matches that copy, it prepares nothing
+   for the task and writes one attention line naming each key with both values (one per edit, not one a task). Revert the edit, or
+   restart the driver to take it: `touch <wave dir>/drive.stop`, and once it has exited, remove
+   that file and start `wave drive` again. A task's queued `after` tasks are above it in the file; an `after`
    task that is not queued is one you launch yourself (a native worker's).
 
    A native task is queued for its cue, not its launch: an entry under a native profile, or with
