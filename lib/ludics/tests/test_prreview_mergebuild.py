@@ -1337,6 +1337,33 @@ class BaseAlone(Repo):
         self.assertIsNone(shared)
         self.assertIn("main alone exits 5, the merge 6", out)
 
+    def test_a_silent_build_is_refused_under_override(self) -> None:
+        """#1382: the same nonzero status with no nonblank line on a side is no evidence of a shared
+        failure. `git diff --quiet HEAD^1 HEAD` holds only in the base alone (its tree is the tip's)."""
+        head, _ = self.sides("keep", RED)
+        cases = (
+            ("exit 1", "the merge's build and main's build alone"),
+            ("printf ' \\n\\n\\t\\n'; exit 1", "the merge's build and main's build alone"),
+            ("git diff --quiet HEAD^1 HEAD && echo 'red: the scan fails'; exit 1", "the merge's build"),
+            ("git diff --quiet HEAD^1 HEAD || echo 'red: the scan fails'; exit 1", "main's build alone"),
+        )
+        for command, silent in cases:
+            with self.subTest(command=command):
+                rc, out, shared = self.build_over(head, command, WHY)
+                self.assertEqual(rc, 1, out)
+                self.assertIsNone(shared)
+                self.assertIn(f"not comparable: {silent} printed no output line", out)
+                self.assertIn(f"and {silent} printed nothing (no nonblank line)", out)
+                self.assertIn("--override goes over only a failure both builds show", out)
+                self.assertNotIn("FAILED the same way", out)
+
+    def test_a_silent_build_without_override_does_not_name_the_flag(self) -> None:
+        head, _ = self.sides("keep", RED)
+        rc, out = self.build(head, "exit 1")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("printed nothing (no nonblank line)", out)
+        self.assertNotIn("--override", out)
+
     def test_the_base_alone_has_the_merges_parents_and_environment(self) -> None:
         """THE COMMAND'S CONTRACT holds for the base's build too: the same two parents and
         variables, the base tip's tree. Its log records them, and only the shared red fails."""

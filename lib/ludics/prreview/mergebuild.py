@@ -320,8 +320,9 @@ changed picks the same ones. Its verdict:
                             saying so and naming the flag; with it, the merge proceeds, and merge
                             announces what it went over with the gate's override, before the call.
   failed otherwise          another status, a line of the merge's log the base's lacks (shown,
-                            up to NAMED_LINES), or a log over COMPARED_BYTES or unreadable (never
-                            compared, so never the same): refused (exit 1), override or not.
+                            up to NAMED_LINES), a log over COMPARED_BYTES or unreadable (never
+                            compared, so never the same), or a log with no evidence (below):
+                            refused (exit 1), override or not.
   no verdict                (its setup failed, the slot refused, its timeout): refused, exit 1
                             without ``--override``; with it, 4 past the timeout and 3 otherwise,
                             since what decides the merge was not read.
@@ -348,7 +349,16 @@ The harness delimiters are the OCANNL ``tools/test-harnesses.sh`` format. Every 
 including malformed markers, slot refusals, additional indented lines and unfamiliar failure
 wording, compares literally with multiplicity. A change only to a timing, SKIP line or test
 tally can still cause a refusal. With no recognised FAIL in the merge log, compare both logs
-literally as before. Two empty logs still match when their exit statuses agree.
+literally as before.
+
+Evidence on each side (#1382). An override names what it goes over, so a comparison needs
+something to compare on BOTH sides: each log must hold at least one nonblank line. When the merge
+log has a recognised FAIL that line is a failing-check identity, which the base's must then hold
+too; otherwise any nonblank line is the evidence, since a command outside the harness format (a
+scan, a compiler) states its failure in its own words. A log that is empty or whitespace only on
+either side refuses, override or not (exit 1), naming the silent build or builds. The boundary:
+this reads only whether a line is blank, never what a nonblank line says, so a command that prints
+a banner and fails silently still compares on its banner.
 The override's reason names the failure for the reader (merge.py). The dry run (THE DRY RUN)
 takes no override, so a shared failure is its exit 1.
 """
@@ -2013,6 +2023,16 @@ _SLOT_REUSE = re.compile(
 _FLEET_RECORDS = re.compile(r"  real fleet run: /[^;]+; background record: /[^;]+")
 
 
+def _silent_sides(mine: list[str], theirs: list[str], base_ref: str) -> str:
+    """THE BASE ALONE's evidence rule (#1382): which build printed no nonblank line -- the merge's,
+    ``base_ref``'s alone, or both -- or "" when each printed one."""
+    quiet = [
+        who for who, lines in (("the merge's build", mine), (f"{base_ref}'s build alone", theirs))
+        if not any(line.strip() for line in lines)
+    ]
+    return " and ".join(quiet)
+
+
 def _failure_evidence(lines: list[str]) -> Counter[tuple[str, str]]:
     """Failing checks and literal lines are counted so each has a matching witness on the base."""
     evidence: Counter[tuple[str, str]] = Counter()
@@ -2094,6 +2114,17 @@ def _against_base(
         differs = f"{base_ref} alone exits {base.status}, the merge {rc}"
     elif mine is None or theirs is None:
         differs = f"a log is over {COMPARED_BYTES} bytes or could not be read, so the two were not compared"
+    elif silent := _silent_sides(mine, theirs, base_ref):
+        cli.say(
+            f"merge build {label}: {base_ref} alone FAILED (exit {base.status}) after {base.took}s, not comparable:"
+            f" {silent} printed no output line, so no failure evidence was compared"
+        )
+        fail(
+            1, *plain,
+            f"and {silent} printed nothing (no nonblank line), so whether {base_ref} shares the failure",
+            "cannot be told: a failure gone over must be named. Make the command say what failed, push,",
+            "and merge again" + ("; --override goes over only a failure both builds show." if override else "."),
+        )
     elif any(_FAILED_CHECK.fullmatch(line) for line in mine):
         missing = _failure_evidence(mine) - _failure_evidence(theirs)
         extra_count = missing.total()
