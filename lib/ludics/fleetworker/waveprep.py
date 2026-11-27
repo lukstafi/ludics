@@ -42,7 +42,8 @@ making anything, with its own exit status ``CONFIG_CHANGED`` (3) and one line na
 key with the driver's value and the file's. The compared keys
 are a fail-closed allowlist: ``wave``, ``repository``, ``issue_repository``, ``checkout``,
 ``agent_host``, ``vars.MAIN`` and the named profile's ``transport``, ``kind``, ``model`` and
-``effort``. A profile or var that is absent reads as ``absent``. Every other key (other profiles,
+``effort``. A profile or var that is absent reads as ``absent``, and a file that no longer parses
+is the same refusal (``unreadable_wave``), not a usage exit. Every other key (other profiles,
 ``hosts``, ``legs``, ``loops``, ``review``, other ``vars``, the wave's own ``transport`` and
 ``kind``) is not compared: the driver reads none of them to decide or build a queued CLI task's
 prep call, so only prep's own read of them counts. A prep run by hand passes no such object and is
@@ -198,7 +199,7 @@ from ludics.fleetworker.identity import die
 from ludics.fleetworker.lease import anchor_gate, mutation_failure_status
 from ludics.fleetworker.takeover import board_status, row_of
 from ludics.fleetworker.transport import run
-from ludics.fleetworker.wave import ISSUE_NUMBER_SPLIT, USAGE, Leg, Profile, Wave, load_wave
+from ludics.fleetworker.wave import ISSUE_NUMBER_SPLIT, USAGE, Leg, Profile, Wave, load_wave, parse_wave
 from ludics.fleetworker.wavebrief import PLACEHOLDER, Part, render, write_atomically
 from ludics.prreview.closekw import closing_refs
 from ludics.prreview.core import shell_quote
@@ -465,13 +466,27 @@ def reassignment_row(approval: dict[str, str]) -> dict[str, str]:
             "model": board_model(approval["model"], approval["effort"]), "reassignment_reason": approval["reason"]}
 
 
+def unreadable_wave(exc: Exception) -> str:
+    """THE DRIVER'S CONFIG's difference for a file that no longer parses: the driver's and prep's one text."""
+    return f"the wave file cannot be read as a wave file ({str(exc)[:200]})"
+
+
 def build(cfg: Config, path: str, task: str, opts: dict[str, Any]) -> Prep:
-    wave = load_wave(path, "prep")
+    held = parse_driver_config(opts["driver_config"]) if opts["driver_config"] is not None else None
+    if held is None:
+        wave = load_wave(path, "prep")
+    else:
+        try:  # THE DRIVER'S CONFIG (the header): a file broken since the driver read it is that refusal, not a usage exit
+            with open(path, encoding="utf-8") as f:
+                wave = parse_wave(os.path.abspath(path), json.load(f))
+        except (OSError, ValueError) as exc:
+            raise Stop(CONFIG_CHANGED, f"WAVE PREP REFUSED {shlex.quote(task)}: {CONFIG_CHANGED_LINE}{unreadable_wave(exc)};"
+                                       " nothing made") from None
     if not TASK.fullmatch(task):
         die(f"wave prep: task {task!r} does not match {TASK.pattern}")
-    if opts["driver_config"] is not None:
+    if held is not None:
         # THE DRIVER'S CONFIG (the header): compared before any other read of the file's values.
-        drift = config_drift(parse_driver_config(opts["driver_config"]), launch_config(wave, opts["profile"]))
+        drift = config_drift(held, launch_config(wave, opts["profile"]))
         if drift:
             raise Stop(CONFIG_CHANGED, f"WAVE PREP REFUSED {shlex.quote(task)}: {CONFIG_CHANGED_LINE}{drift}; nothing made")
     if opts["mode"] not in MODES:

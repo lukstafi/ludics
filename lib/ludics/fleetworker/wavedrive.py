@@ -299,8 +299,9 @@ edit of that file mid-drive is the coordinator's act, to be seen, not followed. 
 task with no row, the driver reads the file again and compares waveprep's ``launch_config`` (its
 fail-closed key list is in waveprep.py's THE DRIVER'S CONFIG) of its own copy with the file's. On a
 difference, the driver does not refresh, read the gate or prepare the task. It tells one non-final
-attention line naming each changed key with both values, once per unchanged difference (in memory,
-like the missing-task notice), and the scan goes on to the next task. A file that agrees again
+attention line naming each changed key with both values, once per difference whichever tasks it
+holds (in memory, like the missing-task notice: a wave-level key's edit is one line, not one a
+task), and the scan goes on to the next task. A file that agrees again
 (the edit reverted) clears it, so the task is prepared on that tick. A restarted driver holds the
 edited file and prepares the task. The prep call carries the object as ``--driver-config``, so an
 edit between this read and prep's is refused by prep with its own status (waveprep's
@@ -368,7 +369,7 @@ from ludics.fleetworker.wavebrief import write_atomically
 from ludics.fleetworker.wavelaunch import Record, read_manifest, read_wave_launch_status
 from ludics.fleetworker.waveprep import (
     CONFIG_CHANGED, CONFIG_CHANGED_LINE, REASSIGNMENT_REASON_PROBLEM, TASK, TIERS, Stop, config_drift, launch_config,
-    reassignment_of, reassignment_row, resolve_subject, valid_reassignment_reason,
+    reassignment_of, reassignment_row, resolve_subject, unreadable_wave, valid_reassignment_reason,
 )
 from ludics.fleetworker.waveunprep import FENCE, legacy_reassignment
 
@@ -725,7 +726,8 @@ class Driver:
         self.err = ""  # the last call's stderr
         self.queue_refusal = ""  # the queue's refusal last said, so it is said once
         self.queue_missing: dict[str, tuple[str, ...]] = {}  # each task's missing prerequisites last told
-        self.drift_told: dict[str, str] = {}  # THE DRIVER'S CONFIG: each task's difference last told
+        self.drifts: dict[str, str] = {}  # THE DRIVER'S CONFIG: each drifted task's difference
+        self.drift_told: set[str] = set()  # ...and the differences told, each once whatever the tasks it holds
         self.gate_refusal, self.gate_next = "", 0.0  # THE GATE's refusal last told, and when it is read again
         self.gate_pending_tip: str | None = None
         self.gate_pending_since = 0.0
@@ -1276,19 +1278,22 @@ class Driver:
                 found = launch_config(parse_wave(self.wave.path, json.load(f)), queued.profile)
             drift = config_drift(launch_config(self.wave, queued.profile), found)
         except (OSError, ValueError) as exc:
-            drift = f"the wave file cannot be read as a wave file ({str(exc)[:200]})"
+            drift = unreadable_wave(exc)
         if not drift:
-            self.drift_told.pop(queued.task, None)
+            self.drifts.pop(queued.task, None)
+            self.drift_told &= set(self.drifts.values())  # a difference no task holds any more is told again if it comes back
             return False
         self.tell_drift(slot, queued, drift)
         return True
 
     def tell_drift(self, slot: Worker, queued: Queued, drift: str) -> None:
-        """THE DRIVER'S CONFIG's one non-final line, said once per unchanged difference."""
-        if self.drift_told.get(queued.task) != drift:
-            self.tell(slot, LAUNCH, f"the wave file changed since this driver started, so the queued task is not prepared: {drift};"
-                                   " revert the edit, or restart the driver to take it")
-            self.drift_told[queued.task] = drift
+        """THE DRIVER'S CONFIG's one non-final line, said once per difference: a wave-level key's edit, the same for
+        every queued task, or a profile's, the same for every task under it, is one line, not one a task."""
+        self.drifts[queued.task] = drift
+        if drift not in self.drift_told:
+            self.tell(slot, LAUNCH, f"the wave file changed since this driver started, so no queued task it differs for is prepared:"
+                                   f" {drift}; revert the edit, or restart the driver to take it")
+            self.drift_told.add(drift)
 
     def tell_missing(self, slot: Worker, queued: Queued, missing: tuple[str, ...]) -> None:
         """The missing-prerequisite notice (THE QUEUE, the header), told once per unchanged list: one text for both kinds."""

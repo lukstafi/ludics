@@ -877,6 +877,16 @@ class MixedWave(WaveDirCase):
             self.assertEqual(self.shim_calls, [], "nothing is read from the anchor or made")
             self.assertFalse(os.path.exists(os.path.join(self.wavedir, "prep", "t42.json")))
             self.assertEqual(self.prep(*args, "[]")[0], 2, "a malformed object is a usage refusal")
+            with open(self.path) as f:
+                kept = f.read()
+            with open(self.path, "w") as f:
+                f.write("{")  # broken after the driver read it: the same refusal, never a usage exit the driver makes final
+            rc, out, err = self.prep(*args, json.dumps(held))
+            with open(self.path, "w") as f:
+                f.write(kept)
+            self.assertEqual(rc, waveprep.CONFIG_CHANGED, out + err)
+            self.assertRegex(out, r"^WAVE PREP REFUSED t42: the wave file changed under the driver: the wave file cannot be read as a"
+                                  r" wave file \(.+\); nothing made\n$")
             rc, out, err = self.prep(*args, json.dumps(held))
         self.assertEqual(rc, 0, out + err)
         self.assertIn("WAVE PREP t42: ready", out)
@@ -4971,9 +4981,9 @@ class Queue(DriveCase):
                                                                                     ["wave", "launch", self.path, "t51"]],
                                                  "a task whose keys agree is prepared as before, past the drifted one")
                                 self.rows = [row("t51")]
-                            self.assertEqual(self.attention(), [f"the wave file changed since this driver started, so the queued task is"
-                                                                f" not prepared: {said}; revert the edit, or restart the driver to take it"]
-                                             * len(drifted), "told once per task and difference")
+                            self.assertEqual(self.attention(), [f"the wave file changed since this driver started, so no queued task it"
+                                                                f" differs for is prepared: {said}; revert the edit, or restart the driver"
+                                                                " to take it"], "told once per difference, whichever tasks it holds")
                         if resolution == "revert":
                             self.edit_wave(lambda data: data["profiles"]["sol"].update(model="gpt-6.1-sol") or data.update(agent_host="mac"))
                             self.tick(driver)
@@ -4986,6 +4996,28 @@ class Queue(DriveCase):
                     self.assertEqual(self.ledger(), [(wavedrive.LAUNCH, "launch", status)
                                                      for status in ["launching", "answered"] * (1 if "t51" in drifted else 2)],
                                      "no final line: the drift never took the task from the driver")
+
+    def test_a_wave_file_that_no_longer_parses_mid_drive_is_one_non_final_line(self) -> None:
+        self.queue({"task": "t50", "profile": "sol", "host": "far"}, {"task": "t51", "profile": "sol", "host": "far"})
+        for made in ("logs", "msgs"):
+            os.makedirs(os.path.join(self.wavedir, made), exist_ok=True)
+        driver = wavedrive.Driver(self.cfg, wave.load_wave(self.path, "drive"))
+        with open(self.path) as f:
+            kept = f.read()
+        with open(self.path, "w") as f:
+            f.write("{")
+        with self.world():
+            for _ in range(2):
+                self.tick(driver)
+                self.assertEqual(self.calls, [], "nothing refreshed, read or prepared")
+            [line] = self.attention()
+            self.assertRegex(line, r"^the wave file changed since this driver started, so no queued task it differs for is prepared:"
+                                   r" the wave file cannot be read as a wave file \(.+\); revert the edit")
+            with open(self.path, "w") as f:
+                f.write(kept)
+            self.tick(driver)
+        self.assertEqual([c[:4] for c in self.launched()], [["wave", "prep", self.path, "t50"], ["wave", "launch", self.path, "t50"]])
+        self.assertEqual(len(self.attention()), 1)
 
     def test_prep_classifies_an_edit_during_its_read_and_the_driver_reads_no_file_after_it(self) -> None:
         refusal = ("WAVE PREP REFUSED t50: the wave file changed under the driver: profiles.sol.effort is \"medium\" in the"
@@ -5013,7 +5045,7 @@ class Queue(DriveCase):
             answer = (waveprep.CONFIG_CHANGED, refusal)
             with mock.patch.object(self, "execute", side_effect=prep_while_edited), self.world():
                 self.tick(driver)
-            self.assertEqual(self.attention(), ["the wave file changed since this driver started, so the queued task is not prepared:"
+            self.assertEqual(self.attention(), ["the wave file changed since this driver started, so no queued task it differs for is prepared:"
                                                 " profiles.sol.effort is \"medium\" in the driver's config and \"high\" in the file;"
                                                 " revert the edit, or restart the driver to take it"])
             self.assertFalse(os.path.exists(os.path.join(self.wavedir, "logs", "drive.jsonl")), "non-final: nothing on the ledger")
