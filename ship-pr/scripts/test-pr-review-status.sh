@@ -2653,6 +2653,69 @@ test_watch_re_requests_a_commitless_completed_row_once() {
   assert_not_contains "$WATCH_OUT" "FAILED" "the close it answered is not the verdict"
 }
 
+# lukstafi/ludics#1378 (ludics#1387), 2026-11-25: head 9c0c1d9 committed 19:57:40Z; its round ran
+# from 20:14:07Z, and at 20:15:10Z the summary marked it Completed with a record whose
+# has_any_findings and has_unresolved_findings were both null — its 👀 gone, no 👍, no review, no
+# receipt. Status read EXPECTED and the watch's nudge read was barred by the row naming the head;
+# the worker's hand '@codex review' at 20:20Z drew the clean round. Row and record are that
+# comment's, read back from its edit history.
+NULL_DONE_HEAD=9c0c1d93607b7f216b4d02b3acea2b446b799695
+NULL_DONE_ROW='| 📝 **Code Review** | ✅ **Completed** <relative-time datetime="2026-11-25T20:15:10.146160Z">2026-11-25T20:15:10.146160Z</relative-time> | `9c0c1d9` | New commit |'
+NULL_DONE_RECORD='{"code_review":{"commit_sha":"9c0c1d93607b7f216b4d02b3acea2b446b799695","has_any_findings":null,"has_unresolved_findings":null,"status":"completed"},"security_review":{"commit_sha":null,"has_any_findings":null,"has_unresolved_findings":null,"status":null}}'
+
+null_done_fixture() {
+  reset_fixture
+  HEAD_SHA="$NULL_DONE_HEAD"
+  HEAD_AT=2026-11-25T19:57:40Z
+  COMMENTS_JSON="[$(commitless_summary 1 "$NULL_DONE_ROW" "$NULL_DONE_RECORD")]"
+}
+
+test_a_completed_row_with_no_findings_recorded_is_a_failed_run() {
+  null_done_fixture
+  run_status
+  assert_eq "$(state_tok "$STATE")" failed "a round closed recording no findings either way, with nothing posted"
+  assert_eq "$(state_detail "$STATE" | cut -d'|' -f2)" run "and nobody has re-requested it on this head"
+  assert_contains "$LINE" "reviewer's run FAILED on head 9c0c1d9" "the line names the state and the head"
+  assert_contains "$LINE" "Completed with no findings recorded" "and the record it rests on"
+  COMMENTS_JSON="[$(commitless_summary 1 "$NULL_DONE_ROW" "$NULL_DONE_RECORD"),$(request_comment 2 2026-11-25T20:10:00Z)]"
+  run_status
+  assert_eq "$(state_detail "$STATE" | cut -d'|' -f2)" run-again "a close answering a request on this head is handed back"
+  COMMENTS_JSON="[$(commitless_summary 1 "$NULL_DONE_ROW" "$NULL_DONE_RECORD"),$(request_comment 2 2026-11-25T20:20:57Z)]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" expected "one re-requested since is not re-requested again"
+  local rec
+  for rec in "$(jq -c '.code_review.has_any_findings = false | .code_review.has_unresolved_findings = false' <<<"$NULL_DONE_RECORD")" \
+             "$(jq -c '.code_review.has_any_findings = false' <<<"$NULL_DONE_RECORD")" \
+             "$(jq -c 'del(.code_review.has_any_findings)' <<<"$NULL_DONE_RECORD")"; do
+    null_done_fixture
+    COMMENTS_JSON="[$(commitless_summary 1 "$NULL_DONE_ROW" "$rec")]"
+    run_status
+    assert_not_contains "$(state_tok "$STATE")" failed "a record that records findings either way is no failed run: $rec"
+  done
+}
+
+test_watch_re_requests_a_completed_row_with_no_findings_recorded_once() {
+  retune GRACE=2
+  null_done_fixture
+  run_watch 0,1,0 1 3
+  assert_eq "$(grep -c -x "repos/$REPO/issues/7/comments" "$REQUEST_LOG" || true)" 1 \
+    "one request posted for the round (#1378's worker posted it by hand)"
+  assert_contains "$WATCH_ERR" "re-requested the review with '@codex review'" "the watch says it did"
+  assert_not_contains "$WATCH_OUT" "not nudged automatically" "the row naming the head is the failed run, not a bar"
+  rm -f "$TEST_ROOT/posted"
+  # A re-armed watch, the request in the feed since the row: no second one.
+  null_done_fixture
+  COMMENTS_JSON="[$(commitless_summary 1 "$NULL_DONE_ROW" "$NULL_DONE_RECORD"),$(request_comment 2 2026-11-25T20:20:57Z)]"
+  run_watch 0,2,0 1 3
+  assert_eq "$(grep -c -x "repos/$REPO/issues/7/comments" "$REQUEST_LOG" || true)" 0 "and a second watch posts none"
+  # A 👍 on the PR is a verdict the request would clear.
+  null_done_fixture
+  REACTIONS_JSON="[$(reaction +1 2026-11-25T20:15:12Z)]"
+  run_watch 0,1,0 1 3
+  assert_eq "$(grep -c -x "repos/$REPO/issues/7/comments" "$REQUEST_LOG" || true)" 0 "with a 👍 up, none"
+  rm -f "$TEST_ROOT/posted"
+}
+
 # Review of #465, round 1: a failure first seen on the window's LAST regular poll still gets the
 # request's grace — the deadline is set by the post, not by the round's `failed` read, which has
 # none — so the watch goes on to read the request back instead of ending on it.
@@ -2831,6 +2894,7 @@ tests=(
   test_a_commitless_completed_row_is_a_failed_run
   test_a_commitless_completed_row_needs_the_head_and_a_silent_reviewer
   test_a_commitless_row_outside_the_allowlist_is_not_read
+  test_a_completed_row_with_no_findings_recorded_is_a_failed_run
   test_a_commitless_receipt_approves_the_head_at_its_request
   test_a_commitless_receipt_approves_no_other_head
   test_a_commitless_receipt_outside_the_allowlist_is_not_read
@@ -2839,6 +2903,7 @@ tests=(
   test_watch_re_requests_a_failed_run_once
   test_watch_re_requests_a_failed_run_with_the_apps_note_once
   test_watch_re_requests_a_commitless_completed_row_once
+  test_watch_re_requests_a_completed_row_with_no_findings_recorded_once
   test_watch_surfaces_a_re_request_that_did_not_post
   test_watch_waits_out_a_re_request_posted_on_its_last_poll
   test_watch_does_not_post_over_an_approval_that_landed_since_the_round
