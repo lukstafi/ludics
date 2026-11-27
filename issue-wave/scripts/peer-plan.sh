@@ -3,8 +3,8 @@
 #
 #   peer-plan.sh start <dir> --issue <owner/repo>#<n> --checkout <path> --base <ref> [--model <m>] [--effort <e>]
 #     [--wave <wave> --task <task>] [--managed]
-#   peer-plan.sh save-plan <dir> --from-transcript <file>
-#   peer-plan.sh critique <dir> --plan <file>
+#   peer-plan.sh save-plan <dir> --from-transcript <file> [--reconciled]
+#   peer-plan.sh critique <dir> --plan <file> [--model <m>] [--effort <e>] [--managed]
 #   peer-plan.sh clean <dir>
 #
 # Written in Python from the start (ludics-lite#403, #547): this file forwards its whole command

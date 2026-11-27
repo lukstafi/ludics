@@ -5,6 +5,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -825,6 +826,19 @@ class Classify(unittest.TestCase):
                      "MERGE NOT 1", "Answer to your PLAN_ESCALATION: do A", "continue\nREVIEW_POSTED 1 a",
                      "EXECUTION_REQUEST", "PLAN_READY", "EXECUTION_RESULT {}"):
             self.assertEqual(tally.classify(text)[0], "interventions", repr(text))
+
+    def test_every_relay_the_planning_briefs_name_is_a_routine_answer(self) -> None:
+        """The paired-planning parts say which relay markers a worker is resumed with; each is the
+        protocol's own answer, so a tally reading it as an intervention skews the close-out."""
+        shared = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))),
+                              "issue-wave", "templates", "shared")
+        named: set[str] = set()
+        for part in ("planning-paired.md", "planning-paired+critique.md"):
+            with open(os.path.join(shared, part), encoding="utf-8") as f:
+                named |= set(re.findall(r"`(PEER_[A-Z_]+)`", f.read()))
+        self.assertGreaterEqual(named, {"PEER_PLAN", "PEER_CRITIQUE", "PEER_CRITIQUE_UNAVAILABLE"})
+        for marker in sorted(named):
+            self.assertEqual(tally.classify(f"{marker}\nthe relayed text\n")[0], "routine_answers", marker)
 
     def test_a_windows_witness_result_is_a_routine_answer(self) -> None:
         self.assertEqual(tally.classify("WINDOWS_WITNESS_RESULT w-t-windows-1\npass\ntranscript")[0], "routine_answers")

@@ -184,7 +184,9 @@ driver hands you as an attention line.
    `fleet-worker.sh preflight <box> --planner <wave.json>` before starting a wave with a review
    checkpoint or paired planning. It probes the configured reviewer. Add `--mode paired` or
    `--mode paired+critique` to probe the peer planner as well, with the same `--model` and
-   `--effort` overrides as `peer-plan.sh start` if used. Each turn is bounded by
+   `--effort` overrides as `peer-plan.sh start` if used (`paired+critique` also probes the
+   critic: Astra through codex by default, or the one `--critic-model` and `--critic-effort`
+   name, as `peer-plan.sh critique --model --effort` would). Each turn is bounded by
    `FLEET_PROBE_TIMEOUT` (120 seconds by default). An absent CLI is reported as skipped and gives
    no readiness evidence. On a refusal, apply the reported repair and repeat the command in the
    same session before proceeding. The check records no readiness for later launches.
@@ -281,7 +283,8 @@ driver hands you as an attention line.
    --sleep 600` (single ticks, without `--until-attention`) instead.
 
 7. **For a paired worker's plan,** use `peer-plan.sh save-plan <plan dir> --from-transcript
-   <file>` ([paired-planning.md](paired-planning.md)).
+   <file>`, and add `--reconciled` for a `paired+critique` worker's second `PLAN_READY`, the plan
+   the critique reads ([paired-planning.md](paired-planning.md)).
 8. **The review checkpoint.** A wave whose file names a reviewer has a second model read each
    worker's PR:
 

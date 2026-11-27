@@ -79,11 +79,18 @@ def marker(line: str) -> str:
 
 def last_plan(lines: list[str]) -> str:
     """The plan of the decisive text block (the module docstring), newline-terminated."""
+    return last_plan_block(lines)[1]
+
+
+def last_plan_block(lines: list[str]) -> tuple[int, str]:
+    """The decisive text block's position among the transcript's allowlisted text blocks, and its
+    plan: a later handoff in the same transcript has a larger position."""
     decisive: list[str] | None = None
-    for text in text_blocks(lines):
+    position = -1
+    for index, text in enumerate(text_blocks(lines)):
         split = text.split("\n")
         if any(marker(line) for line in split):
-            decisive = split
+            decisive, position = split, index
     if decisive is None:
         raise Refused(f"no {OPEN} block in the worker's messages")
     plan: list[str] | None = None
@@ -106,4 +113,4 @@ def last_plan(lines: list[str]) -> str:
     text = "\n".join(plan).strip("\n")
     if not text.strip():
         raise Refused(f"the last {OPEN} block is empty")
-    return text + "\n"
+    return position, text + "\n"

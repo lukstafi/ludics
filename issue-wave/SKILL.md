@@ -373,7 +373,9 @@ step 10).
 **Planning mode, per issue.** Every D3 gets `paired+critique` and an issue on the D2/D3 border gets
 `paired`. Either way Fable plans the issue read-only next to the worker, whatever the worker's
 model (`peer-plan.sh`'s default), and the worker reconciles the two plans before it codes
-([paired-planning.md](references/paired-planning.md)). D1 and plain D2 issues get neither. List the
+([paired-planning.md](references/paired-planning.md)). In `paired+critique` the worker hands the
+reconciled plan back first, and Astra critiques it in a fresh read-only session (`peer-plan.sh
+critique`'s default), whatever the worker's model. D1 and plain D2 issues get neither. List the
 mode per issue in the wave summary, where it is veto-able like tier 2. Under a Claude coordinator a
 Codex worker's issue pairs like any other. Under any other coordinator, pairing one is a tier-3
 question, and the issue plans alone unless the user confirms.

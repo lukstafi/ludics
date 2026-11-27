@@ -85,6 +85,7 @@
 #   fleet-worker.sh coordinator | release  # who holds it (exit 0 me, 1 other, 3 nobody) / give it up
 #   fleet-worker.sh preflight <box> [--codex|--gemini|--native-codex|--native-claude] [--no-probe] [--no-cross] [-- <CLI args>]
 #   fleet-worker.sh preflight <box> --planner <wave.json> [--mode none|paired|paired+critique] [--model <m>] [--effort <e>]
+#                          [--critic-model <m>] [--critic-effort <e>]
 #                          # launch runs this itself, too; --codex (--gemini) probes a headless turn
 #                          # in a throwaway session of the box's tmux server with the worker's own
 #                          # args and names the codex (agy) binary and version that session resolved
