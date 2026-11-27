@@ -1058,7 +1058,7 @@ id it was given is not one, and exits 3 without a call while a quota hold stands
 ```bash
 pr-review.sh rerun <pr> jobs <run-id>              # latest attempt's job status and conclusion
 pr-review.sh rerun <pr> failed-jobs <run-id>       # red jobs only
-pr-review.sh rerun <pr> job-log <run-id> <job-id> [tail-lines]  # default 80 lines
+pr-review.sh rerun <pr> job-log <run-id> <job-id> [tail-lines]  # default 80 lines, sanitized
 pr-review.sh rerun <pr> wait <run-id> [seconds]    # default 900, then rerun <pr> <run-id>
 ```
 
@@ -1241,7 +1241,9 @@ merge refuse (exit 1, naming the SHA it read) instead of landing a head nothing 
 Run `checks` on its own — same verdicts, same exit codes, no merge — whenever you want the build
 signal without acting on it, such as before asking the reviewer for another round.
 
-**Reading a job's log.** `gh api repos/<owner>/<repo>/actions/jobs/<job-id>/logs
+**Reading a job's log.** For a completed red job of the head, `rerun <pr> job-log` (above): inside
+the budget, it prints a tail with terminal escapes stripped and names on stderr the file holding
+the log as read, escapes kept. Any other job: `gh api repos/<owner>/<repo>/actions/jobs/<job-id>/logs
 --allow-escape-sequences > <file>`, while the rest of the run still goes (`gh run view --log-failed`
 waits for all of it). Without the flag gh refuses a log carrying ANSI colours, dune's among them,
 and leaves an empty file with the refusal on stderr: a `wc -l` of 0 means the flag, not an empty log.

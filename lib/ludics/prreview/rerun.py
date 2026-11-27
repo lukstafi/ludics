@@ -20,6 +20,32 @@ This does not reuse runwatch: completion is readiness to rerun here, rather than
 workflow verdict, and membership in the current PR head must be revalidated each poll.
 A second build observer is refused before any read. Non-wait reads exit 3 under a hold.
 
+THE JOB LOG (ludics#1386). `job-log` reads with ``--allow-escape-sequences``, since without it
+gh withholds a coloured log; a gh that refuses the flag as unknown (before 2.101, which withholds
+nothing) gets the plain read instead, its refusal having sent nothing. It saves the log as the
+budgeted read returns it, escapes kept: ``$(gh ...)``'s text, the shared read's (core.py), so NUL
+bytes are dropped and a non-empty log ends in one newline. That is not the response byte for
+byte. The file is ``<state>/job-logs/<owner>--<repo>--<job-id>.log``, ``<state>`` being the budget's directory
+(the gating budget's own, else as ``budget_dir`` resolves it: SHIP_PR_STATE_DIR, else
+``${XDG_STATE_HOME:-$HOME/.local/state}/ship-pr``; the system temp directory only when a
+forwarded LUDICS_PR_BUDGET_DIR is empty), and a stderr line
+names the file. Only the tail on stdout is sanitized. A log that cannot be saved costs the
+file, not the tail: the stderr line says so, and the exit stays 0.
+
+JOB-LOG SANITIZER BOUNDARY (``sanitize_log``), a fail-closed allowlist. Stdout keeps TAB, LF and
+every code point that is not a control character or a lone surrogate. Removed, in this order:
+(1) whole escape sequences, so their parameters do not leak as text: CSI (``ESC [`` or C1 CSI
+U+009B, parameter bytes 0x30-0x3F, intermediate bytes 0x20-0x2F, a final byte 0x40-0x7E); the
+control strings OSC, DCS, SOS, PM and APC (``ESC ]``, ``ESC P``, ``ESC X``, ``ESC ^``, ``ESC _``,
+or their C1 forms U+009D, U+0090, U+0098, U+009E, U+009F) through the first BEL, ST (``ESC \\``)
+or C1 ST (U+009C), or to the end of their line when unterminated; any other escape (``ESC``,
+intermediates 0x20-0x2F, a final byte 0x30-0x7E); (2) every remaining C0 control except TAB and
+LF (so CR and a bare ESC), DEL, and every C1 control (U+0080-U+009F); (3) lone surrogates (bytes
+that are not UTF-8, which stdout's surrogateescape would write back raw, 0x9B among them) become
+U+FFFD, a byte's parameters after it staying as text. The tail's line count is of sanitized lines. Not
+read: printable Unicode, format characters (bidi overrides, zero-width) included, which are not
+terminal control sequences; and the saved file, which is the reader's to open.
+
 WHAT IT DOES. With no run id it lists the head's runs and writes nothing: one line a run, newest
 first, with its status, conclusion and attempt, and which of them it would re-run. With run ids it
 sends ``gh run rerun <id> --failed`` for each, the call ``merge --wait``'s recovery sends
@@ -47,22 +73,36 @@ not one this re-runs (the boundary), with nothing sent, or GitHub rejected a re-
 read did not answer, the hold stands, or a write failed without saying whether it landed.
 """
 
+import contextlib
 import json
 import os
+import re
 import shlex
+import tempfile
 from dataclasses import dataclass
 from typing import NoReturn, assert_never, cast
 
 from ludics import cli
-from ludics.prreview.budget import pause, sleep_for_poll
+from ludics.prreview.budget import budget_dir, pause, sleep_for_poll
 from ludics.prreview.clock import clock_from_env
 from ludics.prreview.checkruns import conclusion_class, newest_first_lines
-from ludics.prreview.core import GhFailed, GhOk, GhSession, GhUnanswered, api_rejection, die, fail, pr_arg
+from ludics.prreview.core import GhFailed, GhOk, GhRefusedOwn, GhSession, GhUnanswered, api_rejection, die, fail, pr_arg
 from ludics.prreview.knobs import INTMAX, checks_timing, is_digits
 from ludics.prreview.runners import rerun_command
 from ludics.prreview.shtext import herestring_lines, placeholder, tab_fields
 
 USAGE = "usage: rerun <pr> [<run-id>...]"
+ESCAPES_FLAG = "--allow-escape-sequences"
+
+# The JOB-LOG SANITIZER BOUNDARY's three steps (module header); the alternation's order matters:
+# a control string before the catch-all escape, which would otherwise take only its ESC ].
+_ESCAPE_SEQUENCE = re.compile(
+    r"(?:\x1b\[|\x9b)[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]"
+    r"|(?:\x1b[\]PX^_]|[\x90\x98\x9d\x9e\x9f])[^\n]*?(?:\x07|\x1b\\|\x9c|(?=\n)|\Z)"
+    r"|\x1b[\x20-\x2f]*[\x30-\x7e]"
+)
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+_SURROGATE = re.compile("[\udc80-\udcff]")
 
 RUNS_JQ = (
     '.workflow_runs[] | [(.created_at // "-"), ((.id // 0) | tostring), (.name // "-"), (.event // "-"),\n'
@@ -250,11 +290,21 @@ def recovery_read(session: GhSession, args: list[str]) -> int:
         job = next((j for j in jobs if str(j.get("id")) == jid), None)
         if job is None or job.get("status") != "completed" or conclusion_class(str(job.get("conclusion"))) != "red":
             fail(1, f"rerun: job {jid} is not a completed failed job of run {rid}")
-        log = session.retry("read", ["api", f"repos/{repo}/actions/jobs/{jid}/logs"])
+        read = ["api", f"repos/{repo}/actions/jobs/{jid}/logs"]
+        try:
+            log = session.retry("read", [*read, ESCAPES_FLAG])
+        except GhRefusedOwn:
+            # A gh before 2.101 knows no such flag, and withholds no log either (core.py's
+            # _ESCAPE_REFUSAL); its refusal sent nothing, so the plain read is the one call.
+            if session.err_line() != f"unknown flag: {ESCAPES_FLAG}":
+                raise
+            log = session.retry("read", read)
         if not isinstance(log, GhOk):
             _unread(session, f"job {jid}'s log")
         lines = int(extra[1]) if len(extra) > 1 else 80
-        cli.say("\n".join(log.stdout.splitlines()[-lines:]))
+        cli.say("\n".join(sanitize_log(log.stdout).splitlines()[-lines:]))
+        state = session.budget.dir if session.budget is not None else budget_dir(os.environ)
+        cli.note("rerun job-log", save_log(log.stdout, repo, jid, state))
     else:
         for job in jobs:
             if verb == "failed-jobs" and conclusion_class(str(job.get("conclusion"))) != "red":
@@ -262,6 +312,30 @@ def recovery_read(session: GhSession, args: list[str]) -> int:
             cli.say(f"job {job.get('id')} {shlex.quote(str(job.get('name')))} "
                     f"{job.get('status')}/{job.get('conclusion')}")
     return 0
+
+
+def sanitize_log(text: str) -> str:
+    """The text with every terminal control sequence gone (the JOB-LOG SANITIZER BOUNDARY)."""
+    return _SURROGATE.sub("\ufffd", _CONTROL.sub("", _ESCAPE_SEQUENCE.sub("", text)))
+
+
+def save_log(text: str, repo: str, jid: str, state: str) -> str:
+    """Write the log as read, escapes kept, under ``state``, atomically; the stderr line that says where."""
+    directory = os.path.join(state, "job-logs") if state else tempfile.gettempdir()
+    path = os.path.join(directory, f"{repo.replace('/', '--')}--{jid}.log")
+    tmp = ""
+    try:
+        os.makedirs(directory, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=".new.", dir=directory)
+        with os.fdopen(fd, "wb") as out:
+            out.write((text + "\n" if text else "").encode("utf-8", "surrogateescape"))
+        os.replace(tmp, path)
+    except OSError as exc:
+        if tmp:
+            with contextlib.suppress(OSError):
+                os.remove(tmp)
+        return f"the log as read was not saved to {shlex.quote(path)} ({exc.strerror}); only stdout's sanitized tail was printed"
+    return f"the log as read (terminal escapes kept) is saved at {shlex.quote(path)}; stdout's tail is sanitized"
 
 
 def read_jobs(session: GhSession, repo: str, rid: str) -> list[dict[str, object]]:
