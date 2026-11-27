@@ -5042,6 +5042,26 @@ test_an_unrecognised_harness_line_is_compared_literally_under_override() {
   assert_clone_untouched
 }
 
+# #1382: two builds that fail with the same status and print nothing show no failure to go over.
+test_a_silent_merge_build_is_refused_under_override() {
+  reset
+  build_fixture base-red
+  MERGE_BUILD_CONFIG=$'command exit 1\ninput *.sh\ntimeout 120'
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge --override "$BASE_RED_WHY"
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "a silent merge build"
+    return 0
+  fi
+  assert_eq "$MERGE_RC" 1 "two empty logs are no shared failure under --override ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDOUT" "not comparable: the merge's build and main's build alone printed no nonblank line" \
+    "the silent builds are named"
+  assert_contains "$MERGE_STDERR" "printed no nonblank line, so whether main shares the failure" "the refusal names the missing evidence"
+  assert_contains "$MERGE_STDERR" "--override goes over only a failure both builds show" "and what the override covers"
+  assert_not_contains "$MERGE_OUTPUT" "OVERRIDE: merging" "nothing is announced"
+  assert_no_merge_call
+  assert_clone_untouched
+}
+
 # #861: a build input both sides changed, one side in comments alone, under a `comments` glob: the
 # merge proceeds with no build (the command would fail, so a merge proves none ran). The control:
 # the base editing code there too, which builds. Under Windows both are the POSIX-only refusal:
@@ -5453,6 +5473,7 @@ tests=(
   test_a_shared_harness_check_is_overridden_with_different_details_and_new_passes
   test_an_extra_harness_check_is_refused_under_override
   test_an_unrecognised_harness_line_is_compared_literally_under_override
+  test_a_silent_merge_build_is_refused_under_override
   test_a_comment_only_shared_change_merges_without_a_build
   test_a_code_change_on_both_sides_still_builds
   test_a_wait_from_no_clone_refuses_before_the_wait
