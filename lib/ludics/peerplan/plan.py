@@ -593,13 +593,15 @@ def critique(args: Sequence[str]) -> int:
     # The critique waits for the planning run, not for its plan: the peer plan is read once the run
     # has ended, so a live planner can never change what the critique was given, and a run that
     # ended with no plan leaves the critic the reconciled plan alone.
+    # A codex planner writes its -o file before it exits, so a plan file is no sign the run is over:
+    # the recorded run is read whenever there is one.
     peer = os.path.join(d, "peer-plan.md")
     marker = os.path.join(d, "plan-run")
-    if not nonempty(peer):
-        if not nonempty(marker):
-            raise cli.Exit(1, f"no planning run recorded in {d}: {PROG} start (or its _run plan) comes first")
+    if nonempty(marker):
         if live(read(marker).strip()):
             raise cli.Exit(1, f"the planning run in {d} is still live: wait for it, or bg-run.sh stop it first")
+    elif not nonempty(peer):
+        raise cli.Exit(1, f"no planning run recorded in {d}: {PROG} start (or its _run plan) comes first")
     if not os.path.isdir(meta.worktree):
         raise cli.Exit(1, f"the planner's worktree {meta.worktree} is gone ({PROG} clean ran?)")
     if is_clone(meta.worktree) and not planner_clone(d, meta.worktree):

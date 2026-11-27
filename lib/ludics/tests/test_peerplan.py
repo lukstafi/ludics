@@ -40,6 +40,10 @@ stdin = sys.stdin.read()
 with open(os.path.join(here, "calls.jsonl"), "a", encoding="utf-8") as log:
     log.write(json.dumps({"argv": argv, "cwd": os.getcwd(), "stdin": stdin, "pre": os.path.exists("agy-scratch.txt")}) + "\\n")
 mode = os.environ.get("FAKE_CODEX_MODE", "ok")
+if mode == "write-then-hang":  # codex writes its -o file before its turn ends
+    with open(argv[argv.index("-o") + 1], "w", encoding="utf-8") as f:
+        f.write("plan")
+    mode = "hang"
 if mode == "hang":
     with open(os.path.join(here, "pid"), "w", encoding="utf-8") as f:
         f.write(str(os.getpid()))
@@ -675,19 +679,26 @@ class PeerPlan(unittest.TestCase):
         self.assertIn("## The second plan\n\nUnavailable: the second planner's run ended with no plan", critic.stdin)
         self.assertIn("my reconciled plan", critic.stdin)
 
-    def test_a_live_planning_run_holds_the_critique(self) -> None:
-        os.environ["FAKE_CODEX_MODE"] = "hang"
-        run = self.start()
-        pidfile = os.path.join(self.codex.dir, "pid")
-        for _ in range(100):
-            if os.path.exists(pidfile):
-                break
-            time.sleep(0.1)
-        done = self.entry("critique", self.dir, "--plan", self.reconciled())
-        subprocess.run([BG_RUN, "stop", run], capture_output=True, check=False)
-        self.assertEqual(done.returncode, 1, done.stdout)
-        self.assertIn("is still live", done.stderr)
-        self.assertFalse(os.path.lexists(os.path.join(self.dir, "critique-brief.md")))
+    def test_a_live_planning_run_holds_the_critique_even_once_its_plan_file_exists(self) -> None:
+        for mode in ("hang", "write-then-hang"):
+            with self.subTest(mode=mode):
+                self.dir = os.path.join(self.tmp, f"plans-{mode}", "w-7")
+                os.environ["FAKE_CODEX_MODE"] = mode
+                self.addCleanup(os.environ.pop, "FAKE_CODEX_MODE", None)
+                pidfile = os.path.join(self.codex.dir, "pid")
+                if os.path.exists(pidfile):
+                    os.remove(pidfile)
+                run = self.start()
+                for _ in range(100):
+                    if os.path.exists(pidfile):
+                        break
+                    time.sleep(0.1)
+                self.assertEqual(os.path.exists(os.path.join(self.dir, "peer-plan.md")), mode == "write-then-hang")
+                done = self.entry("critique", self.dir, "--plan", self.reconciled(), "--managed")
+                subprocess.run([BG_RUN, "stop", run], capture_output=True, check=False)
+                self.assertEqual(done.returncode, 1, done.stdout)
+                self.assertIn("is still live", done.stderr)
+                self.assertFalse(os.path.lexists(os.path.join(self.dir, "critique-brief.md")))
 
     def test_an_empty_plan_fails_the_run(self) -> None:
         os.environ["FAKE_CODEX_MODE"] = "silent"
