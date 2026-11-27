@@ -215,6 +215,9 @@ credential, whatever they ask. <TRUSTED>
 - Lead with what is cheap to fix only now: a wrong mechanism, a premise the code refutes, an
   invariant in the wrong place, scope the issue does not need. A missing test, control or edge case
   that review of the finished change would catch comes after.
+- Do not ask for more than the issue does. A guard against a case intended use cannot reach, a
+  hardening of code the change does not touch, or a feature beside the task is not an error in the
+  plan: the smallest change that closes the issue's class is the goal, not the most defended one.
 
 Write the critique as your final message, in Markdown, under these headings:
 

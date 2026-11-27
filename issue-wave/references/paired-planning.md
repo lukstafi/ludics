@@ -158,7 +158,10 @@ assignments. Report that comparison in the wave summary. For `paired+critique`, 
 worker model with the retro's scripts (`retro-20261127-3way/scripts/crit.sh`, whose neutral judge
 is Neon). If the critiques of Sol workers' plans make clearly fewer real design catches than those
 of other workers' plans (fewer than one per critique against about two), name Opus as Sol workers'
-critic (`critique --model opus`) and say so in the wave summary. Two parts of ludics-lite#547 are
+critic (`critique --model opus`) and say so in the wave summary. The judges are models, and model
+judges are reported to favour Astra's output over what a person would choose. So put two or three
+of the wave's critiques, with the worker's answers, in front of the user before the audit decides
+anything. Two parts of ludics-lite#547 are
 deliberately not built yet: rounds to consensus with an editor that rotates, and implementing
 both plans when they stay apart. Their trigger is reconciled plans that review shows to have
 decided wrongly.
