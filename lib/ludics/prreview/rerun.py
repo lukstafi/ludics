@@ -26,7 +26,9 @@ nothing) gets the plain read instead, its refusal having sent nothing. It saves 
 budgeted read returns it, escapes kept: ``$(gh ...)``'s text, the shared read's (core.py), so NUL
 bytes are dropped and a non-empty log ends in one newline. That is not the response byte for
 byte. The file is ``<state>/job-logs/<owner>--<repo>--<job-id>.log``, ``<state>`` being the budget's directory
-(SHIP_PR_STATE_DIR by default; the system temp directory when that is empty), and a stderr line
+(the gating budget's own, else as ``budget_dir`` resolves it: SHIP_PR_STATE_DIR, else
+``${XDG_STATE_HOME:-$HOME/.local/state}/ship-pr``; the system temp directory only when a
+forwarded LUDICS_PR_BUDGET_DIR is empty), and a stderr line
 names the file. Only the tail on stdout is sanitized. A log that cannot be saved costs the
 file, not the tail: the stderr line says so, and the exit stays 0.
 
@@ -301,7 +303,8 @@ def recovery_read(session: GhSession, args: list[str]) -> int:
             _unread(session, f"job {jid}'s log")
         lines = int(extra[1]) if len(extra) > 1 else 80
         cli.say("\n".join(sanitize_log(log.stdout).splitlines()[-lines:]))
-        cli.note("rerun job-log", save_raw_log(log.stdout, repo, jid))
+        state = session.budget.dir if session.budget is not None else budget_dir(os.environ)
+        cli.note("rerun job-log", save_log(log.stdout, repo, jid, state))
     else:
         for job in jobs:
             if verb == "failed-jobs" and conclusion_class(str(job.get("conclusion"))) != "red":
@@ -316,9 +319,8 @@ def sanitize_log(text: str) -> str:
     return _SURROGATE.sub("\ufffd", _CONTROL.sub("", _ESCAPE_SEQUENCE.sub("", text)))
 
 
-def save_raw_log(text: str, repo: str, jid: str) -> str:
-    """Write the raw log beside the budget's state, atomically; the stderr line that says where."""
-    state = budget_dir(os.environ)
+def save_log(text: str, repo: str, jid: str, state: str) -> str:
+    """Write the log as read, escapes kept, under ``state``, atomically; the stderr line that says where."""
     directory = os.path.join(state, "job-logs") if state else tempfile.gettempdir()
     path = os.path.join(directory, f"{repo.replace('/', '--')}--{jid}.log")
     tmp = ""

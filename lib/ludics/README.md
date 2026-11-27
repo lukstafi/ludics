@@ -80,7 +80,7 @@ prreview/mergedry.py       merge-build, that build alone as a dry run for two re
 prreview/buildhistory.py   what a repository's merge build has taken on this box, for an overrun's advice (#982)
 prreview/localreview.py    local-review, the local Codex review before a PR opens (#750)
 prreview/rerun.py          rerun, the head's workflow runs, their jobs/log tails (escapes stripped, the
-                           raw log saved, #1386), a run's completion
+                           log saved as read, #1386), a run's completion
                            wait, and the re-run of failed jobs inside the polling budget (#1111);
                            read_jobs is the shared paginated latest-attempt reader
 prreview/checkruns.py      conclusion_class, newest_first

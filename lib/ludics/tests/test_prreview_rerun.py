@@ -70,7 +70,7 @@ class Gh:
 
 
 def rerun_with(gh: Gh, *args: str, budget: Budget | None = None) -> tuple[int, str, str]:
-    """One call under a state directory of its own (``job-log`` saves its raw log there)."""
+    """One call under a state directory of its own (``job-log`` saves its log there)."""
     with tempfile.TemporaryDirectory() as state:
         return rerun_in(state, gh, *args, budget=budget)
 

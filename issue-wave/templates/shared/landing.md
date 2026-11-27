@@ -35,8 +35,8 @@ to `@@MAIN@@`.
   `pr-review.sh rerun @@REPO@@#<pr> <run id>...` re-runs the failed jobs of the ones you name,
   inside that budget. `rerun <pr> jobs <run-id>` lists job status and conclusion;
   `failed-jobs <run-id>` lists red jobs and `job-log <run-id> <job-id> [tail-lines]`
-  prints a failed job's log tail, escapes stripped, naming the saved raw log on stderr (all
-  after `rerun <pr>`). For an unfinished red run,
+  prints a failed job's log tail, escapes stripped, and names on stderr the file that keeps the
+  log as read, escapes and all (all after `rerun <pr>`). For an unfinished red run,
   `rerun <pr> wait <run-id> [seconds]` waits for completion, read-only, before rerunning;
   its default ceiling is 900 seconds. It shares the PR's build observer: stop an existing
   `checks --wait` or `merge --wait` first. Then wait with `checks --wait` again. Never call

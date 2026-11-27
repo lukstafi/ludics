@@ -1243,7 +1243,7 @@ signal without acting on it, such as before asking the reviewer for another roun
 
 **Reading a job's log.** For a completed red job of the head, `rerun <pr> job-log` (above): inside
 the budget, it prints a tail with terminal escapes stripped and names on stderr the file holding
-the raw log. Any other job: `gh api repos/<owner>/<repo>/actions/jobs/<job-id>/logs
+the log as read, escapes kept. Any other job: `gh api repos/<owner>/<repo>/actions/jobs/<job-id>/logs
 --allow-escape-sequences > <file>`, while the rest of the run still goes (`gh run view --log-failed`
 waits for all of it). Without the flag gh refuses a log carrying ANSI colours, dune's among them,
 and leaves an empty file with the refusal on stderr: a `wc -l` of 0 means the flag, not an empty log.
