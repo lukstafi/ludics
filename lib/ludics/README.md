@@ -741,6 +741,11 @@ lists the passing lines, reporter detail and fleet metadata that can vary.
 On launch base `679b862a`, all three new shell cases fail their expected comparison outcomes,
 and the unit fixture admits failed labels swapped across harness invocations.
 
+Agent notes (wave-20261127-ludics, t1382; refs #1382). A shared failure needs evidence on both
+sides: each log holds a nonblank line, else the comparison refuses naming the silent build. A
+recognised FAIL is not required, because the literal path is how a non-harness command's red is
+gone over (#860). On launch base `0a9025ac`, the silent-build unit and shell cases merge.
+
 ## Checking
 
 Placement recovery (#1133, #1160): `wave launch` reads a caller-named JSON result file,
