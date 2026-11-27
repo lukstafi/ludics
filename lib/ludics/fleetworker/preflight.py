@@ -11,7 +11,9 @@ and reports the correctness slots this configuration gives each roster box.
 COORDINATOR CHECK. ``preflight <box> --planner <wave.json> [--mode none|paired|paired+critique]
 [--model <m>] [--effort <e>]`` runs in the coordinator's own session on the wave's agent host.
 It reads the wave's typed review setting and the explicitly selected planning mode (default none),
-with peer-plan's default model and effort unless overridden. It does not infer modes from briefs,
+with peer-plan's default model and effort unless overridden (``--model`` and ``--effort`` name the
+planner; ``paired+critique`` also probes peer-plan's default critic, ``plan.CRITIC_MODEL``, at the
+default effort). It does not infer modes from briefs,
 queues or board rows. Each selected role gets one tool-free prompt in an empty temporary directory.
 An absent role or executable is skipped. Success is point-in-time evidence for this process's
 environment and the selected models. A refusal records no readiness; repair and repeat the same
@@ -211,6 +213,10 @@ def coordinator_preflight(cfg: Config, box: str, args: list[str]) -> int:
         model = options.get("--model", plan.DEFAULT_MODEL)
         tool = "claude" if plan.is_claude(model) else "agy" if plan.is_gemini(model) else "codex"
         roles.append(("planner", tool, model, options.get("--effort", plan.DEFAULT_EFFORT)))
+    if mode == "paired+critique":
+        critic = plan.CRITIC_MODEL
+        roles.append(("critic", "claude" if plan.is_claude(critic) else "agy" if plan.is_gemini(critic) else "codex",
+                      critic, plan.DEFAULT_EFFORT))
     if wave.review is not None:
         roles.append(("reviewer", "claude" if wave.review.kind == "claude" else "agy", wave.review.model, ""))
     if not roles:

@@ -169,16 +169,19 @@ class CoordinatorPreflight(WaveDirCase):
         cfg = load_config(SCRIPT, {"FLEET_LOCAL_BOX": "mac", "FLEET_PROBE_TIMEOUT": "1"})
         return captured(preflight.cmd_preflight, cfg, [box, "--planner", self.path, *args])
 
-    def test_default_planner_and_wave_reviewer_each_get_a_headless_turn(self) -> None:
+    def test_default_planner_critic_and_wave_reviewer_each_get_a_headless_turn(self) -> None:
         self.write("wave.json", json.dumps(wave_data(self.dir, review={"kind": "claude", "model": "opus"})))
-        with FakeTool("claude") as claude:
+        with FakeTool("claude") as claude, FakeTool("codex") as codex:
             claude.route(
                 (When(prefix=("-p", "--model", "fable"), has=("high", "json")), self.ok),
                 (When(prefix=("-p", "--model", "opus"), has=("json",)), self.ok),
             )
+            codex.route((When(has=("gpt-6.2-astra", "read-only", "--ephemeral", "model_reasoning_effort=high")),
+                         Answer(file_flag="-o", file_text="ok\n")))
             rc, out, err = self.probe("--mode", "paired+critique")
             self.assertEqual((rc, err), (0, ""))
             self.assertEqual(out.splitlines(), ["PREFLIGHT OK mac planner (claude fable)",
+                                                "PREFLIGHT OK mac critic (codex gpt-6.2-astra)",
                                                 "PREFLIGHT OK mac reviewer (claude opus)"])
             calls = claude.calls()
             for call_argv in calls:
@@ -193,6 +196,11 @@ class CoordinatorPreflight(WaveDirCase):
                      "--no-session-persistence", "--strict-mcp-config", "--tools", ""],
                 ],
             )
+            self.assertEqual(len(codex.calls()), 1, "the critic gets its own probe")
+            # paired alone has no critique, so no critic probe.
+            self.assertEqual(self.probe("--mode", "paired")[1].splitlines(),
+                             ["PREFLIGHT OK mac planner (claude fable)", "PREFLIGHT OK mac reviewer (claude opus)"])
+            self.assertEqual(len(codex.calls()), 1)
 
     def test_single_dash_option_values_refuse_before_any_probe(self) -> None:
         cases = (
