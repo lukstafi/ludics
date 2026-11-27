@@ -2117,11 +2117,11 @@ def _against_base(
     elif silent := _silent_sides(mine, theirs, base_ref):
         cli.say(
             f"merge build {label}: {base_ref} alone FAILED (exit {base.status}) after {base.took}s, not comparable:"
-            f" {silent} printed no output line, so no failure evidence was compared"
+            f" {silent} printed no nonblank line, so no failure evidence was compared"
         )
         fail(
             1, *plain,
-            f"and {silent} printed nothing (no nonblank line), so whether {base_ref} shares the failure",
+            f"and {silent} printed no nonblank line, so whether {base_ref} shares the failure",
             "cannot be told: a failure gone over must be named. Make the command say what failed, push,",
             "and merge again" + ("; --override goes over only a failure both builds show." if override else "."),
         )

@@ -5053,9 +5053,9 @@ test_a_silent_merge_build_is_refused_under_override() {
     return 0
   fi
   assert_eq "$MERGE_RC" 1 "two empty logs are no shared failure under --override ($MERGE_OUTPUT)"
-  assert_contains "$MERGE_STDOUT" "not comparable: the merge's build and main's build alone printed no output line" \
+  assert_contains "$MERGE_STDOUT" "not comparable: the merge's build and main's build alone printed no nonblank line" \
     "the silent builds are named"
-  assert_contains "$MERGE_STDERR" "printed nothing (no nonblank line)" "the refusal names the missing evidence"
+  assert_contains "$MERGE_STDERR" "printed no nonblank line, so whether main shares the failure" "the refusal names the missing evidence"
   assert_contains "$MERGE_STDERR" "--override goes over only a failure both builds show" "and what the override covers"
   assert_not_contains "$MERGE_OUTPUT" "OVERRIDE: merging" "nothing is announced"
   assert_no_merge_call

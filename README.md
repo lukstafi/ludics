@@ -1099,8 +1099,8 @@ base alone shares (the same command on the base tip's tree, the merge's parents)
 `--override` and merges under a cited one, and one with a failure of its own beside that red is
 refused under the override too, its extra line shown (#860). The same harness check with different
 details and extra passing checks can be overridden, while a new failing check or an unmatched
-literal line refuses (#1359). Two builds failing with one status that print nothing are refused under
-the override (#1382). Under a `comments *.ml` line, a
+literal line refuses (#1359). A shared failure where either build prints nothing (no nonblank line) is
+refused under the override (#1382). Under a `comments *.ml` line, a
 build input both sides changed, one side in a comment alone, merges with no build, and a code change
 there on both sides still builds (#861); a line outside the config's
 grammar is exit 2, an unread config exit 3 and a merge outside a clone exit 2 -- under `--wait`

@@ -1352,8 +1352,8 @@ class BaseAlone(Repo):
                 rc, out, shared = self.build_over(head, command, WHY)
                 self.assertEqual(rc, 1, out)
                 self.assertIsNone(shared)
-                self.assertIn(f"not comparable: {silent} printed no output line", out)
-                self.assertIn(f"and {silent} printed nothing (no nonblank line)", out)
+                self.assertIn(f"not comparable: {silent} printed no nonblank line, so no failure evidence was compared", out)
+                self.assertIn(f"and {silent} printed no nonblank line, so whether main shares the failure", out)
                 self.assertIn("--override goes over only a failure both builds show", out)
                 self.assertNotIn("FAILED the same way", out)
 
@@ -1361,7 +1361,7 @@ class BaseAlone(Repo):
         head, _ = self.sides("keep", RED)
         rc, out = self.build(head, "exit 1")
         self.assertEqual(rc, 1, out)
-        self.assertIn("printed nothing (no nonblank line)", out)
+        self.assertIn("printed no nonblank line, so whether main shares the failure", out)
         self.assertNotIn("--override", out)
 
     def test_the_base_alone_has_the_merges_parents_and_environment(self) -> None:
