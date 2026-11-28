@@ -484,6 +484,36 @@ stdout also quotes the `result:` line and each `FAIL:`/`POTENTIAL:` finding, ind
 (POTENTIAL → FAIL) is news. A weekday incremental run writes no report and says
 `skip coverage: not aggregated` — that is normal, not a finding.
 
+Streaks span several nights (gh-ocannl-2424). After writing a skip or bypass report, the sweep runs
+`tools/sweep-streaks.sh` over the saved reports and prints `coverage streaks: <result> --
+<stamp>-streaks.txt`. With an ALERT it then prints one indented `  STREAK: ` line per streak of at
+least three consecutive sweeps. The line shapes are:
+
+- `STREAK: skipped on every box (<n> consecutive sweeps): <claim>`
+- `... skipped on every known backend ...`
+- `... unit at 100% bypass ...: <unit> (...)`
+- `... UNVERIFIED bypassed claim ...: <claim> (...)`
+
+A streak is news every night it persists, not only the night it appears, because it is coverage
+that silently stopped. Keep ONE standing issue per streak, which the CI-red triage routine reads:
+
+1. For each `STREAK:` line, search open ahrefs/ocannl issues for its claim or unit text:
+   `gh issue list -R ahrefs/ocannl --state open --search '"<claim or unit>" in:title,body'`.
+2. Read each hit before treating it as a match.
+3. On a match, comment tonight's streak length, the sha and the streaks report path.
+4. Otherwise, file an issue titled `Sweep coverage streak: <the STREAK line without its count>`,
+   with the label `wave-followup` and the `process` milestone. Its body quotes the line and the
+   reports it spans.
+
+For example, `cc_temp_library_sweep`'s two environment-scoped claims already have ahrefs/ocannl#2525.
+
+The other result lines need no issue:
+
+- `coverage streaks: not checked (...)` is normal, for a targeted run or one that wrote no report.
+- `coverage streaks: NOT CHECKED -- malformed history (...)` means an older report fails the
+  parser, so streak detection is off until that report is fixed or removed. Report it in step 5
+  and notify on it in step 6.
+
 The per-run record `~/.ocannl-sweep/logs/<stamp>-run.tsv` (its path is the sweep's `run:` line) is
 the machine-readable form of the same run; read it rather than re-deriving facts from the summary
 prose. Its first line is `schema 6`. Each `unit` row is: machine, backend, outcome (or `no-row`), a
