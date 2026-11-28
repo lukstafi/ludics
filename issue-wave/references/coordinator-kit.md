@@ -67,6 +67,11 @@ The template holds no project fact. It takes them from three places:
   its section in its own repository and reviews it there. A wave directory's `project.md`
   overrides it for one wave.
 
+Write repository links in a project part, and in a task part, as absolute URLs (`https://github.com/<owner>/<repo>/blob/<ref>/<path>`).
+The rendered brief lives in the wave directory, outside the checkout, so a relative link
+resolves against nothing. wave-20261127-ocannl's p1g4 (lukstafi/ocannl-staging#2445) first
+shipped one in `.github/wave-brief.md`.
+
 This repository's own project part is `.github/wave-brief.md`.
 
 The template is where a worker's rules live; issue-wave SKILL.md's *The brief* says what the
